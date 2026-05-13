@@ -31,8 +31,8 @@ extensions = [
 ]
 
 extlinks = {
-    "issue": ("https://github.com/EOPF-DGGS/healpix-resample/issues/%s", "GH%s"),
-    "pull": ("https://github.com/EOPF-DGGS/healpix-resample/pull/%s", "PR%s"),
+    "issue": ("https://github.com/GRID4EARTH/healpix-resample/issues/%s", "GH%s"),
+    "pull": ("https://github.com/GRID4EARTH/healpix-resample/pull/%s", "PR%s"),
 }
 
 myst_enable_extensions = [

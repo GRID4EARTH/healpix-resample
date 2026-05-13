@@ -48,14 +48,14 @@ This package is distributed as a **private repository** and must be installed fr
 ### Clone the repository
 
 ```bash
-git clone https://github.com/EOPF-DGGS/healpix-resample.git
+git clone https://github.com/GRID4EARTH/healpix-resample.git
 cd healpix-resample
 ```
 
 If you use SSH access:
 
 ```bash
-git clone git@github.com:EOPF-DGGS/healpix-resample.git
+git clone git@github.com:GRID4EARTH/healpix-resample.git
 cd healpix-resample
 ```
 
