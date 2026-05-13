@@ -74,14 +74,7 @@ html_static_path = ["_static"]
 html_css_files = ["css/custom.css"]
 
 html_theme_options = {
-    "icon_links": [
-        {
-            "name": "GitHub",
-            "url": "https://github.com/EOPF-DGGS/healpix-plotting",
-            "icon": "fa brands fa-square-github",
-            "type": "fontawesome",
-        },
-    ],
+    "github_url": "https://github.com/GRID4EARTH/healpix-resample",
     "icon_links_label": "Quick Links",
 }
 
