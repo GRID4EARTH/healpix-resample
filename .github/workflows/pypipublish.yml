@@ -11,7 +11,7 @@ jobs:
   build-artifacts:
     runs-on: ubuntu-latest
     if: |
-      github.repository == 'EOPF-DGGS/healpix-resample'
+      github.repository == 'GRID4EARTH/healpix-resample'
       && (
         github.event_name == 'release'
         || (
