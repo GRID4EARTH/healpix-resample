@@ -51,7 +51,7 @@ def conjugate_gradient(
     b_norm = torch.linalg.norm(b)
     if b_norm == 0:
         return x, {"residual_norms": torch.tensor([0.0], device=b.device, dtype=b.dtype),
-                   "iters": torch.tensor(0, device=b.device)}
+                   "niters": torch.tensor(0, device=b.device)}
 
     residual_norms = [torch.sqrt(rs_old)]
 
