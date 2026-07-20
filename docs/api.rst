@@ -12,6 +12,7 @@ Resamplers
    healpix_resample.PSFResampler
    healpix_resample.CellPointResampler
    healpix_resample.GroupByResampler
+   healpix_resample.ConservativeResampler
 
 Base class
 ----------

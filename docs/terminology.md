@@ -74,6 +74,25 @@ where `d` is the geodesic distance between the sample and the cell centre. If `s
 
 ---
 
+## Conservative resampling / area weighting
+
+`ConservativeResampler` bins each sample into its containing HEALPix cell and accumulates an
+**area-weighted sum**, so that a total integrated quantity is preserved exactly between representations:
+
+```
+sum(val_i * area_i) == sum(hval_k)
+```
+
+`area` is a per-sample scalar weight (default `1.0`). It matters only when `val` is an *intensive*
+quantity (a density, e.g. flux per m², temperature): samples with a larger physical footprint should be
+weighted proportionally more. If `val` is already an *extensive*, pre-integrated total (e.g. counts),
+leave `area` at its default — plain summation is exactly conservative regardless of footprint size.
+
+Unlike `NearestResampler`, `BilinearResampler`, and `PSFResampler` — which interpolate *values* at
+points — `ConservativeResampler` preserves a *flux*, at the cost of not producing a smooth field.
+
+---
+
 ## Conjugate Gradient (CG)
 
 Used by `PSFResampler` to solve the damped least-squares problem:

@@ -9,9 +9,9 @@ kernelspec:
   display_name: Python 3
 ---
 
-# The four resamplers
+# The resamplers
 
-This notebook runs all four resamplers on the same dataset so you can compare their behaviour, accuracy, and speed.
+This notebook runs all resamplers on the same dataset so you can compare their behaviour, accuracy, and speed.
 
 ## Setup
 
@@ -22,6 +22,7 @@ from healpix_resample import (
     BilinearResampler,
     PSFResampler,
     CellPointResampler,
+    ConservativeResampler,
 )
 
 # Shared dataset: a small structured grid near the origin
@@ -86,4 +87,34 @@ res_zuniq = nr_zuniq.resample(val)
 rval_zuniq = nr_zuniq.invert(res_zuniq.cell_data)
 max_err = np.max(np.abs(rval_zuniq - val))
 print(f"Zuniq    — output cells: {res_zuniq.cell_data.shape[0]}, max error: {max_err:.2e}")
+```
+
+### `ConservativeResampler`
+
+Bins each point into its containing HEALPix cell and accumulates an **area-weighted sum**, so the total
+integrated quantity (`sum(val * area)`) is preserved exactly between the sample-space and HEALPix-cell
+representations — unlike the other resamplers, which interpolate *values* rather than conserve a *flux*.
+
+Use this when `val` is an intensive/density quantity (flux per m², temperature, ...) measured over
+pixels of known — possibly non-uniform — footprint `area`. If your samples already carry an extensive,
+pre-integrated quantity (a total, e.g. counts), leave `area` at its default of `1.0` and plain summation
+is exactly conservative regardless of how footprint sizes vary.
+
+```{code-cell} python
+# Give samples a non-uniform footprint area to demonstrate the area weighting.
+rng = np.random.default_rng(0)
+area = rng.uniform(0.5, 2.0, size=lon.shape)
+
+nr_cons = ConservativeResampler(lon_deg=lon, lat_deg=lat, level=level, area=area)
+res_cons = nr_cons.resample(val)
+
+rval_cons = nr_cons.invert(res_cons.cell_data)
+
+flux_in = np.sum(val * area)
+flux_out = np.sum(res_cons.cell_data)
+flux_back = np.sum(rval_cons * area)
+print(f"Conservative — output cells: {res_cons.cell_data.shape[0]}")
+print(f"  sum(val*area)         = {flux_in:.6f}")
+print(f"  sum(hval)              = {flux_out:.6f}  (should equal the line above)")
+print(f"  sum(invert(hval)*area) = {flux_back:.6f}  (should equal the line above)")
 ```
