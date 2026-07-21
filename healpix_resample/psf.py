@@ -30,15 +30,31 @@ def conjugate_gradient(
     max_iter: int = 200,
     tol: float = 1e-6,
     verbose: bool = True,
+    weight: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
-    Solve A x = b with Conjugate Gradient where A is SPD, using only matvec A_mv(v).
+    Solve A x = b with Conjugate Gradient, using only matvec A_mv(v).
     No autograd (uses torch.no_grad).
+
+    ``A_mv`` (as built by :func:`least_squares_cg` for :class:`PSFResampler`) is
+    self-adjoint and positive-definite with respect to the *weighted* inner
+    product ``<u, v>_w = sum(u * v * weight)`` on the HEALPix-cell space
+    (weight = per-cell column-weight ``Dx`` used to normalize ``M``), **not**
+    with respect to the plain Euclidean inner product. Pass ``weight`` so CG's
+    own dot products use the inner product the operator is actually SPD in —
+    with ``weight=None`` (Euclidean), CG's classical convergence guarantees do
+    not formally apply to this operator, even though it often still behaves
+    reasonably in practice.
 
     Returns:
         x: solution
         info: dict with residual norms history, iterations
     """
+    def _wdot(u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        # <u, v>_weight = sum_k u_k v_k weight_k, reduced over the last (K) axis, kept per batch row
+        uv = u * v if weight is None else u * v * weight
+        return torch.sum(uv, dim=-1)
+
     if x0 is None:
         x = torch.zeros_like(b)
     else:
@@ -46,9 +62,9 @@ def conjugate_gradient(
 
     r = b - A_mv(x)          # residual
     p = r.clone()
-    rs_old = torch.einsum('ik,ik->i',r,r)
+    rs_old = _wdot(r, r)
 
-    b_norm = torch.linalg.norm(b)
+    b_norm = torch.sqrt(torch.sum(_wdot(b, b)))
     if b_norm == 0:
         return x, {"residual_norms": torch.tensor([0.0], device=b.device, dtype=b.dtype),
                    "niters": torch.tensor(0, device=b.device)}
@@ -57,18 +73,18 @@ def conjugate_gradient(
 
     for k in range(max_iter):
         Ap = A_mv(p)
-        denom = torch.einsum('ik,ik->i',p,Ap)
+        denom = _wdot(p, Ap)
         if torch.max(denom.abs()) < 1e-30:
             break  # breakdown (shouldn't happen for SPD unless numerical issues)
 
         alpha = rs_old / denom
         x = x + torch.einsum('k,ki->ki',alpha,p)
         r = r - torch.einsum('k,ki->ki',alpha,Ap)
-        rs_new = torch.einsum('ik,ik->i',r,r)
+        rs_new = _wdot(r, r)
 
         residual_norms.append(torch.sqrt(rs_new))
 
-        # stopping criterion: relative residual
+        # stopping criterion: relative residual (in the same weighted norm as rs_new)
         if torch.max(torch.sqrt(rs_new)) <= tol * b_norm:
             rs_old = rs_new
             break
@@ -93,24 +109,47 @@ def least_squares_cg(M,
         MT,
         y,
         x_ref,
-        x0, 
+        x0,
         max_iter = 200,
         tol = 1e-6,
         damp = 0.0,
         verbose: bool = True,
+        weight: Optional[torch.Tensor] = None,
         ):
     """
     Solve for delta in a damped least-squares problem without forming dense matrices.
 
-    We solve:
-        (MT @ M + damp*I) delta = (y - x_ref @ MT) @ M
+    ``M`` and ``MT`` are *not* Euclidean transposes of one another (each is
+    normalized against a different axis of the raw weight matrix), but ``MT``
+    is exactly the adjoint of ``M`` with respect to a pair of weighted inner
+    products: ``<.,.>_Dy`` on the sample space (weight = per-sample row-sum
+    used to normalize ``MT``) and ``<.,.>_Dx`` on the HEALPix-cell space
+    (weight = per-cell column-sum used to normalize ``M``, passed here as
+    ``weight``). Concretely ``MT = Dx @ M.T @ Dy^-1`` (in this module's
+    row-vector convention). This solves the stationarity condition of the
+    *weighted* least-squares problem
+
+        delta_hat = argmin_delta || delta @ MT - r_ref ||^2_Dy + damp * || delta ||^2_Dx
+
+    where ``r_ref = y - x_ref @ MT`` is the sample-space residual, which is
+    exactly:
+
+        (MT-then-M + damp*I) delta = (y - x_ref @ MT) @ M
+
+    i.e. the same linear system as a naive (unweighted) Tikhonov normal
+    equation, but its correct interpretation -- and the correct inner product
+    for the Conjugate Gradient solver below -- uses ``Dx = weight`` (see
+    :func:`conjugate_gradient`).
 
     Shapes:
-        M  : (N, K) sparse CSR
-        MT : (K, N) sparse CSR
-        y  : (B, N)
-        x_ref : (B, K)
-        delta : (B, K)
+        M      : (N, K) sparse CSR
+        MT     : (K, N) sparse CSR
+        y      : (B, N)
+        x_ref  : (B, K)
+        delta  : (B, K)
+        weight : (K,) or None -- Dx, the per-cell weight columns of M were
+                 normalized by; None falls back to the (formally unjustified)
+                 Euclidean inner product.
     """
 
     # b = M^T y
@@ -119,7 +158,9 @@ def least_squares_cg(M,
         # (M^T M + damp I) v
         return (v@MT) @ M + damp * v
 
-    x, info = conjugate_gradient(A_mv=A_mv, b=b, x0=x0, max_iter=max_iter, tol=tol,verbose=verbose)
+    x, info = conjugate_gradient(
+        A_mv=A_mv, b=b, x0=x0, max_iter=max_iter, tol=tol, verbose=verbose, weight=weight,
+    )
     return x, info
 
 
@@ -138,10 +179,19 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         Npt: int = 9,
         sigma_m=None,
         threshold: float = 0.1,
+        area: Optional[T_Array] = None,
         **kwargs,
     ):
         """
         PSF regridding Set.
+
+        Parameters
+        ----------
+        area : array-like or None
+            Per-sample pixel area/weight, shape ``(N,)``. Only used when
+            ``resample(..., conservative=True)`` is requested (see
+            :meth:`resample`); defaults to ``1.0`` for every sample, same
+            convention as :class:`~healpix_resample.conservative.ConservativeResampler`.
         """
         super().__init__(
             lon_deg=lon_deg,
@@ -157,6 +207,17 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             threshold=threshold,
             **kwargs,
         )
+
+        if area is None:
+            self.area = torch.ones(self.N, dtype=self.dtype, device=self.device)
+        else:
+            area_t = area if isinstance(area, torch.Tensor) else torch.as_tensor(area)
+            area_t = area_t.to(self.device, dtype=self.dtype).reshape(-1)
+            if area_t.numel() != self.N:
+                raise ValueError(
+                    f"area must have {self.N} elements (one per sample), got {area_t.numel()}"
+                )
+            self.area = area_t
 
     def comp_matrix(self):
         # --- weights per sample->cell link
@@ -271,12 +332,12 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 add_rows = torch.cat(add_rows, dim=0)
                 add_cols = torch.cat(add_cols, dim=0)
                 add_vals = torch.cat(add_vals, dim=0)
-                
+
                 # rebuild M and coalesce
                 new_rows = torch.cat([base_rows, add_rows], dim=0)
                 new_cols = torch.cat([base_cols, add_cols], dim=0)
                 new_vals = torch.cat([base_vals, add_vals], dim=0)
-                
+
                 M_coo = torch.sparse_coo_tensor(
                     torch.stack([new_rows, new_cols], dim=0),
                     new_vals,
@@ -284,8 +345,15 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     device=self.device,
                     dtype=self.dtype,
                 ).coalesce()
-                
-                
+
+                # These columns now carry a single raw (unnormalized) fallback
+                # link of weight 1.0 instead of their original (sub-threshold)
+                # Gaussian weight sum -- correct Dx (norm_col) to match, so it
+                # stays the true raw per-cell weight the CG solver below needs
+                # (see conjugate_gradient / least_squares_cg docstrings).
+                norm_col = norm_col.clone()
+                norm_col[bad_k] = 1.0
+
             # do the same fo the transpose
             # weak/empty columns in M (per output healpix cell k)
             bad_k = torch.nonzero(norm_row <= self.threshold).reshape(-1)
@@ -356,6 +424,13 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     dtype=self.dtype,
                 ).coalesce() 
                 
+        # Dx: the raw (pre-normalization) per-cell weight columns of M were
+        # divided by -- i.e. the weighted inner product <.,.>_Dx that MT is
+        # the adjoint of M for (MT = Dx @ M.T @ Dy^-1). Needed by resample()
+        # to run Conjugate Gradient in the inner product it is actually SPD
+        # in -- see conjugate_gradient()/least_squares_cg() docstrings.
+        self.cell_weight = norm_col
+
         # Convert to CSR for faster spMM (recommended on GPU)
         self.M  = M_coo #.to_sparse_csr()
         del M_coo
@@ -372,6 +447,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         tol: float = 1e-8,
         x0: Optional[torch.Tensor] = None,
         return_info: bool = False,
+        conservative: bool = False,
     ) -> ResampleResults[T_Array]:
         """Estimate the HEALPix field from unstructured samples.
 
@@ -381,6 +457,14 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             max_iter, tol: CG parameters
             x0: optional initial guess for the *delta* around x_ref, shape (B,K)
             return_info: whether to return CG diagnostics
+            conservative: if True, apply an exact linear-equality correction
+                (minimum-distortion in the same Dx-weighted metric CG uses) so
+                that the unweighted mean of the output HEALPix field exactly
+                matches the area-weighted mean of the input samples:
+                ``mean(hval) == sum(val*area)/sum(area)``. Because HEALPix
+                cells are equal-area, this is equivalent to conserving the
+                total area-integrated quantity. See ``area`` in ``__init__``.
+                Off by default -- does not change existing behaviour.
 
         Returns:
             hval: (B,K) or (K,)
@@ -411,9 +495,41 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             tol=tol,
             damp=float(lam),
             verbose=self.verbose,
+            weight=self.cell_weight,
         )
         
-        hval = delta + x_ref 
+        hval = delta + x_ref
+
+        if conservative:
+            # Single scalar equality constraint sum_k(hval_k) == F_target, with
+            # F_target chosen so the constraint is equivalent to conserving
+            # sum(val*area) (HEALPix cells being equal-area, this reduces to
+            # matching the area-weighted input mean -- see resample() docstring).
+            #
+            # Minimum-Dx-distortion correction from the KKT system of the
+            # *constrained* weighted least-squares problem (constraint
+            # appended to Eq. for delta, not a post-hoc projection of the
+            # unconstrained delta): with c = 1_K and Dx = diag(cell_weight),
+            # the correction direction is w = H^-1 (Dx^-1 c), NOT H^-1 c --
+            # i.e. the extra CG solve below must use a Dx^-1-weighted
+            # right-hand side, or the result satisfies the constraint but is
+            # *not* the minimum-distortion correction the derivation claims.
+            area = self.area
+            target_mean = (y * area[None, :]).sum(dim=-1, keepdim=True) / area.sum()  # (B,1)
+            F_target = target_mean * self.K                                            # (B,1)
+
+            def _Hmv(v: torch.Tensor) -> torch.Tensor:
+                return (v @ self.MT) @ self.M + float(lam) * v
+
+            dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
+            w, _ = conjugate_gradient(
+                A_mv=_Hmv, b=dxinv_c, max_iter=max_iter, tol=tol,
+                verbose=False, weight=self.cell_weight,
+            )                                                                          # (1,K)
+
+            mu = (F_target - hval.sum(dim=-1, keepdim=True)) / w.sum()                 # (B,1)
+            hval = hval + mu * w                                                       # (B,K)
+
         if val is not None and val.ndim == 1:
             hval = hval[0]
 
