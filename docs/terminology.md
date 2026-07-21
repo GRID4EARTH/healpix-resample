@@ -88,8 +88,14 @@ quantity (a density, e.g. flux per m², temperature): samples with a larger phys
 weighted proportionally more. If `val` is already an *extensive*, pre-integrated total (e.g. counts),
 leave `area` at its default — plain summation is exactly conservative regardless of footprint size.
 
-Unlike `NearestResampler`, `BilinearResampler`, and `PSFResampler` — which interpolate *values* at
-points — `ConservativeResampler` preserves a *flux*, at the cost of not producing a smooth field.
+Unlike `NearestResampler` and `BilinearResampler` — which interpolate *values* at points —
+`ConservativeResampler` preserves a *flux*, at the cost of not producing a smooth field.
+
+`PSFResampler` can also be made conservative: passing `area` bakes the same area weighting
+directly into its kernel-based operator (a *conservative rebinning*, not just hard binning),
+and `resample(..., conservative=True)` adds an exact minimum-distortion correction on top —
+combining smooth reconstruction with exact flux preservation. See
+`docs/user-guide/regrid_to_healpix_psf.md` for details.
 
 ---
 

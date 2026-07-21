@@ -18,7 +18,7 @@ import math
 import numpy as np
 import torch
 
-from healpix_resample.base import ResampleResults, T_Array
+from healpix_resample.base import ResampleResults, T_Array, estimate_pixel_area
 from healpix_resample.knn import KNeighborsResampler, _sigma_level_m, _lonlat_to_xyz
 
 
@@ -187,12 +187,67 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
         Parameters
         ----------
-        area : array-like or None
-            Per-sample pixel area/weight, shape ``(N,)``. Only used when
-            ``resample(..., conservative=True)`` is requested (see
-            :meth:`resample`); defaults to ``1.0`` for every sample, same
-            convention as :class:`~healpix_resample.conservative.ConservativeResampler`.
+        area : array-like, "auto", or None
+            Per-sample pixel area/weight of the *native* (source) grid, shape
+            ``(N,)``. This is baked directly into the source-to-HEALPix
+            operator ``M`` (a.k.a. ``B`` in the accompanying paper) -- larger
+            source pixels contribute proportionally more to a HEALPix cell's
+            reconstructed value -- making the reconstruction a *conservative
+            rebinning* rather than a plain local average. The HEALPix side
+            needs no such weight since HEALPix cells are equal-area
+            (iso-surface) by construction. This does not by itself guarantee
+            *exact* global conservation (see ``resample(..., conservative=True)``
+            for that); it removes the local bias a plain unweighted average
+            would otherwise introduce.
+
+            - If omitted (``None``, the default) or ``"auto"``: the area is
+              estimated automatically from the grid's geometry, assuming
+              samples share latitude "rings" as in regular lat/lon grids or
+              reduced Gaussian grids (e.g. ECMWF's N-grids -- see
+              :func:`~healpix_resample.base.estimate_pixel_area`). If no such
+              structure is detected (e.g. a grid regular in a different
+              projection such as UTM, or scattered points), silently falls
+              back to a uniform weight of ``1.0`` per sample -- the same as
+              the current, unweighted behaviour.
+            - If an explicit array: used as-is (own convention/units; only
+              ratios matter).
         """
+        N = lon_deg.numel() if isinstance(lon_deg, torch.Tensor) else len(lon_deg)
+        if device is None:
+            dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            dev = torch.device(device)
+        radius = float(kwargs.get("radius", 6371000.0))
+
+        if area is None or (isinstance(area, str) and area == "auto"):
+            estimated = estimate_pixel_area(lon_deg, lat_deg, radius=radius)
+            if estimated is not None:
+                if verbose:
+                    print(
+                        "[PSFResampler] area not provided: auto-estimated from "
+                        "shared-latitude-ring grid structure."
+                    )
+                area_t = torch.as_tensor(estimated, dtype=dtype, device=dev)
+            else:
+                if verbose:
+                    print(
+                        "[PSFResampler] area not provided and no shared-latitude-ring "
+                        "structure detected: falling back to a uniform weight of 1.0 "
+                        "per sample."
+                    )
+                area_t = torch.ones(N, dtype=dtype, device=dev)
+        else:
+            area_t = area if isinstance(area, torch.Tensor) else torch.as_tensor(area)
+            area_t = area_t.to(dev, dtype=dtype).reshape(-1)
+            if area_t.numel() != N:
+                raise ValueError(
+                    f"area must have {N} elements (one per sample), got {area_t.numel()}"
+                )
+        # Set before super().__init__() -- KNeighborsResampler.__init__ calls
+        # comp_matrix() internally at construction time, and comp_matrix()
+        # (below) needs self.area to already exist.
+        self.area = area_t
+
         super().__init__(
             lon_deg=lon_deg,
             lat_deg=lat_deg,
@@ -208,22 +263,27 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             **kwargs,
         )
 
-        if area is None:
-            self.area = torch.ones(self.N, dtype=self.dtype, device=self.device)
-        else:
-            area_t = area if isinstance(area, torch.Tensor) else torch.as_tensor(area)
-            area_t = area_t.to(self.device, dtype=self.dtype).reshape(-1)
-            if area_t.numel() != self.N:
-                raise ValueError(
-                    f"area must have {self.N} elements (one per sample), got {area_t.numel()}"
-                )
-            self.area = area_t
-
     def comp_matrix(self):
         # --- weights per sample->cell link
         # w = exp(-2*d^2/sigma^2)
-        w = torch.exp((-2.0) * (self.d_m * self.d_m) / (self.sigma_m * self.sigma_m))
-        
+        w_raw = torch.exp((-2.0) * (self.d_m * self.d_m) / (self.sigma_m * self.sigma_m))
+
+        # Conservative rebinning: bake the native-grid (source) pixel area into
+        # the raw weights before normalization. Multiplying by self.area here
+        # (uniform 1.0 if not supplied -- see __init__) and letting M and MT
+        # both be built from these area-weighted raw weights, rather than only
+        # weighting M, is what keeps MT == the *unweighted* adjoint of M w.r.t.
+        # the plain (non-area) construction: the per-sample area factor cancels
+        # out of MT's own per-sample normalization algebraically (norm_row[i]
+        # gains a factor of area[i], which then divides back out), leaving MT
+        # unchanged while M becomes properly area-weighted -- exactly matching
+        # "the output HEALPix grid is iso-surface, only the input needs
+        # weighting". This also preserves the Dx-weighted adjoint relation
+        # MT = Dx @ M.T @ Dy^-1 (see conjugate_gradient()/least_squares_cg()),
+        # since that relation holds for *any* nonnegative raw weight matrix,
+        # area-weighted or not.
+        w = w_raw * self.area.unsqueeze(1)
+
         # Build (N,K) operator M and (K,N) operator MT.
         # We avoid numpy bincount; use torch.bincount on GPU.
 
@@ -234,14 +294,21 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # norm_col[k] = sum_{i links to k} w[i,k]
         flat_hi = self.hi.reshape(-1)
         flat_w = w.reshape(-1)
+        flat_w_raw = w_raw.reshape(-1)
         valid = flat_hi >= 0
         flat_hi_v = flat_hi[valid]
         flat_w_v = flat_w[valid]
+        flat_w_raw_v = flat_w_raw[valid]
 
         norm_col = torch.bincount(flat_hi_v, weights=flat_w_v, minlength=self.K).to(self.dtype)
+        # norm_col_raw: the *area-independent* accumulated weight per cell --
+        # used below (not norm_col) for the out_cell_ids support threshold, so
+        # `threshold`'s meaning ("enough kernel support") doesn't silently
+        # rescale with the units/magnitude of `area`.
+        norm_col_raw = torch.bincount(flat_hi_v, weights=flat_w_raw_v, minlength=self.K).to(self.dtype)
         # weight divided by column sum
         wM = flat_w_v / norm_col[flat_hi_v]
-        
+
         rowsM = idx.reshape(-1)[valid]
         colsM = flat_hi_v
         indicesM = torch.stack([rowsM, colsM], dim=0)
@@ -252,7 +319,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             device=self.device,
             dtype=self.dtype,
         ).coalesce()
-            
+
         # --- after initial M_coo = ... .coalesce()
 
         # -------- MT : (K,N) (normalized per row / per input sample)
@@ -260,6 +327,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         flat_idx = idx.reshape(-1)
         flat_idx_v = flat_idx[valid]
         norm_row = torch.bincount(flat_idx_v, weights=flat_w_v, minlength=self.N).to(self.dtype)
+        norm_row_raw = torch.bincount(flat_idx_v, weights=flat_w_raw_v, minlength=self.N).to(self.dtype)
         wMT = flat_w_v / norm_row[flat_idx_v]
             
         indicesMT = torch.stack([colsM, rowsM], dim=0)  # (hi, idx)
@@ -277,8 +345,11 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             cell_out_ids = getattr(self, "out_cell_ids", None)
 
         if cell_out_ids is not None:
-            # weak/empty columns in M (per output healpix cell k)
-            bad_k = torch.nonzero(norm_col <= self.threshold).reshape(-1)
+            # weak/empty columns in M (per output healpix cell k) -- compared
+            # against the area-independent raw weight sum, so `threshold`
+            # keeps its original meaning ("enough kernel support") regardless
+            # of the magnitude/units of `area`.
+            bad_k = torch.nonzero(norm_col_raw <= self.threshold).reshape(-1)
               
             if bad_k.numel() > 0:
                 
@@ -312,6 +383,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 add_rows, add_cols, add_vals = [], [], []
                 
                 # For each bad column, pick the closest source sample
+                fallback_area = []
                 for kb in range(len(bad_k)):
                     kb = int(kb)
                     # cosine similarity between all samples and the cell center
@@ -324,10 +396,14 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
                     # take top-Npt_fallback closest (largest dot = smallest angular distance)
                     topv, topi = torch.topk(dots, k=min(Npt_fallback, self.N), largest=False)
-                    
+
                     add_rows.append(topi.to(torch.long))
                     add_cols.append(torch.tensor(bad_k[kb:kb+1], dtype=torch.long))
                     add_vals.append(torch.ones([1], dtype=self.dtype,device=self.device))
+                    # this fallback column's raw weight is that single sample's
+                    # own area (consistent units with area-weighted norm_col
+                    # elsewhere), rather than a flat 1.0 -- see below.
+                    fallback_area.append(self.area[topi[0]])
 
                 add_rows = torch.cat(add_rows, dim=0)
                 add_cols = torch.cat(add_cols, dim=0)
@@ -347,16 +423,22 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 ).coalesce()
 
                 # These columns now carry a single raw (unnormalized) fallback
-                # link of weight 1.0 instead of their original (sub-threshold)
-                # Gaussian weight sum -- correct Dx (norm_col) to match, so it
-                # stays the true raw per-cell weight the CG solver below needs
-                # (see conjugate_gradient / least_squares_cg docstrings).
+                # link instead of their original (sub-threshold) weight sum --
+                # correct Dx (norm_col) to match: the area of the single
+                # sample used for the fallback link (matching the units of
+                # area-weighted norm_col elsewhere; falls back to 1.0 when
+                # area is uniform, same as before). See conjugate_gradient /
+                # least_squares_cg docstrings for how Dx is used.
                 norm_col = norm_col.clone()
-                norm_col[bad_k] = 1.0
+                norm_col[bad_k] = torch.stack(fallback_area)
 
             # do the same fo the transpose
-            # weak/empty columns in M (per output healpix cell k)
-            bad_k = torch.nonzero(norm_row <= self.threshold).reshape(-1)
+            # weak/empty columns in M (per output healpix cell k) -- again
+            # compared against the area-independent raw weight sum (norm_row
+            # and norm_row_raw only differ by each sample's own area factor,
+            # which cancels out of MT itself, but not out of a raw threshold
+            # comparison).
+            bad_k = torch.nonzero(norm_row_raw <= self.threshold).reshape(-1)
               
             if bad_k.numel() > 0:
                 
