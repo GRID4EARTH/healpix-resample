@@ -93,14 +93,17 @@ def conjugate_gradient(
         p = r + torch.einsum('k,ki->ki',beta,p)
         rs_old = rs_new
         if k%4==0 and verbose:
-            print('Itt %d : %.4g'%(k,rs_old))
+            # rs_old has one entry per batch row (shape (B,), or 0-d when B==1);
+            # print the worst-case (max) row so this works for both unbatched and
+            # batched (B>1) inputs.
+            print('Itt %d : %.4g'%(k, float(rs_old.max())))
 
     info = {
         "residual_norms": torch.stack(residual_norms),
         "niters": torch.tensor(len(residual_norms) - 1, device=b.device),
     }
     if verbose:
-        print('Final Itt %d : %.4g'%(k,rs_old))
+        print('Final Itt %d : %.4g'%(k, float(rs_old.max())))
     return x, info
 
 
