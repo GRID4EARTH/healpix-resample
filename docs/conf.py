@@ -92,7 +92,15 @@ autodoc_typehints = "none"
 
 # Suppress warnings for inherited methods in autosummary-generated pages
 nitpick_ignore_regex = [
-    (r"py:(obj|meth)", r"healpix_resample\.(\w+\.)*\w+\.(comp_matrix|get_cell_ids|invert|resample)"),
+    (r"py:(obj|meth)", r"healpix_resample\.(\w+\.)*\w+\.(comp_matrix|get_cell_ids|get_cell_area|invert|resample)"),
+]
+
+# Suppress warnings from napoleon's type-preprocessing trying (and failing) to
+# cross-reference freeform NumPy-style type descriptions used in docstrings,
+# e.g. "array-like" and "shape (N,)" -- these are not real Python types.
+nitpick_ignore = [
+    ("py:class", "array-like"),
+    ("py:class", "shape (N,)"),
 ]
 
 napoleon_numpy_docstring = True

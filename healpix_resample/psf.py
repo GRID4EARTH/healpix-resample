@@ -151,8 +151,8 @@ def least_squares_cg(M,
         x_ref  : (B, K)
         delta  : (B, K)
         weight : (K,) or None -- Dx, the per-cell weight columns of M were
-                 normalized by; None falls back to the (formally unjustified)
-                 Euclidean inner product.
+        normalized by; None falls back to the (formally unjustified)
+        Euclidean inner product.
     """
 
     # b = M^T y
