@@ -21,6 +21,7 @@ The main goals of the package are:
 -   Support different interpolation strategies:
     -   **Nearest-neighbor mapping**
     -   **PSF / multi-point weighted interpolation**
+    -   **Conservative (area-weighted, flux-preserving) mapping**
 -   Enable efficient handling of:
     -   Large numbers of input points
     -   Batched data `(B, N)`

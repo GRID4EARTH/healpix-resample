@@ -12,6 +12,7 @@ Resamplers
    healpix_resample.PSFResampler
    healpix_resample.CellPointResampler
    healpix_resample.GroupByResampler
+   healpix_resample.ConservativeResampler
 
 Base class
 ----------
@@ -40,6 +41,7 @@ Internals
 These functions are not part of the public API but are documented here for contributors.
 :func:`~healpix_resample.knn.healpix_weighted_nearest` is called internally by all resamplers to build the sparse operators.
 :func:`~healpix_resample.psf.conjugate_gradient` and :func:`~healpix_resample.psf.least_squares_cg` are used internally by :class:`~healpix_resample.PSFResampler`.
+:func:`~healpix_resample.base.estimate_pixel_area` is used by :class:`~healpix_resample.PSFResampler` to auto-estimate per-sample pixel area when ``area`` is not supplied.
 
 .. autosummary::
    :toctree: generated
@@ -47,3 +49,4 @@ These functions are not part of the public API but are documented here for contr
    healpix_resample.knn.healpix_weighted_nearest
    healpix_resample.psf.conjugate_gradient
    healpix_resample.psf.least_squares_cg
+   healpix_resample.base.estimate_pixel_area
