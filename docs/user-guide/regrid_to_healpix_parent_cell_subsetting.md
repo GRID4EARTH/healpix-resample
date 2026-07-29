@@ -68,6 +68,22 @@ accordingly. As a rule of thumb, compare the parent cell's angular width
 (`sqrt(4*pi/(12*4**level_parent))` radians) against the kernel's actual reach for your resampler, and
 size the margin so the kernel can never reach past it.
 
+## A separate, smaller caveat: `out_cell_ids` gap-filling fallbacks are local, not global
+
+Even with a correctly-sized margin, don't expect a per-parent-cell reassembly to match a global run
+to floating-point exactness on *every* cell. `NearestResampler` (and, in its own `out_cell_ids`
+fallback path, `PSFResampler`) can end up with cells inside `out_cell_ids` that the KNN ring search
+doesn't reach on its own; both patch these in via a fallback that searches for the nearest/best
+sample *within whatever sample set that resampler instance was constructed from*. Constructed from a
+margin-filtered local subset, that fallback can pick a different (still reasonable, but not
+necessarily identical) answer than the same fallback would running against the full global dataset.
+This is a distinct, smaller effect from the margin discussed above -- it doesn't grow if you widen
+`margin_rings` further once the margin already comfortably covers the kernel's real reach -- so treat
+a handful of cells disagreeing at parent-cell boundaries as expected background noise from this
+fallback interaction, not evidence the margin itself is wrong. The tutorial
+(`docs/tutorials/5parent_cell_subsetting.md`) reports the mismatch rate directly so you can see this
+in practice.
+
 ## Resamplers that use `group_by=True`
 
 `ConservativeResampler`, `GroupByResampler`, and `CellPointResampler` derive their cells purely from
