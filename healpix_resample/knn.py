@@ -406,7 +406,64 @@ class KNeighborsResampler(Generic[T_Array]):
             self.hi = hi.to(torch.long).to(self.device)               # (N,Npt) indices into cell_ids
             if Npt>1:
                 self.d_m = d.to(self.dtype).to(self.device)               # (N,Npt) meters
-        
+
+                # --- prune retained cells with zero actual sample links -----
+                # `healpix_weighted_nearest` decides which cells to *retain*
+                # (self.cell_ids) via a wide-radius (`ring_weight`) accumulated
+                # weight-sum threshold test, but separately searches each
+                # sample's own nearest `Npt` cells *among the retained set*
+                # using a different, narrower `ring_search_init`/
+                # `ring_search_max` radius. These two criteria are not
+                # guaranteed consistent: a cell can pass the wide-radius
+                # threshold test via many samples' small individual
+                # contributions while never actually being one of any single
+                # sample's own `Npt`-nearest retained cells. Such a cell ends
+                # up with zero (i, k) links in `self.hi` -- an entirely empty
+                # column once `comp_matrix()` builds the sparse `M`/`MT` -- so
+                # every resampler built on this class silently returns exactly
+                # `0.0` for it, for *any* input value (not just NaN). This was
+                # tracked down from the "all-NaN input produces some non-NaN
+                # cells" report in `planning/03_bilinear_nan_investigation.md`
+                # -- confirmed by direct investigation to be this, not a
+                # CSR/COO sparse-matmul NaN-propagation bug (both formats
+                # agree exactly, since neither has any stored entry for these
+                # columns to begin with).
+                #
+                # Only prune in the default (`out_cell_ids=None`)
+                # auto-discovery mode: if the caller explicitly requested a
+                # specific cell subset via `out_cell_ids`, don't silently drop
+                # any of it here. `PSFResampler` already has its own
+                # fallback-fill mechanism for weakly-supported `out_cell_ids`
+                # columns (see `psf.py:comp_matrix`'s `bad_k` handling); other
+                # resamplers' `out_cell_ids` gap is a separate, pre-existing
+                # limitation out of scope for this fix.
+                if self.out_cell_ids is None:
+                    K_before = int(self.cell_ids.numel())
+                    reachable = torch.zeros(K_before, dtype=torch.bool, device=self.device)
+                    valid_hi = self.hi[self.hi >= 0]
+                    if valid_hi.numel() > 0:
+                        reachable[valid_hi] = True
+
+                    n_orphaned = int((~reachable).sum())
+                    if n_orphaned > 0:
+                        if self.verbose:
+                            print(
+                                f"[KNeighborsResampler] dropping {n_orphaned:,} retained "
+                                f"cell(s) that passed the wide-neighbourhood 'threshold' "
+                                f"test but were never selected by any sample's own "
+                                f"Npt-nearest search (would otherwise silently read back "
+                                f"as 0.0 for any input)."
+                            )
+                        new_index = torch.full((K_before,), -1, dtype=torch.long, device=self.device)
+                        new_index[reachable] = torch.arange(
+                            int(reachable.sum()), device=self.device
+                        )
+
+                        self.cell_ids = self.cell_ids[reachable]
+                        self.hi = torch.where(
+                            self.hi >= 0, new_index[self.hi.clamp(min=0)], self.hi
+                        )
+
         self.K = int(self.cell_ids.numel())
                 
         self.N = int(lon_t.numel())
