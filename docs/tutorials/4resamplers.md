@@ -24,6 +24,8 @@ from healpix_resample import (
     PSFResampler,
     CellPointResampler,
     ConservativeResampler,
+    BitmaskResampler,
+    CategoricalResampler,
 )
 
 # Shared dataset: a small structured grid near the origin
@@ -154,4 +156,36 @@ print(f"Conservative — output cells: {res_cons.cell_data.shape[0]}")
 print(f"  sum(val*area)         = {flux_in:.6f}")
 print(f"  sum(hval)              = {flux_out:.6f}  (should equal the line above)")
 print(f"  sum(invert(hval)*area) = {flux_back:.6f}  (should equal the line above)")
+```
+
+### `CategoricalResampler`
+
+For mutually-exclusive class labels (issue [#43](https://github.com/GRID4EARTH/healpix-resample/issues/43)): resamples a one-hot indicator per class through `BilinearResampler` (by default) and picks the argmax per cell. `return_scores=True` also returns a softmax-normalized per-class confidence.
+
+```{code-cell} python
+# Three "land-cover" classes split by longitude tercile.
+land_cover = np.digitize(lon, np.quantile(lon, [1 / 3, 2 / 3])).astype(np.int64)
+
+nr_cat = CategoricalResampler(lon_deg=lon, lat_deg=lat, level=level)
+res_cat = nr_cat.resample(land_cover, return_scores=True)
+
+winner_score = res_cat.scores.max(axis=0)  # (K,) softmax score of the winning class per cell
+print(f"Categorical — output cells: {res_cat.cell_data.shape[0]}, classes found: {res_cat.classes}")
+print(f"Winning-class softmax score range: [{winner_score.min():.3f}, {winner_score.max():.3f}]")
+```
+
+### `BitmaskResampler`
+
+For independent, co-occurring boolean flags packed into an integer (e.g. an 8-bit quality/cloud mask): each bit is resampled and thresholded independently, then the bits are recombined.
+
+```{code-cell} python
+bit0 = (lon > np.median(lon)).astype(np.int64)   # e.g. "cloud" flag
+bit1 = (lat > np.median(lat)).astype(np.int64)   # e.g. "cloud-shadow" flag, independent of bit0
+quality_mask = bit0 | (bit1 << 1)
+
+nr_bitmask = BitmaskResampler(lon_deg=lon, lat_deg=lat, level=level, n_bits=2)
+res_bitmask = nr_bitmask.resample(quality_mask)
+
+print(f"Bitmask — output cells: {res_bitmask.cell_data.shape[0]}")
+print(f"Distinct output values: {sorted(set(res_bitmask.cell_data.tolist()))}  (subset of [0, 1, 2, 3])")
 ```

@@ -77,6 +77,12 @@ Gaussian kernel + conjugate gradient. Best quality.
 :link-type: doc
 Process one coarse HEALPix cell at a time for large-scale/global datasets.
 :::
+
+:::{grid-item-card} Mask-like / categorical data
+:link: regrid_to_healpix_mask
+:link-type: doc
+BitmaskResampler (independent flags) and CategoricalResampler (mutually-exclusive classes, argmax).
+:::
 ::::
 
 ```{toctree}
@@ -88,4 +94,5 @@ regrid_to_healpix_nearest
 regrid_to_healpix_bicubic
 regrid_to_healpix_psf
 regrid_to_healpix_parent_cell_subsetting
+regrid_to_healpix_mask
 ```
