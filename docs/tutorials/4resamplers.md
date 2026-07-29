@@ -20,6 +20,7 @@ import numpy as np
 from healpix_resample import (
     NearestResampler,
     BilinearResampler,
+    BicubicResampler,
     PSFResampler,
     CellPointResampler,
     ConservativeResampler,
@@ -61,6 +62,42 @@ res_bili = nr_bili.resample(val, lam=0.0)
 rval_bili = nr_bili.invert(res_bili.cell_data)
 mse_bili = np.mean((rval_bili - val) ** 2)
 print(f"Bilinear — output cells: {res_bili.cell_data.shape[0]}, MSE: {mse_bili:.2e}")
+```
+
+### `BicubicResampler`
+
+Uses the **16 nearest cells** with a radial generalization of Keys' cubic convolution kernel. Smoother/sharper than bilinear on fields with curvature, still a fixed non-iterative interpolation (no CG solve).
+
+```{code-cell} python
+nr_bicubic = BicubicResampler(lon_deg=lon, lat_deg=lat, level=level)
+res_bicubic = nr_bicubic.resample(val, lam=0.0)
+
+rval_bicubic = nr_bicubic.invert(res_bicubic.cell_data)
+mse_bicubic = np.mean((rval_bicubic - val) ** 2)
+print(f"Bicubic  — output cells: {res_bicubic.cell_data.shape[0]}, MSE: {mse_bicubic:.2e}")
+```
+
+### Conservative mode (`BilinearResampler` / `BicubicResampler`)
+
+Both resamplers above interpolate: each cell's value is renormalized against whichever samples happen to
+link to it, which does *not* guarantee the total is preserved. Passing `area=` and
+`resample(conservative=True)` switches to redistributing each sample's own value across its nearest cells
+instead, so the global total is conserved exactly (see `docs/user-guide/regrid_to_healpix_bilinear.md` for
+the full derivation — this is [issue #44](https://github.com/GRID4EARTH/healpix-resample/issues/44),
+"conservative bi-linear is missing").
+
+```{code-cell} python
+rng = np.random.default_rng(0)
+area = rng.uniform(0.5, 2.0, size=lon.shape)
+target = (val * area).sum()
+
+nr_bili_area = BilinearResampler(lon_deg=lon, lat_deg=lat, level=level, area=area)
+res_bili_interp = nr_bili_area.resample(val)                          # conservative=False (default)
+res_bili_cons = nr_bili_area.resample(val, conservative=True)
+
+print(f"Input               sum(val*area)            = {target:.6f}")
+print(f"Bilinear interpolating (conservative=False)   = {res_bili_interp.cell_data.sum():.6f}  (not expected to match)")
+print(f"Bilinear conservative  (conservative=True)     = {res_bili_cons.cell_data.sum():.6f}  (should match exactly)")
 ```
 
 ### `PSFResampler`

@@ -406,7 +406,64 @@ class KNeighborsResampler(Generic[T_Array]):
             self.hi = hi.to(torch.long).to(self.device)               # (N,Npt) indices into cell_ids
             if Npt>1:
                 self.d_m = d.to(self.dtype).to(self.device)               # (N,Npt) meters
-        
+
+                # --- prune retained cells with zero actual sample links -----
+                # `healpix_weighted_nearest` decides which cells to *retain*
+                # (self.cell_ids) via a wide-radius (`ring_weight`) accumulated
+                # weight-sum threshold test, but separately searches each
+                # sample's own nearest `Npt` cells *among the retained set*
+                # using a different, narrower `ring_search_init`/
+                # `ring_search_max` radius. These two criteria are not
+                # guaranteed consistent: a cell can pass the wide-radius
+                # threshold test via many samples' small individual
+                # contributions while never actually being one of any single
+                # sample's own `Npt`-nearest retained cells. Such a cell ends
+                # up with zero (i, k) links in `self.hi` -- an entirely empty
+                # column once `comp_matrix()` builds the sparse `M`/`MT` -- so
+                # every resampler built on this class silently returns exactly
+                # `0.0` for it, for *any* input value (not just NaN). This was
+                # tracked down from the "all-NaN input produces some non-NaN
+                # cells" report in `planning/03_bilinear_nan_investigation.md`
+                # -- confirmed by direct investigation to be this, not a
+                # CSR/COO sparse-matmul NaN-propagation bug (both formats
+                # agree exactly, since neither has any stored entry for these
+                # columns to begin with).
+                #
+                # Only prune in the default (`out_cell_ids=None`)
+                # auto-discovery mode: if the caller explicitly requested a
+                # specific cell subset via `out_cell_ids`, don't silently drop
+                # any of it here. `PSFResampler` already has its own
+                # fallback-fill mechanism for weakly-supported `out_cell_ids`
+                # columns (see `psf.py:comp_matrix`'s `bad_k` handling); other
+                # resamplers' `out_cell_ids` gap is a separate, pre-existing
+                # limitation out of scope for this fix.
+                if self.out_cell_ids is None:
+                    K_before = int(self.cell_ids.numel())
+                    reachable = torch.zeros(K_before, dtype=torch.bool, device=self.device)
+                    valid_hi = self.hi[self.hi >= 0]
+                    if valid_hi.numel() > 0:
+                        reachable[valid_hi] = True
+
+                    n_orphaned = int((~reachable).sum())
+                    if n_orphaned > 0:
+                        if self.verbose:
+                            print(
+                                f"[KNeighborsResampler] dropping {n_orphaned:,} retained "
+                                f"cell(s) that passed the wide-neighbourhood 'threshold' "
+                                f"test but were never selected by any sample's own "
+                                f"Npt-nearest search (would otherwise silently read back "
+                                f"as 0.0 for any input)."
+                            )
+                        new_index = torch.full((K_before,), -1, dtype=torch.long, device=self.device)
+                        new_index[reachable] = torch.arange(
+                            int(reachable.sum()), device=self.device
+                        )
+
+                        self.cell_ids = self.cell_ids[reachable]
+                        self.hi = torch.where(
+                            self.hi >= 0, new_index[self.hi.clamp(min=0)], self.hi
+                        )
+
         self.K = int(self.cell_ids.numel())
                 
         self.N = int(lon_t.numel())
@@ -552,5 +609,51 @@ class KNeighborsResampler(Generic[T_Array]):
         
     def get_cell_ids(self):
         return self.cell_ids.cpu().numpy()
-    
-  
+
+
+@torch.no_grad()
+def _conservative_resample(op: "KNeighborsResampler", val: T_Array, area: torch.Tensor) -> ResampleResults:
+    """Shared conservative-mode forward pass for KNN-based interpolating
+    resamplers (`BilinearResampler`, `BicubicResampler`) that build an
+    `M_cons` operator in their own `comp_matrix()` -- see either class's
+    `resample(conservative=True)` docstring for the full derivation and
+    guarantee. `op.M_cons` is `(N, K)`, with each row (source sample) summing
+    to exactly 1 (a partition of unity) for well-conditioned samples -- see
+    each caller's own comp_matrix()/docstring for when that can be only
+    approximate (e.g. BicubicResampler's signed-kernel floor).
+
+    Because `M_cons`'s per-sample normalization is fixed at construction
+    time (unlike `M`'s per-cell normalization, which implicitly assumes
+    every linked sample is present), zeroing a NaN sample's value *and*
+    excluding its area here is enough on its own to keep the exact identity
+
+        sum_k hval[k] == sum_i (valid i) val[i] * area[i]
+
+    with no separate renormalization step needed -- a cleaner NaN story
+    than the interpolation path's (see `KNeighborsResampler.resample()`'s
+    docstring for that caveat).
+    """
+    y = val if isinstance(val, torch.Tensor) else torch.as_tensor(val)
+    y = y.to(op.device, dtype=op.dtype)
+    squeezed = y.ndim == 1
+    if squeezed:
+        y = y.unsqueeze(0)  # (1, N)
+
+    nan_mask = torch.isnan(y)
+    valid = ~nan_mask
+    y_filled = torch.where(valid, y, torch.zeros_like(y))
+    row_has_data = valid.any(dim=-1)  # (B,)
+
+    weighted = y_filled * area  # (B, N), area (N,) broadcasts over rows
+    hval = weighted @ op.M_cons  # (B, K)
+    hval[~row_has_data] = float("nan")
+
+    cell_ids = op.cell_ids
+    if squeezed:
+        hval = hval.squeeze(0)
+    if not isinstance(val, torch.Tensor):
+        hval = hval.cpu().numpy()
+        cell_ids = cell_ids.cpu().numpy()
+
+    return ResampleResults(cell_data=hval, cell_ids=cell_ids)
+

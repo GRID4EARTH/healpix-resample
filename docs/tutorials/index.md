@@ -14,6 +14,12 @@ Learn to resample scattered point data onto a HEALPix grid in four steps.
 :link-type: doc
 Learn how four resampling methods compare in behaviour, accuracy, and speed on the same dataset.
 :::
+
+:::{grid-item-card} Parent-cell subsetting
+:link: 5parent_cell_subsetting
+:link-type: doc
+Process one coarse HEALPix cell at a time and verify the reassembled result matches a global run.
+:::
 ::::
 
 ```{toctree}
@@ -22,4 +28,5 @@ Learn how four resampling methods compare in behaviour, accuracy, and speed on t
 
 quickstart
 4resamplers
+5parent_cell_subsetting
 ```

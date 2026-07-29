@@ -60,10 +60,22 @@ result = nr.resample(val)  # runs on GPU
 Fastest option. One cell per sample, no interpolation.
 :::
 
+:::{grid-item-card} BicubicResampler
+:link: regrid_to_healpix_bicubic
+:link-type: doc
+16-point radial cubic-convolution interpolation. Smoother than bilinear, no CG solve.
+:::
+
 :::{grid-item-card} PSFResampler
 :link: regrid_to_healpix_psf
 :link-type: doc
 Gaussian kernel + conjugate gradient. Best quality.
+:::
+
+:::{grid-item-card} Parent-cell subsetting
+:link: regrid_to_healpix_parent_cell_subsetting
+:link-type: doc
+Process one coarse HEALPix cell at a time for large-scale/global datasets.
 :::
 ::::
 
@@ -73,5 +85,7 @@ Gaussian kernel + conjugate gradient. Best quality.
 
 regrid_to_healpix_bilinear
 regrid_to_healpix_nearest
+regrid_to_healpix_bicubic
 regrid_to_healpix_psf
+regrid_to_healpix_parent_cell_subsetting
 ```

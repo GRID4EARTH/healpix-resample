@@ -1,0 +1,137 @@
+# Processing one parent cell at a time (`subset_for_parent_cell`)
+
+`KNeighborsResampler.__init__` computes a `healpix_geo` indexing pass and a KNN neighbourhood search
+over **every** input sample up front, and `comp_matrix()` materializes sparse `(N, K)`/`(K, N)`
+operators sized to that same `N`. For a global dataset, that doesn't fit in memory (and isn't
+necessary) if you only want results for one region at a time.
+
+`healpix_resample.subset_for_parent_cell` restricts both sides of the problem to one coarse HEALPix
+"parent cell": the *output* cells (an exact, cheap lookup) and the *input* samples actually relevant
+to them (the expensive part, and the actual point of this helper).
+
+---
+
+## Why `out_cell_ids` alone doesn't solve this
+
+Every KNN-mode resampler already accepts an `out_cell_ids=` kwarg to restrict its *output*. But that
+restriction is applied only *after* the expensive part -- indexing and the neighbourhood search still
+run over the full, unfiltered input array. `subset_for_parent_cell` adds the missing piece: filtering
+the *input* down to a local subset before a resampler is ever constructed, so `N` in the constructor
+call is the local sample count, not the global one.
+
+## Usage
+
+```python
+from healpix_resample import PSFResampler, subset_for_parent_cell
+
+level_parent = 6   # coarse: nside = 64
+level = 20          # fine target resolution
+
+sample_idx, out_ids = subset_for_parent_cell(
+    lon, lat,
+    parent_cell_id=parent_id,
+    level_parent=level_parent,
+    level=level,
+)
+
+op = PSFResampler(lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=level, out_cell_ids=out_ids)
+result = op.resample(val[..., sample_idx])
+```
+
+Loop this over every parent cell at `level_parent` to process a full global dataset in bounded-memory
+chunks. Reassembling results from multiple parent cells into one global map is not something this
+function does for you -- it only makes *one* parent cell's computation tractable.
+
+## What it returns
+
+Deliberately **not** a filtered copy of `val` -- see "Why this returns an index" below.
+
+- `sample_idx`: an integer index into the sample axis -- samples whose own `level_parent` cell is
+  `parent_cell_id` itself, plus a `margin_rings`-neighbour buffer around it (see below). Index
+  `lon`/`lat` and any value array yourself: `lon[sample_idx]`, `val[..., sample_idx]` (the last-axis
+  indexing works whether `val` is `(N,)` or batched `(B, N)`).
+- `out_cell_ids`: the `level`-resolution cells contained in `parent_cell_id`
+  (`healpix_geo.*.zoom_to`), ready to pass straight into a KNN-mode resampler's `out_cell_ids=`.
+
+## Why this returns an index rather than filtered arrays
+
+`subset_for_parent_cell` doesn't take a `val` and doesn't hand back `lon_sub`/`lat_sub`/`val_sub`. A
+single `(lon, lat)` grid is very commonly shared by several different value arrays -- multiple
+variables, a time series over the same station network -- and which samples are relevant to
+`parent_cell_id` only depends on `lon`/`lat`, never on `val`. Returning a plain index lets you compute
+it once per grid and reuse it across every co-located array:
+
+```python
+sample_idx, out_ids = subset_for_parent_cell(lon, lat, parent_cell_id=parent_id, level_parent=6, level=20)
+
+lon_sub, lat_sub = lon[sample_idx], lat[sample_idx]
+temperature_sub = temperature[..., sample_idx]
+pressure_sub = pressure[..., sample_idx]
+```
+
+instead of recomputing the same geometric membership test once per variable.
+
+## The margin is a correctness guarantee, not a performance knob
+
+A sample can sit just outside `parent_cell_id`'s boundary, in a sibling `level_parent` cell, while
+still being close enough in the fine-`level` kernel sense (`sigma_m`/`threshold`) to legitimately
+contribute to a fine cell near the parent's edge. Filtering input strictly to "same parent cell id"
+would silently starve edge cells of legitimate neighbours -- a subtle bug that only shows up as
+slightly-degraded results near parent-cell boundaries, not as an error.
+
+`margin_rings` (default `1`) is measured in **fine-`level`** HEALPix rings, not `level_parent`
+rings: a sample is kept if its own `level` cell is within `margin_rings` rings of *any* fine cell
+inside `parent_cell_id` (i.e. of `out_cell_ids`, expanded via `healpix_geo.*.kth_neighbourhood` at
+`level`). This matters because a fine cell is typically vastly smaller than a parent cell --
+buffering by whole neighbouring *parent-level* cells instead (one ring already means "pull in every
+neighbouring parent cell in full") would keep a hugely disproportionate number of irrelevant samples
+relative to the resampler's actual kernel reach at `level`. This is a correctness guarantee, not just
+a performance knob: the margin must be wide enough that the resampler's actual kernel reach
+(`sigma_m` and the effective radius implied by `threshold`) can never extend past it, but sized at the
+*fine* scale the kernel actually operates at. `margin_rings=1` is very likely generous relative to a
+fine cell's own width, but this depends on *your* `sigma_m`/`threshold` choice, not on this function's
+defaults -- if you shrink `sigma_m` or loosen `threshold` enough that the kernel reaches past a
+handful of fine cells, increase `margin_rings` accordingly. As a rule of thumb, compare a fine cell's
+angular width (`sqrt(4*pi/(12*4**level))` radians) against the kernel's actual reach for your
+resampler, and size the margin so the kernel can never reach past it.
+
+## A separate, smaller caveat: `out_cell_ids` gap-filling fallbacks are local, not global
+
+Even with a correctly-sized margin, don't expect a per-parent-cell reassembly to match a global run
+to floating-point exactness on *every* cell. `NearestResampler` (and, in its own `out_cell_ids`
+fallback path, `PSFResampler`) can end up with cells inside `out_cell_ids` that the KNN ring search
+doesn't reach on its own; both patch these in via a fallback that searches for the nearest/best
+sample *within whatever sample set that resampler instance was constructed from*. Constructed from a
+margin-filtered local subset, that fallback can pick a different (still reasonable, but not
+necessarily identical) answer than the same fallback would running against the full global dataset.
+This is a distinct, smaller effect from the margin discussed above -- it doesn't grow if you widen
+`margin_rings` further once the margin already comfortably covers the kernel's real reach -- so treat
+a handful of cells disagreeing at parent-cell boundaries as expected background noise from this
+fallback interaction, not evidence the margin itself is wrong. The tutorial
+(`docs/tutorials/5parent_cell_subsetting.md`) reports the mismatch rate directly so you can see this
+in practice.
+
+## Resamplers that use `group_by=True`
+
+`ConservativeResampler`, `GroupByResampler`, and `CellPointResampler` derive their cells purely from
+the samples actually present in the (already margin-filtered) input -- they have no KNN neighbourhood
+search and no `out_cell_ids` intersection logic to hook into:
+
+- `ConservativeResampler` raises `NotImplementedError` if you pass `out_cell_ids` at all.
+- `GroupByResampler`/`CellPointResampler` silently store but never use it (no error, no effect).
+
+For these classes, use only `sample_idx` from `subset_for_parent_cell` to slice `lon`/`lat`/`val`
+yourself, and do **not** pass its `out_cell_ids` to their constructors -- the set of cells they produce
+is simply whatever the filtered input actually hits.
+
+```python
+from healpix_resample import ConservativeResampler, subset_for_parent_cell
+
+sample_idx, _out_ids_unused = subset_for_parent_cell(
+    lon, lat, parent_cell_id=parent_id, level_parent=6, level=20,
+)
+op = ConservativeResampler(
+    lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=20, area=area[sample_idx]
+)
+result = op.resample(val[..., sample_idx])
+```

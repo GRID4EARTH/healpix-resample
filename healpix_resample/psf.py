@@ -183,6 +183,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         sigma_m=None,
         threshold: float = 0.1,
         area: Optional[T_Array] = None,
+        fill_missing_out_cells: bool = False,
         **kwargs,
     ):
         """
@@ -190,6 +191,31 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
         Parameters
         ----------
+        fill_missing_out_cells : bool
+            Only relevant when ``out_cell_ids`` is supplied. Some requested
+            output cells can end up with too little real kernel support (an
+            empty or near-empty column of ``M``, or -- separately -- some
+            input samples with too little real link weight in ``MT``) --
+            e.g. when ``out_cell_ids`` force-includes cells the KNN search
+            wouldn't have retained on its own. This originated as a targeted
+            patch for a specific use case (river mouths in ocean models,
+            where an approximate value was preferred over a gap), but the
+            fallback it triggers is expensive: an unvectorized Python loop
+            computing a full distance search per affected cell/sample
+            (``comp_matrix``'s ``bad_k`` handling), which can be very slow
+            for more than a handful of affected cells -- exactly the
+            situation you can hit when combining ``out_cell_ids`` with
+            :func:`~healpix_resample.subset_for_parent_cell`.
+
+            - ``False`` (the default): skip that fallback entirely. Output
+              cells that don't have enough real support are left as ``nan``
+              in ``resample()``'s result rather than filled with an
+              approximate nearest-single-sample value -- correct, and fast.
+            - ``True``: restore the original fallback-fill behaviour exactly
+              (approximate but non-NaN values for weakly-supported cells).
+              Opt into this only if you specifically need a value rather
+              than a gap for those cells, and can tolerate the extra
+              construction cost when many cells/samples are affected.
         area : array-like, "auto", or None
             Per-sample pixel area/weight of the *native* (source) grid, shape
             ``(N,)``. This is baked directly into the source-to-HEALPix
@@ -248,8 +274,10 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 )
         # Set before super().__init__() -- KNeighborsResampler.__init__ calls
         # comp_matrix() internally at construction time, and comp_matrix()
-        # (below) needs self.area to already exist.
+        # (below) needs self.area and self.fill_missing_out_cells to already
+        # exist.
         self.area = area_t
+        self.fill_missing_out_cells = bool(fill_missing_out_cells)
 
         super().__init__(
             lon_deg=lon_deg,
@@ -347,15 +375,31 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         if cell_out_ids is None:
             cell_out_ids = getattr(self, "out_cell_ids", None)
 
+        # Uncomputable output cells (requested via out_cell_ids but with too
+        # little real kernel support to trust): resample() forces these to
+        # NaN, unless fill_missing_out_cells=True restores the old
+        # approximate-fallback behaviour instead. None when there's nothing
+        # to flag (no out_cell_ids, or every requested cell has enough
+        # support).
+        self.uncomputable_out_cells = None
+
         if cell_out_ids is not None:
             # weak/empty columns in M (per output healpix cell k) -- compared
             # against the area-independent raw weight sum, so `threshold`
             # keeps its original meaning ("enough kernel support") regardless
             # of the magnitude/units of `area`.
             bad_k = torch.nonzero(norm_col_raw <= self.threshold).reshape(-1)
-              
-            if bad_k.numel() > 0:
-                
+
+            if bad_k.numel() > 0 and not self.fill_missing_out_cells:
+                # Fast path (default): don't run the expensive per-cell
+                # fallback below at all. Leave these columns exactly as
+                # computed (weak or empty) and record them so resample()
+                # can force their output to nan -- see
+                # fill_missing_out_cells's docstring in __init__.
+                self.uncomputable_out_cells = bad_k.clone()
+
+            if bad_k.numel() > 0 and self.fill_missing_out_cells:
+
                 # Require geometry buffers (unit vectors)
                 if (not hasattr(self, "xyz_samples")) or (not hasattr(self, "xyz_cells")):
                     raise RuntimeError(
@@ -435,16 +479,20 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 norm_col = norm_col.clone()
                 norm_col[bad_k] = torch.stack(fallback_area)
 
-            # do the same fo the transpose
-            # weak/empty columns in M (per output healpix cell k) -- again
-            # compared against the area-independent raw weight sum (norm_row
-            # and norm_row_raw only differ by each sample's own area factor,
+            # do the same for the transpose
+            # weak/empty rows in MT (per input sample) -- again compared
+            # against the area-independent raw weight sum (norm_row and
+            # norm_row_raw only differ by each sample's own area factor,
             # which cancels out of MT itself, but not out of a raw threshold
-            # comparison).
+            # comparison). This is a *sample*-side concern (affects
+            # invert()), unrelated to which output cells resample() can
+            # compute -- so it's gated by the same fill_missing_out_cells
+            # flag (same expensive-fallback tradeoff) but doesn't feed
+            # uncomputable_out_cells.
             bad_k = torch.nonzero(norm_row_raw <= self.threshold).reshape(-1)
-              
-            if bad_k.numel() > 0:
-                
+
+            if bad_k.numel() > 0 and self.fill_missing_out_cells:
+
                 # Require geometry buffers (unit vectors)
                 if (not hasattr(self, "xyz_samples")) or (not hasattr(self, "xyz_cells")):
                     raise RuntimeError(
@@ -551,6 +599,57 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 total area-integrated quantity. See ``area`` in ``__init__``.
                 Off by default -- does not change existing behaviour.
 
+        NaN handling
+        ------------
+        NaN-valued samples in ``val`` are filtered out *before* the CG solve,
+        not masked from the output afterwards. This matters specifically for
+        ``PSFResampler``: ``least_squares_cg``/``conjugate_gradient`` compute
+        ``alpha``/``beta`` from ``_wdot``, a sum over *all* K cells for each
+        batch row (see ``conjugate_gradient`` docstring). A single unfiltered
+        NaN sample would make ``x_ref = y @ M`` (and everything derived from
+        it) NaN in every cell whose support includes that sample, and the
+        very first ``_wdot`` reduction would then turn the CG update for the
+        *entire* batch row into NaN -- not just the cells near the bad
+        sample, unlike ``BilinearResampler``/``NearestResampler``.
+
+        Concretely: NaN samples are replaced by ``0`` (per batch row) before
+        computing ``x_ref`` and before entering the CG solve. This correctly
+        removes the sample's *value* contribution, but -- because ``self.M``'s
+        columns are pre-normalized at construction time against *all* samples
+        that can reach a cell (``comp_matrix``'s ``norm_col``, fixed at
+        construction, independent of any particular call's NaNs) -- a
+        zeroed-but-still-linked NaN sample still counts in that
+        normalization's denominator. The surviving samples' effective weight
+        in an affected cell is therefore slightly diluted rather than the
+        NaN sample being truly excluded from the local average. This is a
+        deliberate trade-off (see ``planning/02_psf_nan_filtering.md``):
+        cheap and requires no changes to the precomputed sparse operators,
+        at the cost of a small residual bias that only matters for large,
+        spatially-contiguous NaN regions rather than scattered/occasional
+        NaNs. If that bias turns out to matter for your data, restricting
+        the input to the valid samples' own KNN operator (rebuilding
+        ``self.M``/``self.MT``) would be the exact fix, at the cost of
+        rebuilding the sparse operators per call.
+
+        Batch rows where *every* sample is NaN are handled separately: they
+        are excluded from the CG solve entirely (rather than relying on the
+        ``0/0`` that an all-zero row would otherwise produce inside
+        ``conjugate_gradient``, which is not guaranteed to resolve to NaN
+        without corrupting the shared, all-rows-at-once stopping criteria
+        computed via ``torch.max(...)`` there) and their ``hval`` row is set
+        directly to ``nan``. ``cg_residual_norms``/``cg_niters`` reflect only
+        the rows that actually went through a CG solve; if every row is
+        all-NaN, ``cg_niters`` is ``0`` and ``cg_residual_norms`` is ``nan``.
+
+        Uncomputable ``out_cell_ids`` cells also read as NaN by default
+        --------------------------------------------------------------------
+        Separately from sample-side NaN handling above: if this instance was
+        constructed with ``out_cell_ids`` and ``fill_missing_out_cells=False``
+        (the default), any requested cell with too little real kernel
+        support is forced to ``nan`` here, for every batch row, rather than
+        filled with an approximate value -- see ``fill_missing_out_cells`` in
+        ``__init__``.
+
         Returns:
             hval: (B,K) or (K,)
             (optional) info: CG information dict
@@ -562,65 +661,110 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             clean_shape=True
             y = y[None, :]
 
-        # reference field (B,K)
-        x_ref = y @ self.M
-        
+        # --- NaN filtering (see "NaN handling" in the docstring above) -----
+        nan_mask = torch.isnan(y)
+        valid = ~nan_mask
+        y_filled = torch.where(valid, y, torch.zeros_like(y))
+
+        # Rows with no valid sample at all can't go through the shared CG
+        # loop (its stopping criteria are computed across all batch rows at
+        # once -- see conjugate_gradient()); exclude them up front and patch
+        # NaN back in afterwards instead.
+        row_has_data = valid.any(dim=-1)                      # (B,)
+        B = y.shape[0]
+
+        # reference field (B,K) -- from the NaN-filled input, so a bad
+        # sample only zeroes its own (normalized) contribution instead of
+        # poisoning x_ref with NaN.
+        x_ref = y_filled @ self.M
+
         if x0 is None:
             x0 = torch.zeros_like(x_ref)
         else:
             x0 = x0.to(self.device, dtype=self.dtype)
 
-        delta, info = least_squares_cg(
-            M=self.M,
-            MT=self.MT,
-            y=y,
-            x_ref=x_ref,
-            x0=x0,
-            max_iter=max_iter,
-            tol=tol,
-            damp=float(lam),
-            verbose=self.verbose,
-            weight=self.cell_weight,
-        )
-        
-        hval = delta + x_ref
+        hval = torch.full_like(x_ref, float("nan"))
+        cg_residual_norms = torch.full((1, B), float("nan"), device=self.device, dtype=self.dtype)
+        cg_niters = torch.tensor(0, device=self.device)
 
-        if conservative:
-            # Single scalar equality constraint sum_k(hval_k) == F_target, with
-            # F_target chosen so the constraint is equivalent to conserving
-            # sum(val*area) (HEALPix cells being equal-area, this reduces to
-            # matching the area-weighted input mean -- see resample() docstring).
-            #
-            # Minimum-Dx-distortion correction from the KKT system of the
-            # *constrained* weighted least-squares problem (constraint
-            # appended to Eq. for delta, not a post-hoc projection of the
-            # unconstrained delta): with c = 1_K and Dx = diag(cell_weight),
-            # the correction direction is w = H^-1 (Dx^-1 c), NOT H^-1 c --
-            # i.e. the extra CG solve below must use a Dx^-1-weighted
-            # right-hand side, or the result satisfies the constraint but is
-            # *not* the minimum-distortion correction the derivation claims.
-            area = self.area
-            target_mean = (y * area[None, :]).sum(dim=-1, keepdim=True) / area.sum()  # (B,1)
-            F_target = target_mean * self.K                                            # (B,1)
+        if bool(row_has_data.any()):
+            sel = torch.nonzero(row_has_data, as_tuple=False).reshape(-1)
+            y_sel = y_filled[sel]
+            x_ref_sel = x_ref[sel]
+            x0_sel = x0[sel]
 
-            def _Hmv(v: torch.Tensor) -> torch.Tensor:
-                return (v @ self.MT) @ self.M + float(lam) * v
+            delta, info = least_squares_cg(
+                M=self.M,
+                MT=self.MT,
+                y=y_sel,
+                x_ref=x_ref_sel,
+                x0=x0_sel,
+                max_iter=max_iter,
+                tol=tol,
+                damp=float(lam),
+                verbose=self.verbose,
+                weight=self.cell_weight,
+            )
 
-            dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
-            w, _ = conjugate_gradient(
-                A_mv=_Hmv, b=dxinv_c, max_iter=max_iter, tol=tol,
-                verbose=False, weight=self.cell_weight,
-            )                                                                          # (1,K)
+            hval[sel] = delta + x_ref_sel
+            cg_residual_norms = info["residual_norms"]  # (iters+1, len(sel)) -- valid rows only
+            cg_niters = info["niters"]
 
-            mu = (F_target - hval.sum(dim=-1, keepdim=True)) / w.sum()                 # (B,1)
-            hval = hval + mu * w                                                       # (B,K)
+            if conservative:
+                # Single scalar equality constraint sum_k(hval_k) == F_target, with
+                # F_target chosen so the constraint is equivalent to conserving
+                # sum(val*area) (HEALPix cells being equal-area, this reduces to
+                # matching the area-weighted input mean -- see resample() docstring).
+                # NaN samples are excluded from both the numerator and the
+                # area normalization -- otherwise a NaN sample's area would
+                # still count towards "total area" while contributing 0 to
+                # the weighted sum, silently biasing target_mean downward.
+                #
+                # Minimum-Dx-distortion correction from the KKT system of the
+                # *constrained* weighted least-squares problem (constraint
+                # appended to Eq. for delta, not a post-hoc projection of the
+                # unconstrained delta): with c = 1_K and Dx = diag(cell_weight),
+                # the correction direction is w = H^-1 (Dx^-1 c), NOT H^-1 c --
+                # i.e. the extra CG solve below must use a Dx^-1-weighted
+                # right-hand side, or the result satisfies the constraint but is
+                # *not* the minimum-distortion correction the derivation claims.
+                area = self.area
+                valid_sel = valid[sel]                                                     # (S,N)
+                area_b = area[None, :].expand(valid_sel.shape[0], -1)
+                area_valid_sum = (area_b * valid_sel).sum(dim=-1, keepdim=True)             # (S,1)
+                target_mean = (y_sel * area_b).sum(dim=-1, keepdim=True) / area_valid_sum   # (S,1)
+                F_target = target_mean * self.K                                             # (S,1)
+
+                def _Hmv(v: torch.Tensor) -> torch.Tensor:
+                    return (v @ self.MT) @ self.M + float(lam) * v
+
+                dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
+                w, _ = conjugate_gradient(
+                    A_mv=_Hmv, b=dxinv_c, max_iter=max_iter, tol=tol,
+                    verbose=False, weight=self.cell_weight,
+                )                                                                          # (1,K)
+
+                mu = (F_target - hval[sel].sum(dim=-1, keepdim=True)) / w.sum()             # (S,1)
+                hval[sel] = hval[sel] + mu * w                                              # (S,K)
+
+        # Force nan for output cells flagged as uncomputable at construction
+        # time (out_cell_ids-requested cells with too little real kernel
+        # support -- see fill_missing_out_cells in __init__). Applied last,
+        # after the CG solve and any conservative correction: those cells'
+        # CG-produced values (if any) are not meaningful regardless of what
+        # the solve happened to converge to, and applying this before the
+        # conservative correction would let a handful of nan cells poison
+        # every other cell's correction via hval[sel].sum(). Note this means
+        # conservative=True's global constraint is still computed *including*
+        # these cells' (pre-nan) contribution -- a known, minor interaction
+        # this flag doesn't attempt to fully resolve.
+        if self.uncomputable_out_cells is not None and self.uncomputable_out_cells.numel() > 0:
+            hval[:, self.uncomputable_out_cells] = float("nan")
 
         if val is not None and val.ndim == 1:
             hval = hval[0]
 
         cell_ids = self.cell_ids
-        cg_residual_norms = info["residual_norms"]
-        cg_niters = info["niters"]
 
         if not isinstance(val, torch.Tensor):
             hval= hval.cpu().numpy()
