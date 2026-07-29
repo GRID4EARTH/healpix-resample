@@ -1,7 +1,7 @@
 # healpix-resample
 
 
-[`healpix-resample`](https://eopf-dggs.github.io/healpix-resample) is a lightweight Python package designed to regrid
+[`healpix-resample`](https://grid4earth.eu/healpix-resample/) is a lightweight Python package designed to regrid
 data defined on longitude--latitude coordinates onto a HEALPix
 grid.
 
