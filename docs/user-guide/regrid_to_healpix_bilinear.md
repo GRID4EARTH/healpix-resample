@@ -1,89 +1,81 @@
-# `healpix_resample.bilinear` (bilinear lon/lat interpolation to HEALPix)
+# `healpix_resample.bilinear` (`BilinearResampler`)
 
-`healpix_resample.bilinear` is intended to provide a **bilinear interpolation** operator from gridded or locally
-grid-like longitude/latitude data onto a HEALPix grid.
-
-Conceptually, bilinear interpolation uses the **four surrounding grid points** around each target location and
-interpolates with weights proportional to the fractional position inside the cell.
-
-This module is useful when:
-- the original data are defined on a **structured lon/lat grid** (regular or curvilinear),
-- you want a result smoother than nearest-neighbour but cheaper than a wide PSF kernel.
-
-> Note on geodesy: the package is intended to manage the **HEALPix authalic definition** and the Earth ellipsoid
-> with **WGS84** through its geometry helper.
-
----
-
-## What “bilinear” means here
-
-For each target HEALPix cell center (or each sample position mapped to HEALPix), the operator:
-
-1. Locates the surrounding lon/lat grid cell.
-2. Computes fractional offsets `(fx, fy)` inside the cell.
-3. Combines the four corner values with weights:
-   - `(1-fx)(1-fy)`, `fx(1-fy)`, `(1-fx)fy`, `fx fy`.
-
-This yields a **continuous** interpolation on the lon/lat grid (but still limited by the grid resolution).
-
----
-
-## Expected interface (recommended)
-
-A practical, PyTorch-friendly design is:
-
-- `Set(...)` builds the sparse weights (4 contributions per target).
-- `fit(val)` maps lon/lat grid values → HEALPix subset.
-- `resample(hval)` maps HEALPix subset → target/sample locations (optional, depending on your needs).
-
-### Suggested constructor
+`BilinearResampler` regrids unstructured longitude/latitude samples onto a HEALPix grid using the
+**4 nearest retained cells** per sample, weighted by inverse geodesic distance. It sits at the cheap,
+non-iterative end of the package's resampler family: smoother than `NearestResampler` (which just
+assigns each sample to a single cell), cheaper than `BicubicResampler` (16 neighbours) or
+`PSFResampler` (a full CG-solved inverse problem).
 
 ```python
-from healpix_resample.bilinear import BilinearResampler
+from healpix_resample import BilinearResampler
 
-op = Set(
-    lon2d=lon2d,          # (Ny, Nx) grid longitudes (deg)
-    lat2d=lat2d,          # (Ny, Nx) grid latitudes  (deg)
-    level=level,          # HEALPix level
-    device="cuda",
-    dtype=torch.float32,
-    nest=True,
-)
+op = BilinearResampler(lon_deg=lon, lat_deg=lat, level=level)
+res = op.resample(val)
+hval, cell_ids = res.cell_data, res.cell_ids
 ```
 
-### Suggested inputs
-
-- **`lon2d, lat2d`**: 2D lon/lat describing the grid (regular or curvilinear).
-- **`level`**: HEALPix level (`nside = 2**level`).
-- **`nest`**: HEALPix indexing scheme.
-- **`device, dtype`**: torch placement and numerical type.
+`BilinearResampler` is a thin subclass of `KNeighborsResampler` with `Npt=4` fixed; it accepts every
+constructor argument `KNeighborsResampler`/`PSFResampler` do (`out_cell_ids`, `threshold`, `sigma_m`,
+`nest`, `ellipsoid`, `device`, `dtype`, `verbose`, ...) except the ones that are PSF-specific
+(`area`, `fill_missing_out_cells`, CG parameters).
 
 ---
 
-## Sparse operator structure (typical)
+## Weighting
 
-If you build an operator from `Ng = Ny*Nx` grid points to `K` kept HEALPix pixels:
+For each sample, the 4 nearest cells (among those retained by `threshold`) are combined with inverse
+distance weights:
 
-- **`M`**: `(Ng, K)` (or `(K, Ng)` depending on your convention)
-- Exactly **4 non-zeros per target** (per HEALPix pixel / per sample), for bilinear weights.
+```
+w = 1 / (eps + d_m / sigma_m)
+```
 
-This makes bilinear interpolation:
-- **much smoother than nearest**
-- still **very sparse and fast**
-
----
-
-## Notes and practical tips
-
-- Bilinear assumes the field is locally well represented by **planar interpolation** in lon/lat coordinates.
-  - Near the poles or across the dateline, you may need special handling (wrapping / local tangent plane).
-- For curvilinear grids, bilinear interpolation requires a robust way to find the enclosing cell.
-- If your sampling is highly irregular, the PSF method may be more stable than bilinear.
+where `d_m` is the geodesic distance (meters) to each candidate cell center and `sigma_m` is the
+same length scale used elsewhere in the package (`sqrt(4*pi/(12*4**level)) * R` by default). This is
+a fixed, non-iterative interpolation -- no CG solve, unlike `PSFResampler`.
 
 ---
 
-## Status
+## NaN handling and "orphaned" cells
 
-If `healpix_resample.bilinear` is not yet implemented in the repository, this document describes the intended
-behavior and a recommended public API. Once the class exists, you can update this file to match the actual
-parameters and method names.
+`resample()`'s NaN-sample filtering follows the same pattern as the other KNN-mode resamplers: a
+NaN-valued sample only affects the (up to 4) cells it actually links to, not the whole output.
+
+A separate, more subtle failure mode -- and the direct cause of cells silently reading back as
+exactly `0.0` (not `nan`) on otherwise perfectly finite input -- was fixed at the `KNeighborsResampler`
+base class level and applies to `BilinearResampler` automatically:
+
+- Which cells get **retained** (`cell_ids`) is decided by a wide-neighbourhood accumulated-weight
+  threshold test.
+- Which cells each **sample actually links to** is decided separately, by a narrower per-sample
+  nearest-`Npt` search among the retained cells.
+- These two criteria are not guaranteed consistent: a cell can pass the wide threshold test (many
+  samples each contributing a small amount) while never being one of any single sample's own
+  4-nearest retained cells -- leaving it an entirely empty column in `M`. Before the fix, such a
+  column read back as exactly `0.0` for *any* input, including all-NaN input, which is what made
+  this look like a NaN-propagation bug rather than a cell-retention inconsistency.
+
+This is now fixed by pruning such "orphaned" cells out of `cell_ids` at construction time (when
+`out_cell_ids` is not explicitly supplied) -- see `KNeighborsResampler.__init__` in `knn.py` and
+`tests/test_bilinear.py` (`test_no_orphaned_cells_in_M`,
+`test_all_nan_input_on_finite_data_is_not_silently_zero`) for the full write-up and regression
+coverage. In practice this means: a handful of cells near the edge of well-covered regions, or at
+target resolutions much finer than your input sampling density, can legitimately be absent from
+`cell_ids` -- treat "not in `cell_ids`" as no-data (e.g. `nan`-fill when reassembling into a full
+grid), rather than expecting every geometrically-plausible cell to appear.
+
+If you're seeing more missing/no-data cells than expected at a given `level`, that's often a sign
+the *target* resolution is finer than the input sampling can genuinely support there -- try a
+coarser `level`, or switch to `PSFResampler`, which handles sparse/irregular coverage more robustly
+via its iterative solve.
+
+---
+
+## Practical tips
+
+- Bilinear assumes the 4 nearest retained cells are a reasonable local neighbourhood for
+  interpolation. On sparse or highly irregular sampling, prefer `PSFResampler`.
+- Near the poles or across the dateline, the geodesic-distance weighting handles wrap-around
+  correctly (no special-casing needed, unlike planar bilinear on a lon/lat array).
+- See `docs/tutorials/4resamplers.md` for a runnable side-by-side comparison against the other
+  resamplers on the same dataset.
