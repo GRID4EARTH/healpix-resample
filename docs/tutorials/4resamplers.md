@@ -20,6 +20,7 @@ import numpy as np
 from healpix_resample import (
     NearestResampler,
     BilinearResampler,
+    BicubicResampler,
     PSFResampler,
     CellPointResampler,
     ConservativeResampler,
@@ -61,6 +62,19 @@ res_bili = nr_bili.resample(val, lam=0.0)
 rval_bili = nr_bili.invert(res_bili.cell_data)
 mse_bili = np.mean((rval_bili - val) ** 2)
 print(f"Bilinear — output cells: {res_bili.cell_data.shape[0]}, MSE: {mse_bili:.2e}")
+```
+
+### `BicubicResampler`
+
+Uses the **16 nearest cells** with a radial generalization of Keys' cubic convolution kernel. Smoother/sharper than bilinear on fields with curvature, still a fixed non-iterative interpolation (no CG solve).
+
+```{code-cell} python
+nr_bicubic = BicubicResampler(lon_deg=lon, lat_deg=lat, level=level)
+res_bicubic = nr_bicubic.resample(val, lam=0.0)
+
+rval_bicubic = nr_bicubic.invert(res_bicubic.cell_data)
+mse_bicubic = np.mean((rval_bicubic - val) ** 2)
+print(f"Bicubic  — output cells: {res_bicubic.cell_data.shape[0]}, MSE: {mse_bicubic:.2e}")
 ```
 
 ### `PSFResampler`
