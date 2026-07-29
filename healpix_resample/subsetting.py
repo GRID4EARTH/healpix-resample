@@ -105,9 +105,9 @@ def subset_for_parent_cell(
     ----------
     lon_deg, lat_deg : array-like, shape (N,)
         Full input sample coordinates in degrees.
-    val : array-like, shape (N,) or (B, N)
-        Full input values, filtered along the last axis in lockstep with
-        `lon_deg`/`lat_deg`.
+    val : array-like
+        Full input values, shape ``(N,)`` or batched ``(B, N)``, filtered
+        along the last axis in lockstep with `lon_deg`/`lat_deg`.
     parent_cell_id : int
         HEALPix cell id at `level_parent` to restrict processing to.
     level_parent : int
