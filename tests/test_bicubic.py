@@ -241,3 +241,80 @@ def test_no_nan_or_inf_in_operators(small_grid):
 
     assert torch.isfinite(op.M.values()).all()
     assert torch.isfinite(op.MT.values()).all()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# conservative=True (issue #44: "conservative bi-linear is missing", applied
+# to bicubic too) -- same guarantee and construction as
+# BilinearResampler.resample(conservative=True): sum_k hval[k] == sum_i
+# (valid i) val[i] * area[i]. Tolerances here are non-zero (unlike an exact
+# equality check) because Keys' kernel is signed: `_floor_signed` can, for a
+# rare pathologically-cancelled sample, make that sample's row in M_cons sum
+# to only approximately (not bit-exactly) 1 -- see resample()'s docstring.
+# On this suite's dense, well-conditioned grid that shouldn't actually bite,
+# but the assertions are written to tolerate it rather than assume it away.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_conservative_false_is_default_and_unchanged(small_grid):
+    lon, lat = small_grid
+    val = lon
+    op = BicubicResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False)
+
+    res_default = op.resample(val)
+    res_explicit = op.resample(val, conservative=False)
+
+    np.testing.assert_array_equal(res_default.cell_data, res_explicit.cell_data)
+
+
+def test_conservative_conserves_sum_uniform_area(small_grid):
+    lon, lat = small_grid
+    lon_rad, lat_rad = np.deg2rad(lon), np.deg2rad(lat)
+    val = np.sin(lon_rad) * np.cos(lat_rad)
+    op = BicubicResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False)
+
+    res = op.resample(val, conservative=True)
+
+    np.testing.assert_allclose(float(np.sum(res.cell_data)), float(np.sum(val)), rtol=1e-3, atol=1e-6)
+
+
+def test_conservative_conserves_sum_with_area(small_grid):
+    lon, lat = small_grid
+    lon_rad, lat_rad = np.deg2rad(lon), np.deg2rad(lat)
+    val = np.sin(lon_rad) * np.cos(lat_rad)
+    rng = np.random.default_rng(0)
+    area = rng.uniform(0.5, 2.0, size=lon.shape)
+
+    op = BicubicResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False, area=area)
+    res = op.resample(val, conservative=True)
+
+    expected = float(np.sum(val * area))
+    np.testing.assert_allclose(float(np.sum(res.cell_data)), expected, rtol=1e-3, atol=1e-6)
+
+
+def test_conservative_excludes_nan_sample_and_stays_finite(small_grid):
+    lon, lat = small_grid
+    lon_rad, lat_rad = np.deg2rad(lon), np.deg2rad(lat)
+    val = np.sin(lon_rad) * np.cos(lat_rad)
+    bad_idx = len(lon) // 2
+    val_nan = val.copy()
+    val_nan[bad_idx] = np.nan
+
+    op = BicubicResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False)
+    res = op.resample(val_nan, conservative=True)
+
+    assert np.all(np.isfinite(res.cell_data))
+
+    valid = np.ones(lon.shape, dtype=bool)
+    valid[bad_idx] = False
+    expected = float(np.sum(val[valid]))
+    np.testing.assert_allclose(float(np.sum(res.cell_data)), expected, rtol=1e-3, atol=1e-6)
+
+
+def test_conservative_all_nan_row_is_all_nan(small_grid):
+    lon, lat = small_grid
+    op = BicubicResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False)
+
+    val_nan = np.full(lon.shape, np.nan)
+    res = op.resample(val_nan, conservative=True)
+
+    assert np.all(np.isnan(res.cell_data))

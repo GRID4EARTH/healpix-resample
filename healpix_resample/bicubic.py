@@ -17,7 +17,10 @@ Core idea:
 
 This module is designed for large N and batched values (B,N) on CUDA.
 """
-from healpix_resample.knn import KNeighborsResampler
+from typing import Optional
+
+from healpix_resample.base import ResampleResults, T_Array
+from healpix_resample.knn import KNeighborsResampler, _conservative_resample
 import math
 import numpy as np
 import torch
@@ -68,9 +71,18 @@ class BicubicResampler(KNeighborsResampler):
         classic 4x4 bicubic stencil on a structured grid is `Npt = 16`
         (default).
     All other parameters are forwarded to `KNeighborsResampler`.
+
+    Parameters
+    ----------
+    area : array-like or None
+        Per-sample pixel area/weight, shape ``(N,)``. Only used by
+        ``resample(conservative=True)`` -- ignored by the default
+        interpolation path. Defaults to ``1.0`` for every sample. See
+        ``resample()``'s docstring for the conservation guarantee and its
+        one caveat specific to this class's signed kernel.
     """
 
-    def __init__(self, *args, Npt: int = 16, **kwargs):
+    def __init__(self, *args, Npt: int = 16, area: Optional[T_Array] = None, **kwargs):
         # Ensure ring_search_max >= ring_search_init(Npt) so the KNN search
         # loop in healpix_weighted_nearest actually executes.
         #
@@ -89,6 +101,19 @@ class BicubicResampler(KNeighborsResampler):
             kwargs["ring_search_max"] = ring_search_init_needed + 2
 
         super().__init__(*args, Npt=Npt, **kwargs)
+
+        if area is None:
+            area_t = torch.ones(self.N, dtype=self.dtype, device=self.device)
+        else:
+            area_t = area if isinstance(area, torch.Tensor) else torch.as_tensor(area)
+            area_t = area_t.to(self.device, dtype=self.dtype).reshape(-1)
+            if area_t.numel() != self.N:
+                raise ValueError(
+                    f"area must have {self.N} elements (one per sample), got {area_t.numel()}"
+                )
+            if torch.any(area_t < 0):
+                raise ValueError("area must be non-negative")
+        self.area = area_t
 
     def comp_matrix(self):
         # --- weights per sample->cell link: Keys' cubic convolution kernel,
@@ -170,9 +195,76 @@ class BicubicResampler(KNeighborsResampler):
             dtype=self.dtype,
         ).coalesce()
 
+        # -------- M_cons : (N,K) conservative-mode operator (issue #44) ----
+        # Same (sample, cell) links/index layout as M (indicesM), but with
+        # the per-sample-normalized weights already computed for MT (wMT)
+        # instead of M's per-cell-normalized weights -- see
+        # BilinearResampler.comp_matrix() for the non-signed-kernel version
+        # of this same construction. Because Keys' kernel is signed, wMT's
+        # rows only sum to *exactly* 1 for samples whose norm_row wasn't
+        # floored by `_floor_signed` above; see resample()'s docstring for
+        # the resulting caveat on conservative=True's guarantee.
+        Mcons_coo = torch.sparse_coo_tensor(
+            indicesM,
+            wMT.to(self.dtype),
+            size=(self.N, self.K),
+            device=self.device,
+            dtype=self.dtype,
+        ).coalesce()
+
         # Convert to CSR for faster spMM (recommended on GPU)
         self.M  = M_coo.to_sparse_csr()
         self.MT = MT_coo.to_sparse_csr()
+        self.M_cons = Mcons_coo.to_sparse_csr()
+
+    @torch.no_grad()
+    def resample(self, val: T_Array, *, conservative: bool = False, **kwargs) -> ResampleResults[T_Array]:
+        """Estimate the HEALPix field from unstructured samples.
+
+        Args:
+            val: (N,) or (B, N) values at lon/lat sample points.
+            conservative: see below. Extra ``**kwargs`` are accepted for
+                signature symmetry with other resamplers and forwarded to
+                ``KNeighborsResampler.resample()`` when
+                ``conservative=False`` (no CG solve involved either way);
+                ignored when ``conservative=True``.
+
+        ``conservative=True`` (issue #44: "conservative bi-linear", applied
+        here to bicubic too)
+        --------------------------------------------------------------------
+        Same idea as :meth:`BilinearResampler.resample`: each sample's own
+        (``area``-weighted) value is redistributed across its ``Npt``
+        nearest cells using ``self.M_cons`` -- Keys' kernel weights,
+        normalized so each sample's own weights sum to 1 instead of being
+        normalized per output cell -- guaranteeing
+
+            sum_k hval[k] == sum_i (valid i) val[i] * area[i]
+
+        See :meth:`BilinearResampler.resample` for the full NaN-handling
+        discussion (identical here: a NaN sample's value and area are both
+        excluded, and the identity above then holds over exactly the valid
+        samples; an all-NaN row comes back entirely ``nan``).
+
+        Caveat specific to this class's signed kernel
+        ------------------------------------------------
+        Unlike ``BilinearResampler``'s non-negative inverse-distance
+        weights, Keys' cubic kernel is signed, so ``self.M_cons``'s
+        per-sample rows only sum to *exactly* 1 for samples whose
+        ``norm_row`` wasn't floored by ``_floor_signed`` in
+        ``comp_matrix()`` -- true for the vast majority of well-conditioned
+        samples. For the rare, pathologically-cancelled sample that does
+        hit the floor, that sample's own contribution to the conservation
+        identity above is only approximate (to the extent the floor
+        perturbed its normalization), not bit-exact -- the same accepted
+        trade-off ``_floor_signed`` already makes for ordinary
+        (non-conservative) interpolation.
+
+        Returns:
+            hval: (B, K) or (K,)
+        """
+        if not conservative:
+            return super().resample(val, **kwargs)
+        return _conservative_resample(self, val, self.area)
 
 
 def _floor_signed(norm: torch.Tensor, norm_raw: torch.Tensor, rel_floor: float = 1e-3) -> torch.Tensor:

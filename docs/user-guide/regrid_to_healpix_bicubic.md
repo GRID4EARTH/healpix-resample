@@ -49,11 +49,11 @@ property relative to bilinear. Two consequences:
 
 ## Class hierarchy and construction
 
-`BicubicResampler` is a `KNeighborsResampler` subclass, exactly like `BilinearResampler`: it only overrides
-`__init__` (to fix `Npt=16` and auto-correct `ring_search_max`, following the same pattern as
-`NearestResampler`) and `comp_matrix()` (to build the sparse operators from the cubic-convolution weight
-instead of the Gaussian/IDW weight). `resample()` and `invert()` are inherited unchanged from
-`KNeighborsResampler`.
+`BicubicResampler` is a `KNeighborsResampler` subclass, exactly like `BilinearResampler`: it overrides
+`__init__` (to fix `Npt=16`, auto-correct `ring_search_max`, and accept `area=`), `comp_matrix()` (to build
+the sparse operators from the cubic-convolution weight instead of the Gaussian/IDW weight, plus a
+conservative-mode operator, see below), and `resample()` (to add `conservative=True`, see below). `invert()`
+is inherited unchanged from `KNeighborsResampler`.
 
 ```python
 from healpix_resample import BicubicResampler
@@ -77,6 +77,8 @@ op = BicubicResampler(
 - **`device`, `dtype`**: PyTorch placement and numerical type.
 - **`threshold`**: minimum accumulated (unsigned, Gaussian-weighted) support for a HEALPix cell to be kept
   — same meaning as for every other resampler in this package.
+- **`area`**: per-sample pixel area/weight, shape `(N,)`. Only used by `resample(conservative=True)` (see
+  below); ignored otherwise. Defaults to `1.0` for every sample.
 
 ---
 
@@ -90,23 +92,56 @@ subclass:
 - **`cell_ids`**: `(K,)` HEALPix cell ids retained.
 - **`hi`**: `(N, Npt)` cell indices per sample (into `cell_ids`).
 - **`d_m`**: `(N, Npt)` geodesic distances (metres) to those cells.
-- **`M`**: sparse CSR `(N, K)` operator, `hval = y @ M`.
+- **`M`**: sparse CSR `(N, K)` operator (per-cell-normalized), `hval = y @ M`.
 - **`MT`**: sparse CSR `(K, N)` operator, `val_hat = hval @ MT`.
+- **`M_cons`**: sparse CSR `(N, K)` operator (per-sample-normalized — a partition of unity per sample, up to
+  the signed-kernel floor caveat below), used by `resample(conservative=True)`.
+- **`area`**: `(N,)` per-sample area/weight (see above).
 
 ---
 
 ## Methods
 
-### `resample(val)`
+### `resample(val, conservative=False)`
 
-Sample space → HEALPix cell space: `hval = val @ self.M` (inherited from `KNeighborsResampler`, no CG).
+Sample space → HEALPix cell space.
+
+- **`conservative=False`** (default): `hval = val @ self.M` (per-cell-normalized weights) — smooth, but not
+  exactly mass-conserving.
+- **`conservative=True`**: `hval = (val * self.area) @ self.M_cons` — each sample's own (area-weighted)
+  value is redistributed across its 16 nearest cells using weights normalized so each *sample's* own
+  weights sum to 1, guaranteeing `sum_k hval[k] == sum_i (valid i) val[i] * area[i]` exactly — see
+  "Conservative mode" below.
+
 Accepts `val` of shape `(N,)` or `(B, N)`, `np.ndarray` or `torch.Tensor`; returns the same type/batch shape
 it was given, wrapped in a `ResampleResults(cell_data, cell_ids)`.
 
 ### `invert(hval)`
 
-HEALPix cell space → sample space: `val_hat = hval @ self.MT` (inherited, no CG). Same `(K,)`/`(B, K)` and
-NumPy/Torch symmetry as `resample`.
+HEALPix cell space → sample space: `val_hat = hval @ self.MT` (inherited, no CG; unaffected by
+`conservative`/`area`). Same `(K,)`/`(B, K)` and NumPy/Torch symmetry as `resample`.
+
+---
+
+## Conservative mode (`area=`, `resample(conservative=True)`)
+
+Added for [issue #44](https://github.com/GRID4EARTH/healpix-resample/issues/44) ("conservative bi-linear is
+missing"), and applied to `BicubicResampler` for consistency with `BilinearResampler`. Same construction as
+the bilinear case (see `docs/user-guide/regrid_to_healpix_bilinear.md` for the full derivation): `M_cons`
+reuses the exact weights already computed for `MT` (per-sample-normalized) under `M`'s `(sample, cell)`
+index layout, so each sample's own contribution sums to 1 across the cells it links to and no value is
+invented or lost globally.
+
+**Caveat specific to this class's signed kernel**: unlike `BilinearResampler`'s non-negative
+inverse-distance weights, Keys' cubic kernel is signed, so `M_cons`'s per-sample rows only sum to *exactly*
+1 for samples whose `norm_row` wasn't floored by `_floor_signed` in `comp_matrix()` — true for the vast
+majority of well-conditioned samples. For the rare, pathologically-cancelled sample that does hit the
+floor, that sample's own contribution to the conservation identity is only approximate, not bit-exact —
+the same accepted trade-off `_floor_signed` already makes for ordinary (non-conservative) interpolation.
+
+NaN handling under `conservative=True` is the same as `BilinearResampler`'s: a NaN sample's value and area
+are both excluded, so the conservation identity holds over exactly the valid samples; a batch row where
+every sample is NaN comes back entirely `nan`.
 
 ---
 

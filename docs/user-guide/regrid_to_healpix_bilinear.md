@@ -71,6 +71,43 @@ via its iterative solve.
 
 ---
 
+## Conservative mode (`area=`, `resample(conservative=True)`)
+
+Added for [issue #44](https://github.com/GRID4EARTH/healpix-resample/issues/44) ("conservative bi-linear is
+missing"). By default, `resample()` interpolates: each cell's value is a weighted blend of its 4 nearest
+samples, normalized *per cell* (`self.M`) — smooth, but not exactly mass-conserving, since a cell's
+normalization only depends on whichever samples happen to link to it, independent of any other cell.
+
+```python
+op = BilinearResampler(lon_deg=lon, lat_deg=lat, level=level, area=area)  # area optional, defaults to 1.0
+res = op.resample(val, conservative=True)
+```
+
+With `conservative=True`, each sample's own value (scaled by its `area`) is instead redistributed across
+its 4 nearest cells using `self.M_cons` — the *same* inverse-distance weights as the default path, but
+normalized so each *sample's* own weights sum to exactly 1 (a partition of unity) instead of being
+normalized per output cell. No value is invented or lost:
+
+```
+sum_k hval[k] == sum_i (valid i) val[i] * area[i]
+```
+
+exactly, regardless of how many samples any given cell receives contributions from. This is a
+bilinear-weighted analogue of `ConservativeResampler`'s exact area conservation (see
+`healpix_resample/conservative.py`), without that class's single-nearest-cell binning blockiness.
+
+**NaN handling** under `conservative=True`: a NaN sample's value *and* its area are both excluded from
+every cell's total, so the identity above holds over exactly the valid samples — no cell is forced to
+`nan` just because one sample it shares a link with is missing (unlike `conservative=False`'s
+interpolation path, where a NaN sample's linked cells lose their sample but keep an unadjusted
+normalization — see the inherited `KNeighborsResampler.resample()` docstring for that caveat). A batch row
+where every sample is NaN comes back entirely `nan`.
+
+`area` defaults to `1.0` for every sample (equal-area pixels / already-extensive quantities, same
+convention as `ConservativeResampler`) and is otherwise ignored when `conservative=False`.
+
+---
+
 ## Practical tips
 
 - Bilinear assumes the 4 nearest retained cells are a reasonable local neighbourhood for

@@ -609,5 +609,51 @@ class KNeighborsResampler(Generic[T_Array]):
         
     def get_cell_ids(self):
         return self.cell_ids.cpu().numpy()
-    
-  
+
+
+@torch.no_grad()
+def _conservative_resample(op: "KNeighborsResampler", val: T_Array, area: torch.Tensor) -> ResampleResults:
+    """Shared conservative-mode forward pass for KNN-based interpolating
+    resamplers (`BilinearResampler`, `BicubicResampler`) that build an
+    `M_cons` operator in their own `comp_matrix()` -- see either class's
+    `resample(conservative=True)` docstring for the full derivation and
+    guarantee. `op.M_cons` is `(N, K)`, with each row (source sample) summing
+    to exactly 1 (a partition of unity) for well-conditioned samples -- see
+    each caller's own comp_matrix()/docstring for when that can be only
+    approximate (e.g. BicubicResampler's signed-kernel floor).
+
+    Because `M_cons`'s per-sample normalization is fixed at construction
+    time (unlike `M`'s per-cell normalization, which implicitly assumes
+    every linked sample is present), zeroing a NaN sample's value *and*
+    excluding its area here is enough on its own to keep the exact identity
+
+        sum_k hval[k] == sum_i (valid i) val[i] * area[i]
+
+    with no separate renormalization step needed -- a cleaner NaN story
+    than the interpolation path's (see `KNeighborsResampler.resample()`'s
+    docstring for that caveat).
+    """
+    y = val if isinstance(val, torch.Tensor) else torch.as_tensor(val)
+    y = y.to(op.device, dtype=op.dtype)
+    squeezed = y.ndim == 1
+    if squeezed:
+        y = y.unsqueeze(0)  # (1, N)
+
+    nan_mask = torch.isnan(y)
+    valid = ~nan_mask
+    y_filled = torch.where(valid, y, torch.zeros_like(y))
+    row_has_data = valid.any(dim=-1)  # (B,)
+
+    weighted = y_filled * area  # (B, N), area (N,) broadcasts over rows
+    hval = weighted @ op.M_cons  # (B, K)
+    hval[~row_has_data] = float("nan")
+
+    cell_ids = op.cell_ids
+    if squeezed:
+        hval = hval.squeeze(0)
+    if not isinstance(val, torch.Tensor):
+        hval = hval.cpu().numpy()
+        cell_ids = cell_ids.cpu().numpy()
+
+    return ResampleResults(cell_data=hval, cell_ids=cell_ids)
+
