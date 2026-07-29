@@ -209,7 +209,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
             - ``False`` (the default): skip that fallback entirely. Output
               cells that don't have enough real support are left as ``nan``
-              in :meth:`resample`'s result rather than filled with an
+              in ``resample()``'s result rather than filled with an
               approximate nearest-single-sample value -- correct, and fast.
             - ``True``: restore the original fallback-fill behaviour exactly
               (approximate but non-NaN values for weakly-supported cells).

@@ -67,16 +67,14 @@ def subset_for_parent_cell(
     returns `sample_idx`, an integer array into the sample axis: compute it
     once per `(lon_deg, lat_deg)` grid and reuse it to index `lon_deg`,
     `lat_deg`, and as many value arrays as you have that share those same
-    coordinates:
+    coordinates::
 
-    ```python
-    sample_idx, out_ids = subset_for_parent_cell(
-        lon, lat, parent_cell_id=pid, level_parent=6, level=20,
-    )
-    lon_sub, lat_sub = lon[sample_idx], lat[sample_idx]
-    val_sub = val[..., sample_idx]           # any variable on the same grid
-    other_val_sub = other_val[..., sample_idx]
-    ```
+        sample_idx, out_ids = subset_for_parent_cell(
+            lon, lat, parent_cell_id=pid, level_parent=6, level=20,
+        )
+        lon_sub, lat_sub = lon[sample_idx], lat[sample_idx]
+        val_sub = val[..., sample_idx]           # any variable on the same grid
+        other_val_sub = other_val[..., sample_idx]
 
     `sample_idx` indexes the *last* axis, so it applies uniformly whether a
     value array is `(N,)` or batched `(B, N)`, and works the same way for

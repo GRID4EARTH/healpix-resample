@@ -232,7 +232,7 @@ class BicubicResampler(KNeighborsResampler):
         ``conservative=True`` (issue #44: "conservative bi-linear", applied
         here to bicubic too)
         --------------------------------------------------------------------
-        Same idea as :meth:`BilinearResampler.resample`: each sample's own
+        Same idea as ``BilinearResampler.resample()``: each sample's own
         (``area``-weighted) value is redistributed across its ``Npt``
         nearest cells using ``self.M_cons`` -- Keys' kernel weights,
         normalized so each sample's own weights sum to 1 instead of being
@@ -240,7 +240,7 @@ class BicubicResampler(KNeighborsResampler):
 
             sum_k hval[k] == sum_i (valid i) val[i] * area[i]
 
-        See :meth:`BilinearResampler.resample` for the full NaN-handling
+        See ``BilinearResampler.resample()`` for the full NaN-handling
         discussion (identical here: a NaN sample's value and area are both
         excluded, and the identity above then holds over exactly the valid
         samples; an all-NaN row comes back entirely ``nan``).
