@@ -10,14 +10,16 @@ are handed to it).
 This module intentionally holds no resampler-specific logic: it only
 computes (a) which fine-`level` HEALPix cells fall inside a given
 `(parent_cell_id, level_parent)`, ready to pass as `out_cell_ids=` to any
-resampler, and (b) which input samples are actually relevant to that parent
-cell, so the resampler constructor only ever sees a local subset of the full
-`(lon_deg, lat_deg, val)` arrays. See `subset_for_parent_cell`'s docstring
-for the full margin-correctness discussion.
+resampler, and (b) an index into the *samples* (not into any particular
+value array) selecting which ones are actually relevant to that parent cell,
+so a resampler built from `lon_deg[sample_idx]`/`lat_deg[sample_idx]` only
+ever sees a local subset, not the full global dataset. See
+`subset_for_parent_cell`'s docstring for the full margin-correctness
+discussion.
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 import healpix_geo
@@ -26,7 +28,6 @@ import healpix_geo
 def subset_for_parent_cell(
     lon_deg,
     lat_deg,
-    val,
     parent_cell_id: int,
     level_parent: int,
     level: int,
@@ -35,24 +36,52 @@ def subset_for_parent_cell(
     ellipsoid: str = "WGS84",
     margin_rings: int = 1,
     num_threads: int = 0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Restrict `(lon_deg, lat_deg, val)` and an output cell set to one parent cell.
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Restrict processing to one parent cell: which samples, which output cells.
 
     This is the standalone helper for the "process one coarse cell at a
-    time" workflow: it does *not* itself construct or call any resampler --
-    it only prepares the two pieces every resampler's constructor needs to
-    do less work:
+    time" workflow: it does *not* itself construct or call any resampler,
+    and it does **not** take or return any value array (`val`) -- it only
+    prepares the two pieces every resampler's constructor needs to do less
+    work:
 
     1. **Output side** (cheap, exact, no new logic): the set of `level`
        -resolution cells contained in `parent_cell_id`, via
        `healpix_geo.*.zoom_to`. Pass this straight through as any
        resampler's ``out_cell_ids=`` kwarg -- see the "group_by resamplers"
        caveat below for the one place this doesn't apply.
-    2. **Input side** (the actual point of this helper): a boolean-filtered
-       subset of `lon_deg`/`lat_deg`/`val` containing only the samples that
-       could plausibly matter for cells inside `parent_cell_id` -- so `N` in
-       a resampler constructed from this subset is the *local* sample count,
-       not the size of the full global dataset.
+    2. **Input side** (the actual point of this helper): an integer index
+       into the *sample axis* -- not a filtered value array -- selecting
+       which samples could plausibly matter for cells inside
+       `parent_cell_id`.
+
+    Why this returns an index rather than filtered arrays
+    -------------------------------------------------------
+    A single `(lon_deg, lat_deg)` grid is very commonly shared by many
+    different value arrays (several variables, a time series of the same
+    station network, ...). Taking a `val` in and handing back a filtered
+    `val_sub` would mean recomputing this exact same geometric membership
+    test again for every one of those arrays, even though the answer -- which
+    samples are relevant to `parent_cell_id` -- only depends on
+    `lon_deg`/`lat_deg` and never changes. Instead, `subset_for_parent_cell`
+    returns `sample_idx`, an integer array into the sample axis: compute it
+    once per `(lon_deg, lat_deg)` grid and reuse it to index `lon_deg`,
+    `lat_deg`, and as many value arrays as you have that share those same
+    coordinates:
+
+    ```python
+    sample_idx, out_ids = subset_for_parent_cell(
+        lon, lat, parent_cell_id=pid, level_parent=6, level=20,
+    )
+    lon_sub, lat_sub = lon[sample_idx], lat[sample_idx]
+    val_sub = val[..., sample_idx]           # any variable on the same grid
+    other_val_sub = other_val[..., sample_idx]
+    ```
+
+    `sample_idx` indexes the *last* axis, so it applies uniformly whether a
+    value array is `(N,)` or batched `(B, N)`, and works the same way for
+    plain NumPy arrays or PyTorch tensors (fancy-indexing a tensor with a
+    NumPy integer array works out of the box).
 
     Why input filtering needs a margin, not just "same parent cell id"
     --------------------------------------------------------------------
@@ -65,7 +94,7 @@ def subset_for_parent_cell(
     correctness bug that only shows up as slightly-degraded results near
     parent-cell boundaries, not as an error.
 
-    `margin_rings` controls this: input samples are kept if their own
+    `margin_rings` controls this: samples are kept if their own
     `level_parent` cell id is `parent_cell_id` **or** within `margin_rings`
     HEALPix rings of it (`healpix_geo.*.kth_neighbourhood`), mirroring the
     same ring-growth pattern `healpix_weighted_nearest` already uses
@@ -93,8 +122,8 @@ def subset_for_parent_cell(
     `ConservativeResampler` raises `NotImplementedError` if you pass
     `out_cell_ids` to it at all, and `GroupByResampler`/`CellPointResampler`
     silently store but never use it (no error, no effect). For these
-    classes, use only the returned `lon_sub`/`lat_sub`/`val_sub` (piece 2)
-    and do **not** pass the returned `out_cell_ids` (piece 1) to their
+    classes, use only `sample_idx` (piece 2) to slice `lon_deg`/`lat_deg`/
+    `val` and do **not** pass the returned `out_cell_ids` (piece 1) to their
     constructors -- the set of cells they produce is whatever the filtered
     input actually hits, which will generally be a subset of (or, at the
     margin, extend slightly beyond) `out_cell_ids` and cannot be
@@ -105,9 +134,6 @@ def subset_for_parent_cell(
     ----------
     lon_deg, lat_deg : array-like, shape (N,)
         Full input sample coordinates in degrees.
-    val : array-like
-        Full input values, shape ``(N,)`` or batched ``(B, N)``, filtered
-        along the last axis in lockstep with `lon_deg`/`lat_deg`.
     parent_cell_id : int
         HEALPix cell id at `level_parent` to restrict processing to.
     level_parent : int
@@ -127,9 +153,12 @@ def subset_for_parent_cell(
 
     Returns
     -------
-    lon_sub, lat_sub, val_sub : numpy.ndarray
-        The input subset relevant to `parent_cell_id` (its own cell plus the
-        `margin_rings`-neighbour buffer at `level_parent`).
+    sample_idx : numpy.ndarray of int
+        Integer index into the sample axis (`lon_deg`/`lat_deg`, and any
+        value array sharing that same axis) selecting the samples relevant
+        to `parent_cell_id` (its own cell plus the `margin_rings`-neighbour
+        buffer at `level_parent`). Apply it yourself: ``lon_deg[sample_idx]``,
+        ``val[..., sample_idx]``, etc.
     out_cell_ids : numpy.ndarray
         The `level`-resolution cells contained in `parent_cell_id`, ready to
         pass straight into a KNN-mode resampler's ``out_cell_ids=`` kwarg
@@ -139,7 +168,6 @@ def subset_for_parent_cell(
 
     lon_np = np.asarray(lon_deg, dtype=np.float64).reshape(-1)
     lat_np = np.asarray(lat_deg, dtype=np.float64).reshape(-1)
-    val_np = np.asarray(val)
 
     parent_arr = np.asarray([parent_cell_id], dtype=np.uint64)
 
@@ -162,9 +190,6 @@ def subset_for_parent_cell(
         keep_ids = np.unique(np.concatenate([keep_ids, neighbours]))
 
     keep_mask = np.isin(sample_parent_ids, keep_ids)
+    sample_idx = np.nonzero(keep_mask)[0]
 
-    lon_sub = lon_np[keep_mask]
-    lat_sub = lat_np[keep_mask]
-    val_sub = val_np[..., keep_mask]
-
-    return lon_sub, lat_sub, val_sub, out_cell_ids
+    return sample_idx, out_cell_ids

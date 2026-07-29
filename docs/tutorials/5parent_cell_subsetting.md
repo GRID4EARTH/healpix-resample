@@ -62,17 +62,17 @@ n_samples_seen = 0
 worst_cell = None
 
 for pid in parent_ids:
-    lon_sub, lat_sub, val_sub, out_ids = subset_for_parent_cell(
-        lon, lat, val,
+    sample_idx, out_ids = subset_for_parent_cell(
+        lon, lat,
         parent_cell_id=int(pid), level_parent=level_parent, level=level,
         margin_rings=1,
     )
-    n_samples_seen += len(lon_sub)
+    n_samples_seen += len(sample_idx)
 
     local_op = NearestResampler(
-        lon_deg=lon_sub, lat_deg=lat_sub, level=level, out_cell_ids=out_ids, verbose=False
+        lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=level, out_cell_ids=out_ids, verbose=False
     )
-    local_res = local_op.resample(val_sub)
+    local_res = local_op.resample(val[sample_idx])
 
     for cid, v_local in zip(local_res.cell_ids.tolist(), local_res.cell_data.tolist()):
         if cid in global_by_id:
@@ -106,15 +106,15 @@ print(f"total samples processed across all parent-cell subsets: {n_samples_seen}
 max_abs_diff_no_margin = 0.0
 
 for pid in parent_ids:
-    lon_sub, lat_sub, val_sub, out_ids = subset_for_parent_cell(
-        lon, lat, val,
+    sample_idx, out_ids = subset_for_parent_cell(
+        lon, lat,
         parent_cell_id=int(pid), level_parent=level_parent, level=level,
         margin_rings=0,   # <-- no buffer: samples just across a parent boundary are dropped
     )
     local_op = NearestResampler(
-        lon_deg=lon_sub, lat_deg=lat_sub, level=level, out_cell_ids=out_ids, verbose=False
+        lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=level, out_cell_ids=out_ids, verbose=False
     )
-    local_res = local_op.resample(val_sub)
+    local_res = local_op.resample(val[sample_idx])
 
     for cid, v_local in zip(local_res.cell_ids.tolist(), local_res.cell_data.tolist()):
         if cid in global_by_id:

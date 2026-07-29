@@ -27,15 +27,15 @@ from healpix_resample import PSFResampler, subset_for_parent_cell
 level_parent = 6   # coarse: nside = 64
 level = 20          # fine target resolution
 
-lon_sub, lat_sub, val_sub, out_ids = subset_for_parent_cell(
-    lon, lat, val,
+sample_idx, out_ids = subset_for_parent_cell(
+    lon, lat,
     parent_cell_id=parent_id,
     level_parent=level_parent,
     level=level,
 )
 
-op = PSFResampler(lon_deg=lon_sub, lat_deg=lat_sub, level=level, out_cell_ids=out_ids)
-result = op.resample(val_sub)
+op = PSFResampler(lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=level, out_cell_ids=out_ids)
+result = op.resample(val[..., sample_idx])
 ```
 
 Loop this over every parent cell at `level_parent` to process a full global dataset in bounded-memory
@@ -44,11 +44,32 @@ function does for you -- it only makes *one* parent cell's computation tractable
 
 ## What it returns
 
-- `lon_sub, lat_sub, val_sub`: the input subset relevant to `parent_cell_id` -- samples whose own
-  `level_parent` cell is `parent_cell_id` itself, plus a `margin_rings`-neighbour buffer around it
-  (see below). `val_sub` is filtered along its *last* axis, so both `(N,)` and `(B, N)` input work.
+Deliberately **not** a filtered copy of `val` -- see "Why this returns an index" below.
+
+- `sample_idx`: an integer index into the sample axis -- samples whose own `level_parent` cell is
+  `parent_cell_id` itself, plus a `margin_rings`-neighbour buffer around it (see below). Index
+  `lon`/`lat` and any value array yourself: `lon[sample_idx]`, `val[..., sample_idx]` (the last-axis
+  indexing works whether `val` is `(N,)` or batched `(B, N)`).
 - `out_cell_ids`: the `level`-resolution cells contained in `parent_cell_id`
   (`healpix_geo.*.zoom_to`), ready to pass straight into a KNN-mode resampler's `out_cell_ids=`.
+
+## Why this returns an index rather than filtered arrays
+
+`subset_for_parent_cell` doesn't take a `val` and doesn't hand back `lon_sub`/`lat_sub`/`val_sub`. A
+single `(lon, lat)` grid is very commonly shared by several different value arrays -- multiple
+variables, a time series over the same station network -- and which samples are relevant to
+`parent_cell_id` only depends on `lon`/`lat`, never on `val`. Returning a plain index lets you compute
+it once per grid and reuse it across every co-located array:
+
+```python
+sample_idx, out_ids = subset_for_parent_cell(lon, lat, parent_cell_id=parent_id, level_parent=6, level=20)
+
+lon_sub, lat_sub = lon[sample_idx], lat[sample_idx]
+temperature_sub = temperature[..., sample_idx]
+pressure_sub = pressure[..., sample_idx]
+```
+
+instead of recomputing the same geometric membership test once per variable.
 
 ## The margin is a correctness guarantee, not a performance knob
 
@@ -93,16 +114,18 @@ search and no `out_cell_ids` intersection logic to hook into:
 - `ConservativeResampler` raises `NotImplementedError` if you pass `out_cell_ids` at all.
 - `GroupByResampler`/`CellPointResampler` silently store but never use it (no error, no effect).
 
-For these classes, use only `lon_sub`/`lat_sub`/`val_sub` from `subset_for_parent_cell` and do **not**
-pass its `out_cell_ids` to their constructors -- the set of cells they produce is simply whatever the
-filtered input actually hits.
+For these classes, use only `sample_idx` from `subset_for_parent_cell` to slice `lon`/`lat`/`val`
+yourself, and do **not** pass its `out_cell_ids` to their constructors -- the set of cells they produce
+is simply whatever the filtered input actually hits.
 
 ```python
 from healpix_resample import ConservativeResampler, subset_for_parent_cell
 
-lon_sub, lat_sub, val_sub, _out_ids_unused = subset_for_parent_cell(
-    lon, lat, val, parent_cell_id=parent_id, level_parent=6, level=20,
+sample_idx, _out_ids_unused = subset_for_parent_cell(
+    lon, lat, parent_cell_id=parent_id, level_parent=6, level=20,
 )
-op = ConservativeResampler(lon_deg=lon_sub, lat_deg=lat_sub, level=20, area=area_sub)
-result = op.resample(val_sub)
+op = ConservativeResampler(
+    lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=20, area=area[sample_idx]
+)
+result = op.resample(val[..., sample_idx])
 ```

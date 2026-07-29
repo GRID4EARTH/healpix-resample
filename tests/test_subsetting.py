@@ -4,6 +4,11 @@ tests/test_subsetting.py
 Test suite for `subset_for_parent_cell` (`healpix_resample.subsetting`) --
 task 4's "process one coarse parent cell at a time" helper.
 
+`subset_for_parent_cell` takes only `lon_deg`/`lat_deg` and returns a
+`sample_idx` integer index (not a filtered `val`) plus `out_cell_ids` -- the
+caller slices `lon`/`lat`/`val` themselves, so the same `sample_idx` can be
+reused across every value array that shares the same coordinates.
+
 CPU-only, following the shared layout convention from the other test files
 in this package's first test suite (see `planning/00_init.md`).
 """
@@ -64,8 +69,8 @@ def test_out_cell_ids_are_exact_children(grid, parent_ids):
     lon, lat, val = grid
     pid = int(parent_ids[0])
 
-    _, _, _, out_ids = subset_for_parent_cell(
-        lon, lat, val, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL
+    _, out_ids = subset_for_parent_cell(
+        lon, lat, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL
     )
 
     expected_n = 4 ** (LEVEL - LEVEL_PARENT)
@@ -79,32 +84,60 @@ def test_out_cell_ids_are_exact_children(grid, parent_ids):
     assert np.all(parents_of_children == pid)
 
 
+def test_sample_idx_indexes_lon_lat_and_val_consistently(grid, parent_ids):
+    """`sample_idx` must be a valid integer index into the sample axis,
+    usable to slice `lon`/`lat` and any co-located value array (including
+    batched `(B, N)` arrays along their last axis)."""
+    lon, lat, val = grid
+    pid = int(parent_ids[0])
+
+    sample_idx, _ = subset_for_parent_cell(
+        lon, lat, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=1
+    )
+
+    assert sample_idx.dtype.kind in "iu"
+    assert sample_idx.ndim == 1
+    assert np.all(sample_idx >= 0) and np.all(sample_idx < len(lon))
+    assert len(np.unique(sample_idx)) == len(sample_idx)  # no duplicates
+
+    lon_sub = lon[sample_idx]
+    lat_sub = lat[sample_idx]
+    val_sub = val[sample_idx]
+    assert len(lon_sub) == len(lat_sub) == len(val_sub) == len(sample_idx)
+
+    # batched value array: index along the last axis
+    val_batched = np.stack([val, val * 2.0], axis=0)  # (2, N)
+    val_batched_sub = val_batched[..., sample_idx]
+    assert val_batched_sub.shape == (2, len(sample_idx))
+    np.testing.assert_array_equal(val_batched_sub[0], val_sub)
+
+
 def test_zero_margin_keeps_only_exact_parent_cell(grid, parent_ids):
     lon, lat, val = grid
     pid = int(parent_ids[0])
 
-    lon_sub, lat_sub, val_sub, _ = subset_for_parent_cell(
-        lon, lat, val, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=0
+    sample_idx, _ = subset_for_parent_cell(
+        lon, lat, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=0
     )
+    lon_sub, lat_sub = lon[sample_idx], lat[sample_idx]
 
     sub_parent_ids = np.asarray(
         healpix_geo.nested.lonlat_to_healpix(lon_sub, lat_sub, LEVEL_PARENT, ellipsoid="WGS84")
     )
     assert np.all(sub_parent_ids == pid)
-    assert len(lon_sub) == len(lat_sub) == val_sub.shape[-1]
 
 
 def test_margin_one_includes_more_samples_than_zero(grid, parent_ids):
     lon, lat, val = grid
     pid = int(parent_ids[0])
 
-    lon_sub0, _, _, _ = subset_for_parent_cell(
-        lon, lat, val, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=0
+    sample_idx0, _ = subset_for_parent_cell(
+        lon, lat, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=0
     )
-    lon_sub1, _, _, _ = subset_for_parent_cell(
-        lon, lat, val, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=1
+    sample_idx1, _ = subset_for_parent_cell(
+        lon, lat, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=1
     )
-    assert len(lon_sub1) >= len(lon_sub0)
+    assert len(sample_idx1) >= len(sample_idx0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,16 +153,17 @@ def _reassemble_and_compare(lon, lat, val, parent_ids, level_parent, level, marg
     n_compared = 0
     n_mismatched = 0
     for pid in parent_ids:
-        lon_sub, lat_sub, val_sub, out_ids = subset_for_parent_cell(
-            lon, lat, val, parent_cell_id=int(pid), level_parent=level_parent, level=level,
+        sample_idx, out_ids = subset_for_parent_cell(
+            lon, lat, parent_cell_id=int(pid), level_parent=level_parent, level=level,
             margin_rings=margin_rings,
         )
-        if len(lon_sub) == 0:
+        if len(sample_idx) == 0:
             continue
         local_op = NearestResampler(
-            lon_deg=lon_sub, lat_deg=lat_sub, level=level, out_cell_ids=out_ids, verbose=False
+            lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=level,
+            out_cell_ids=out_ids, verbose=False
         )
-        local_res = local_op.resample(val_sub)
+        local_res = local_op.resample(val[sample_idx])
 
         for cid, val_local in zip(local_res.cell_ids.tolist(), local_res.cell_data.tolist()):
             if cid in global_by_id:
@@ -177,22 +211,22 @@ def test_psf_reassembly_matches_global_within_tolerance(grid, parent_ids):
 
     checked_any = False
     for pid in parent_ids:
-        lon_sub, lat_sub, val_sub, out_ids = subset_for_parent_cell(
-            lon, lat, val, parent_cell_id=int(pid), level_parent=LEVEL_PARENT, level=LEVEL,
+        sample_idx, out_ids = subset_for_parent_cell(
+            lon, lat, parent_cell_id=int(pid), level_parent=LEVEL_PARENT, level=LEVEL,
             margin_rings=1,
         )
-        if len(lon_sub) == 0:
+        if len(sample_idx) == 0:
             continue
         try:
             local_op = PSFResampler(
-                lon_deg=lon_sub, lat_deg=lat_sub, level=LEVEL, out_cell_ids=out_ids,
+                lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=LEVEL, out_cell_ids=out_ids,
                 threshold=0.3, verbose=False,
             )
         except RuntimeError:
             # this parent cell's margin-filtered subset didn't pass the
             # threshold anywhere -- not what this test is checking.
             continue
-        local_res = local_op.resample(val_sub, lam=0.0, tol=1e-10, max_iter=300)
+        local_res = local_op.resample(val[sample_idx], lam=0.0, tol=1e-10, max_iter=300)
 
         for cid, val_local in zip(local_res.cell_ids.tolist(), local_res.cell_data.tolist()):
             if cid in global_by_id:
@@ -251,10 +285,11 @@ def test_conservative_resampler_rejects_out_cell_ids(grid, parent_ids):
     lon, lat, val = grid
     pid = int(parent_ids[0])
 
-    lon_sub, lat_sub, val_sub, out_ids = subset_for_parent_cell(
-        lon, lat, val, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=1
+    sample_idx, out_ids = subset_for_parent_cell(
+        lon, lat, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=1
     )
-    assert len(lon_sub) < len(lon)  # actually filtered down to a local subset
+    assert len(sample_idx) < len(lon)  # actually filtered down to a local subset
+    lon_sub, lat_sub, val_sub = lon[sample_idx], lat[sample_idx], val[sample_idx]
 
     with pytest.raises(NotImplementedError):
         ConservativeResampler(lon_deg=lon_sub, lat_deg=lat_sub, level=LEVEL, out_cell_ids=out_ids)
@@ -275,9 +310,10 @@ def test_groupby_resampler_silently_ignores_out_cell_ids(grid, parent_ids):
     lon, lat, val = grid
     pid = int(parent_ids[0])
 
-    lon_sub, lat_sub, val_sub, out_ids = subset_for_parent_cell(
-        lon, lat, val, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=1
+    sample_idx, out_ids = subset_for_parent_cell(
+        lon, lat, parent_cell_id=pid, level_parent=LEVEL_PARENT, level=LEVEL, margin_rings=1
     )
+    lon_sub, lat_sub = lon[sample_idx], lat[sample_idx]
 
     op_with = GroupByResampler(
         lon_deg=lon_sub, lat_deg=lat_sub, level=LEVEL, out_cell_ids=out_ids, verbose=False
