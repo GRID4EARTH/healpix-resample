@@ -118,10 +118,12 @@ the full derivation, and `docs/tutorials` for a worked example on real ERA5 data
 PSFResampler(
     lon_deg, lat_deg,
     level,
+    out_cell_ids=None,
     Npt=9,
     sigma_m=None,
     threshold=0.1,
     area=None,
+    fill_missing_out_cells=False,
     nest=True,
     radius=6371000.0,
     ellipsoid="WGS84",
@@ -139,6 +141,10 @@ PSFResampler(
 
 - **`lon_deg, lat_deg`**: sample coordinates in degrees, shape `(N,)`.
 - **`level`**: HEALPix level (`nside = 2**level`).
+- **`out_cell_ids`**: restrict the output to a caller-specified subset of `level`-resolution
+  cells (e.g. from `subset_for_parent_cell` when processing one coarse region at a time). See
+  `fill_missing_out_cells` below for what happens when a requested cell has too little real
+  kernel support.
 - **`Npt`**: number of neighbouring HEALPix cells used per sample.
 - **`sigma_m`**: Gaussian length scale in meters.
   - If `None`, a default scale based on the HEALPix pixel area is used:
@@ -149,6 +155,19 @@ PSFResampler(
 - **`area`**: per-sample pixel area/weight of the source grid, for conservative rebinning (see
   above). `None`/`"auto"` (default) estimates it automatically when possible, else falls back
   to uniform.
+- **`fill_missing_out_cells`** (default `False`): only relevant with `out_cell_ids`. Some
+  requested output cells can end up with too little real kernel support -- an empty or
+  near-empty `M` column, typically because `out_cell_ids` force-included a cell the KNN search
+  wouldn't have retained on its own (e.g. a river-mouth cell in an ocean model, the original
+  motivating case for this fallback). Filling such a cell requires an expensive, unvectorized
+  per-cell fallback search.
+  - `False` (default): skip that fallback entirely. Weakly-supported requested cells come back
+    as `nan` in `resample()`'s output rather than an approximate value -- correct and fast, and
+    the recommended default especially when combined with `subset_for_parent_cell` (which can
+    force-include many such cells at once).
+  - `True`: restore the original approximate-fallback-fill behaviour (a non-NaN but approximate
+    value for these cells). Opt into this only if a value is specifically needed instead of a
+    gap, and the construction-time cost is acceptable.
 - **`nest`**: HEALPix indexing scheme (nested if `True`).
 - **`device`, `dtype`**: PyTorch device and dtype for all matrices and computations.
 - **`ring_*` parameters**: control the local neighbourhood expansion strategy in the geometry helper.

@@ -94,24 +94,27 @@ def subset_for_parent_cell(
     correctness bug that only shows up as slightly-degraded results near
     parent-cell boundaries, not as an error.
 
-    `margin_rings` controls this: samples are kept if their own
-    `level_parent` cell id is `parent_cell_id` **or** within `margin_rings`
-    HEALPix rings of it (`healpix_geo.*.kth_neighbourhood`), mirroring the
-    same ring-growth pattern `healpix_weighted_nearest` already uses
-    internally. **This is a correctness guarantee, not just a performance
-    knob**: the margin must be wide enough that the resampler's actual
-    kernel reach (`sigma_m` and the effective radius implied by
-    `threshold`) can never extend past it. For `level_parent` many levels
-    coarser than `level` (the intended use case -- a parent cell is already
-    many multiples of a typical `sigma_m` wide), `margin_rings=1` (the
-    default) is very likely generous, but this scales with *your*
-    `sigma_m`/`threshold` choice, not with this function's defaults -- if
-    you shrink `sigma_m` or loosen `threshold` enough that the kernel reaches
-    close to a `level_parent` cell's own width, increase `margin_rings`
-    accordingly. When in doubt, compare the parent cell's angular width
-    (roughly `sqrt(4*pi/(12*4**level_parent))` radians) against the
-    kernel's actual reach for your resampler and size the margin so the
-    kernel cannot reach past it.
+    `margin_rings` controls this, and is measured in **fine-`level`** HEALPix
+    rings, not `level_parent` rings: samples are kept if their own `level`
+    cell id is within `margin_rings` rings of *any* fine cell inside
+    `parent_cell_id` (i.e. of `out_cell_ids`, expanded via
+    `healpix_geo.*.kth_neighbourhood` at `level`). This matters because a
+    fine cell is typically vastly smaller than a parent cell -- buffering by
+    whole *parent-level* rings instead (one ring already means "pull in every
+    neighbouring parent cell in full") would keep a hugely disproportionate
+    number of irrelevant samples relative to the resampler's actual kernel
+    reach at `level`. **This is a correctness guarantee, not just a
+    performance knob**: the margin must be wide enough that the resampler's
+    actual kernel reach (`sigma_m` and the effective radius implied by
+    `threshold`) can never extend past it, but sized at the *fine* scale the
+    kernel actually operates at. `margin_rings=1` (the default) is very
+    likely generous relative to a fine cell's own width, but this scales
+    with *your* `sigma_m`/`threshold` choice, not with this function's
+    defaults -- if you shrink `sigma_m` or loosen `threshold` enough that the
+    kernel reaches past a handful of fine cells, increase `margin_rings`
+    accordingly. When in doubt, compare a fine cell's angular width (roughly
+    `sqrt(4*pi/(12*4**level))` radians) against the kernel's actual reach for
+    your resampler and size the margin so the kernel cannot reach past it.
 
     Resamplers using `group_by=True` (`ConservativeResampler`,
     `GroupByResampler`, `CellPointResampler`)
@@ -145,19 +148,20 @@ def subset_for_parent_cell(
         HEALPix indexing scheme, must match what the resampler will be
         constructed with.
     margin_rings : int
-        Number of `level_parent` HEALPix rings around `parent_cell_id` to
+        Number of **fine-`level`** HEALPix rings around `out_cell_ids` to
         include when filtering input samples -- see "Why input filtering
-        needs a margin" above. ``0`` disables the margin entirely (kept only
-        to make the "margin matters" failure mode easy to demonstrate/test;
-        not recommended for real use).
+        needs a margin" above (note: this is rings at `level`, not
+        `level_parent`). ``0`` disables the margin entirely (kept only to
+        make the "margin matters" failure mode easy to demonstrate/test; not
+        recommended for real use).
 
     Returns
     -------
     sample_idx : numpy.ndarray of int
         Integer index into the sample axis (`lon_deg`/`lat_deg`, and any
         value array sharing that same axis) selecting the samples relevant
-        to `parent_cell_id` (its own cell plus the `margin_rings`-neighbour
-        buffer at `level_parent`). Apply it yourself: ``lon_deg[sample_idx]``,
+        to `parent_cell_id` (its own cells plus the `margin_rings`-neighbour
+        buffer at `level`). Apply it yourself: ``lon_deg[sample_idx]``,
         ``val[..., sample_idx]``, etc.
     out_cell_ids : numpy.ndarray
         The `level`-resolution cells contained in `parent_cell_id`, ready to
@@ -176,20 +180,27 @@ def subset_for_parent_cell(
         hp.zoom_to(parent_arr, level_parent, level, num_threads=num_threads)
     ).reshape(-1).astype(np.int64)
 
-    # --- piece 2: input-side filtering, with a margin -----------------------
-    sample_parent_ids = np.asarray(
-        hp.lonlat_to_healpix(lon_np, lat_np, level_parent, num_threads=num_threads, ellipsoid=ellipsoid)
+    # --- piece 2: input-side filtering, with a FINE-level margin ------------
+    # The margin must scale with the resampler's actual kernel reach at
+    # `level` (a handful of fine HEALPix rings), not with the *parent* cell's
+    # own, much larger size -- expanding by whole neighbouring PARENT cells
+    # would pull in a hugely disproportionate number of irrelevant samples.
+    # So buffer `out_cell_ids` itself (already at `level`) by `margin_rings`
+    # fine rings, rather than buffering `parent_cell_id` by parent rings.
+    if margin_rings > 0:
+        buffered_cells = np.asarray(
+            hp.kth_neighbourhood(out_cell_ids.astype(np.uint64), level, margin_rings, num_threads=num_threads)
+        ).reshape(-1).astype(np.int64)
+        buffered_cells = buffered_cells[buffered_cells >= 0]  # kth_neighbourhood pads with -1
+        keep_ids = np.unique(np.concatenate([out_cell_ids, buffered_cells]))
+    else:
+        keep_ids = out_cell_ids
+
+    sample_fine_ids = np.asarray(
+        hp.lonlat_to_healpix(lon_np, lat_np, level, num_threads=num_threads, ellipsoid=ellipsoid)
     ).astype(np.int64)
 
-    keep_ids = parent_arr.astype(np.int64)
-    if margin_rings > 0:
-        neighbours = np.asarray(
-            hp.kth_neighbourhood(parent_arr, level_parent, margin_rings, num_threads=num_threads)
-        ).reshape(-1).astype(np.int64)
-        neighbours = neighbours[neighbours >= 0]  # kth_neighbourhood pads with -1
-        keep_ids = np.unique(np.concatenate([keep_ids, neighbours]))
-
-    keep_mask = np.isin(sample_parent_ids, keep_ids)
+    keep_mask = np.isin(sample_fine_ids, keep_ids)
     sample_idx = np.nonzero(keep_mask)[0]
 
     return sample_idx, out_cell_ids

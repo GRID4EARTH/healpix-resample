@@ -79,15 +79,21 @@ contribute to a fine cell near the parent's edge. Filtering input strictly to "s
 would silently starve edge cells of legitimate neighbours -- a subtle bug that only shows up as
 slightly-degraded results near parent-cell boundaries, not as an error.
 
-`margin_rings` (default `1`) includes not just `parent_cell_id` but its ring-`margin_rings`
-neighbours at `level_parent` when filtering input. For `level_parent` many levels coarser than
-`level` -- the intended use case, where a parent cell is already many multiples of a typical
-`sigma_m` wide -- `margin_rings=1` is very likely generous. But this depends on *your* `sigma_m`/
-`threshold` choice, not on this function's defaults: if you shrink `sigma_m` or loosen `threshold`
-enough that the kernel's reach approaches a `level_parent` cell's own width, increase `margin_rings`
-accordingly. As a rule of thumb, compare the parent cell's angular width
-(`sqrt(4*pi/(12*4**level_parent))` radians) against the kernel's actual reach for your resampler, and
-size the margin so the kernel can never reach past it.
+`margin_rings` (default `1`) is measured in **fine-`level`** HEALPix rings, not `level_parent`
+rings: a sample is kept if its own `level` cell is within `margin_rings` rings of *any* fine cell
+inside `parent_cell_id` (i.e. of `out_cell_ids`, expanded via `healpix_geo.*.kth_neighbourhood` at
+`level`). This matters because a fine cell is typically vastly smaller than a parent cell --
+buffering by whole neighbouring *parent-level* cells instead (one ring already means "pull in every
+neighbouring parent cell in full") would keep a hugely disproportionate number of irrelevant samples
+relative to the resampler's actual kernel reach at `level`. This is a correctness guarantee, not just
+a performance knob: the margin must be wide enough that the resampler's actual kernel reach
+(`sigma_m` and the effective radius implied by `threshold`) can never extend past it, but sized at the
+*fine* scale the kernel actually operates at. `margin_rings=1` is very likely generous relative to a
+fine cell's own width, but this depends on *your* `sigma_m`/`threshold` choice, not on this function's
+defaults -- if you shrink `sigma_m` or loosen `threshold` enough that the kernel reaches past a
+handful of fine cells, increase `margin_rings` accordingly. As a rule of thumb, compare a fine cell's
+angular width (`sqrt(4*pi/(12*4**level))` radians) against the kernel's actual reach for your
+resampler, and size the margin so the kernel can never reach past it.
 
 ## A separate, smaller caveat: `out_cell_ids` gap-filling fallbacks are local, not global
 

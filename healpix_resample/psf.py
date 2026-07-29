@@ -183,6 +183,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         sigma_m=None,
         threshold: float = 0.1,
         area: Optional[T_Array] = None,
+        fill_missing_out_cells: bool = False,
         **kwargs,
     ):
         """
@@ -190,6 +191,31 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
         Parameters
         ----------
+        fill_missing_out_cells : bool
+            Only relevant when ``out_cell_ids`` is supplied. Some requested
+            output cells can end up with too little real kernel support (an
+            empty or near-empty column of ``M``, or -- separately -- some
+            input samples with too little real link weight in ``MT``) --
+            e.g. when ``out_cell_ids`` force-includes cells the KNN search
+            wouldn't have retained on its own. This originated as a targeted
+            patch for a specific use case (river mouths in ocean models,
+            where an approximate value was preferred over a gap), but the
+            fallback it triggers is expensive: an unvectorized Python loop
+            computing a full distance search per affected cell/sample
+            (``comp_matrix``'s ``bad_k`` handling), which can be very slow
+            for more than a handful of affected cells -- exactly the
+            situation you can hit when combining ``out_cell_ids`` with
+            :func:`~healpix_resample.subset_for_parent_cell`.
+
+            - ``False`` (the default): skip that fallback entirely. Output
+              cells that don't have enough real support are left as ``nan``
+              in :meth:`resample`'s result rather than filled with an
+              approximate nearest-single-sample value -- correct, and fast.
+            - ``True``: restore the original fallback-fill behaviour exactly
+              (approximate but non-NaN values for weakly-supported cells).
+              Opt into this only if you specifically need a value rather
+              than a gap for those cells, and can tolerate the extra
+              construction cost when many cells/samples are affected.
         area : array-like, "auto", or None
             Per-sample pixel area/weight of the *native* (source) grid, shape
             ``(N,)``. This is baked directly into the source-to-HEALPix
@@ -248,8 +274,10 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 )
         # Set before super().__init__() -- KNeighborsResampler.__init__ calls
         # comp_matrix() internally at construction time, and comp_matrix()
-        # (below) needs self.area to already exist.
+        # (below) needs self.area and self.fill_missing_out_cells to already
+        # exist.
         self.area = area_t
+        self.fill_missing_out_cells = bool(fill_missing_out_cells)
 
         super().__init__(
             lon_deg=lon_deg,
@@ -347,15 +375,31 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         if cell_out_ids is None:
             cell_out_ids = getattr(self, "out_cell_ids", None)
 
+        # Uncomputable output cells (requested via out_cell_ids but with too
+        # little real kernel support to trust): resample() forces these to
+        # NaN, unless fill_missing_out_cells=True restores the old
+        # approximate-fallback behaviour instead. None when there's nothing
+        # to flag (no out_cell_ids, or every requested cell has enough
+        # support).
+        self.uncomputable_out_cells = None
+
         if cell_out_ids is not None:
             # weak/empty columns in M (per output healpix cell k) -- compared
             # against the area-independent raw weight sum, so `threshold`
             # keeps its original meaning ("enough kernel support") regardless
             # of the magnitude/units of `area`.
             bad_k = torch.nonzero(norm_col_raw <= self.threshold).reshape(-1)
-              
-            if bad_k.numel() > 0:
-                
+
+            if bad_k.numel() > 0 and not self.fill_missing_out_cells:
+                # Fast path (default): don't run the expensive per-cell
+                # fallback below at all. Leave these columns exactly as
+                # computed (weak or empty) and record them so resample()
+                # can force their output to nan -- see
+                # fill_missing_out_cells's docstring in __init__.
+                self.uncomputable_out_cells = bad_k.clone()
+
+            if bad_k.numel() > 0 and self.fill_missing_out_cells:
+
                 # Require geometry buffers (unit vectors)
                 if (not hasattr(self, "xyz_samples")) or (not hasattr(self, "xyz_cells")):
                     raise RuntimeError(
@@ -435,16 +479,20 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 norm_col = norm_col.clone()
                 norm_col[bad_k] = torch.stack(fallback_area)
 
-            # do the same fo the transpose
-            # weak/empty columns in M (per output healpix cell k) -- again
-            # compared against the area-independent raw weight sum (norm_row
-            # and norm_row_raw only differ by each sample's own area factor,
+            # do the same for the transpose
+            # weak/empty rows in MT (per input sample) -- again compared
+            # against the area-independent raw weight sum (norm_row and
+            # norm_row_raw only differ by each sample's own area factor,
             # which cancels out of MT itself, but not out of a raw threshold
-            # comparison).
+            # comparison). This is a *sample*-side concern (affects
+            # invert()), unrelated to which output cells resample() can
+            # compute -- so it's gated by the same fill_missing_out_cells
+            # flag (same expensive-fallback tradeoff) but doesn't feed
+            # uncomputable_out_cells.
             bad_k = torch.nonzero(norm_row_raw <= self.threshold).reshape(-1)
-              
-            if bad_k.numel() > 0:
-                
+
+            if bad_k.numel() > 0 and self.fill_missing_out_cells:
+
                 # Require geometry buffers (unit vectors)
                 if (not hasattr(self, "xyz_samples")) or (not hasattr(self, "xyz_cells")):
                     raise RuntimeError(
@@ -593,6 +641,15 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         the rows that actually went through a CG solve; if every row is
         all-NaN, ``cg_niters`` is ``0`` and ``cg_residual_norms`` is ``nan``.
 
+        Uncomputable ``out_cell_ids`` cells also read as NaN by default
+        --------------------------------------------------------------------
+        Separately from sample-side NaN handling above: if this instance was
+        constructed with ``out_cell_ids`` and ``fill_missing_out_cells=False``
+        (the default), any requested cell with too little real kernel
+        support is forced to ``nan`` here, for every batch row, rather than
+        filled with an approximate value -- see ``fill_missing_out_cells`` in
+        ``__init__``.
+
         Returns:
             hval: (B,K) or (K,)
             (optional) info: CG information dict
@@ -689,6 +746,20 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
                 mu = (F_target - hval[sel].sum(dim=-1, keepdim=True)) / w.sum()             # (S,1)
                 hval[sel] = hval[sel] + mu * w                                              # (S,K)
+
+        # Force nan for output cells flagged as uncomputable at construction
+        # time (out_cell_ids-requested cells with too little real kernel
+        # support -- see fill_missing_out_cells in __init__). Applied last,
+        # after the CG solve and any conservative correction: those cells'
+        # CG-produced values (if any) are not meaningful regardless of what
+        # the solve happened to converge to, and applying this before the
+        # conservative correction would let a handful of nan cells poison
+        # every other cell's correction via hval[sel].sum(). Note this means
+        # conservative=True's global constraint is still computed *including*
+        # these cells' (pre-nan) contribution -- a known, minor interaction
+        # this flag doesn't attempt to fully resolve.
+        if self.uncomputable_out_cells is not None and self.uncomputable_out_cells.numel() > 0:
+            hval[:, self.uncomputable_out_cells] = float("nan")
 
         if val is not None and val.ndim == 1:
             hval = hval[0]
