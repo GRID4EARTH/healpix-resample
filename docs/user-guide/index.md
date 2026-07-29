@@ -71,6 +71,12 @@ Fastest option. One cell per sample, no interpolation.
 :link-type: doc
 Gaussian kernel + conjugate gradient. Best quality.
 :::
+
+:::{grid-item-card} Parent-cell subsetting
+:link: regrid_to_healpix_parent_cell_subsetting
+:link-type: doc
+Process one coarse HEALPix cell at a time for large-scale/global datasets.
+:::
 ::::
 
 ```{toctree}
@@ -81,4 +87,5 @@ regrid_to_healpix_bilinear
 regrid_to_healpix_nearest
 regrid_to_healpix_bicubic
 regrid_to_healpix_psf
+regrid_to_healpix_parent_cell_subsetting
 ```

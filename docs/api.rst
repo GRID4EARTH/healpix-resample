@@ -15,6 +15,21 @@ Resamplers
    healpix_resample.GroupByResampler
    healpix_resample.ConservativeResampler
 
+Large-scale processing
+----------------------
+
+:func:`~healpix_resample.subset_for_parent_cell` restricts a resampler's
+input samples *and* output cells to one coarse HEALPix parent cell, so a
+global dataset can be processed one parent cell at a time without ever
+constructing a resampler over the full input. See the
+:doc:`user-guide/regrid_to_healpix_parent_cell_subsetting` page for the
+workflow.
+
+.. autosummary::
+   :toctree: generated
+
+   healpix_resample.subset_for_parent_cell
+
 Base class
 ----------
 

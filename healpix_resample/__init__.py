@@ -6,6 +6,7 @@ from healpix_resample.nearest import NearestResampler
 from healpix_resample.psf import PSFResampler
 from healpix_resample.groupby import GroupByResampler, CellPointResampler
 from healpix_resample.conservative import ConservativeResampler
+from healpix_resample.subsetting import subset_for_parent_cell
 
 
-__all__ = ["BicubicResampler", "BilinearResampler", "KNeighborsResampler", "NearestResampler", "PSFResampler", "CellPointResampler", "GroupByResampler", "ConservativeResampler"]
+__all__ = ["BicubicResampler", "BilinearResampler", "KNeighborsResampler", "NearestResampler", "PSFResampler", "CellPointResampler", "GroupByResampler", "ConservativeResampler", "subset_for_parent_cell"]
