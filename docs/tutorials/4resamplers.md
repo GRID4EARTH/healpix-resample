@@ -21,6 +21,7 @@ from healpix_resample import (
     NearestResampler,
     BilinearResampler,
     BicubicResampler,
+    CloughTocherResampler,
     PSFResampler,
     CellPointResampler,
     ConservativeResampler,
@@ -77,6 +78,24 @@ res_bicubic = nr_bicubic.resample(val, lam=0.0)
 rval_bicubic = nr_bicubic.invert(res_bicubic.cell_data)
 mse_bicubic = np.mean((rval_bicubic - val) ** 2)
 print(f"Bicubic  — output cells: {res_bicubic.cell_data.shape[0]}, MSE: {mse_bicubic:.2e}")
+```
+
+### `CloughTocherResampler`
+
+A **Delaunay triangulation + Clough-Tocher C1 cubic** interpolant — a genuine bivariate interpolant (exact
+at input points, C1 continuous across triangle edges), rather than a radial kernel sum like
+`BicubicResampler`. On fields with real curvature this shows fewer small-scale artifacts than
+`BicubicResampler`, because its discrete KNN neighbour-set membership can flip between adjacent output
+cells; Delaunay/CT has no such failure mode. Only resamples cells whose center falls **inside the convex
+hull** of the input samples (no extrapolation), and is intended for regional/local input extents (it
+projects samples to a local tangent plane — see `docs/user-guide/regrid_to_healpix_clough_tocher.md`).
+`invert()` is not implemented for this class (see its docstring).
+
+```{code-cell} python
+nr_ct = CloughTocherResampler(lon_deg=lon, lat_deg=lat, level=level, verbose=False)
+res_ct = nr_ct.resample(val)
+
+print(f"Clough-Tocher — output cells: {res_ct.cell_data.shape[0]} (only cells inside the sample convex hull)")
 ```
 
 ### Conservative mode (`BilinearResampler` / `BicubicResampler`)

@@ -25,6 +25,7 @@ dependencies = [
   "numpy",
   "torch",
   "healpix-geo",
+  "scipy",
 ]
 
 [tool.setuptools.packages.find]

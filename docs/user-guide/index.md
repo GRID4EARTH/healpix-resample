@@ -66,6 +66,12 @@ Fastest option. One cell per sample, no interpolation.
 16-point radial cubic-convolution interpolation. Smoother than bilinear, no CG solve.
 :::
 
+:::{grid-item-card} CloughTocherResampler
+:link: regrid_to_healpix_clough_tocher
+:link-type: doc
+Delaunay triangulation + Clough-Tocher C1 cubic. Genuine bivariate interpolant, no extrapolation outside the sample convex hull.
+:::
+
 :::{grid-item-card} PSFResampler
 :link: regrid_to_healpix_psf
 :link-type: doc
@@ -92,6 +98,7 @@ BitmaskResampler (independent flags) and CategoricalResampler (mutually-exclusiv
 regrid_to_healpix_bilinear
 regrid_to_healpix_nearest
 regrid_to_healpix_bicubic
+regrid_to_healpix_clough_tocher
 regrid_to_healpix_psf
 regrid_to_healpix_parent_cell_subsetting
 regrid_to_healpix_mask
