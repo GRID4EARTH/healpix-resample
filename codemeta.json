@@ -1,0 +1,141 @@
+{
+  "@context": "https://doi.org/10.5063/schema/codemeta-2.0",
+  "@type": "SoftwareSourceCode",
+  "@id": "https://doi.org/10.5281/zenodo.21723671",
+  "identifier": "https://doi.org/10.5281/zenodo.21723671",
+  "name": "healpix-resample",
+  "description": "A lightweight, GPU-friendly Python package for regridding data from unstructured longitude/latitude samples onto a HEALPix grid. The PSFResampler treats projected-grid pixels as sparse, spatially weighted measurements of an unknown HEALPix field and recovers that field through a matrix-free weighted least-squares problem, jointly accounting for the sensor point spread function and the source-to-HEALPix geometry.",
+  "version": "2026.07.0",
+  "dateModified": "2026-07-31",
+  "license": "https://spdx.org/licenses/Apache-2.0",
+  "codeRepository": "https://github.com/GRID4EARTH/healpix-resample",
+  "url": "https://grid4earth.eu/healpix-resample/",
+  "issueTracker": "https://github.com/GRID4EARTH/healpix-resample/issues",
+  "programmingLanguage": {
+    "@type": "ComputerLanguage",
+    "name": "Python",
+    "version": ">=3.10"
+  },
+  "runtimePlatform": "Python 3",
+  "operatingSystem": "OS Independent",
+  "developmentStatus": "active",
+  "applicationCategory": "Earth Observation",
+  "keywords": [
+    "HEALPix",
+    "Discrete Global Grid Systems",
+    "DGGS",
+    "resampling",
+    "regridding",
+    "point spread function",
+    "inverse problems",
+    "Earth observation",
+    "Sentinel-2",
+    "GRID4EARTH"
+  ],
+  "softwareRequirements": [
+    {
+      "@type": "SoftwareApplication",
+      "identifier": "numpy",
+      "name": "numpy"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "identifier": "torch",
+      "name": "PyTorch"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "identifier": "healpix-geo",
+      "name": "healpix-geo",
+      "sameAs": "https://doi.org/10.5281/zenodo.19337734"
+    }
+  ],
+  "funding": "ESA contract 4000147951/25/I-NS",
+  "funder": {
+    "@type": "Organization",
+    "name": "European Space Agency",
+    "alternateName": "ESA"
+  },
+  "author": [
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0000-0002-0713-1658",
+      "givenName": "Jean-Marc",
+      "familyName": "Delouis",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0009-0001-4011-3574",
+      "givenName": "Benoît",
+      "familyName": "Bovy",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "GEORODE"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0000-0002-1784-2920",
+      "givenName": "Anne",
+      "familyName": "Fouilloux",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "LifeWatch ERIC"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0009-0008-3748-9395",
+      "givenName": "Camille",
+      "familyName": "Gueguen",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0000-0002-1500-0156",
+      "givenName": "Tina",
+      "familyName": "Odaka",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0000-0002-4254-8002",
+      "givenName": "Justus",
+      "familyName": "Magin",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0000-0002-8763-1643",
+      "givenName": "Jean",
+      "familyName": "Iaquinta",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "VitenHub AS"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://orcid.org/0009-0007-0360-0692",
+      "givenName": "Etienne",
+      "familyName": "Cap",
+      "affiliation": {
+        "@type": "Organization",
+        "name": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM"
+      }
+    }
+  ]
+}

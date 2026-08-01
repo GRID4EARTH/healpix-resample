@@ -1,0 +1,70 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+title: "healpix-resample: PSF-aware resampling tools for HEALPix Earth-observation grids"
+abstract: >-
+  A lightweight, GPU-friendly Python package for regridding data from
+  unstructured longitude/latitude samples onto a HEALPix grid. Every resampler
+  builds a sparse PyTorch operator mapping input samples to a subset of HEALPix
+  cells at a chosen resolution level. The PSFResampler treats projected-grid
+  pixels as sparse, spatially weighted measurements of an unknown HEALPix field
+  and recovers that field through a matrix-free weighted least-squares problem,
+  jointly accounting for the sensor point spread function and the
+  source-to-HEALPix geometry.
+type: software
+license: Apache-2.0
+repository-code: "https://github.com/GRID4EARTH/healpix-resample"
+url: "https://grid4earth.eu/healpix-resample/"
+version: "2026.07.0"
+date-released: "2026-07-31"
+doi: "10.5281/zenodo.21723671"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21723671"
+    description: "Concept DOI resolving to the latest version - cite this to cite the project"
+  - type: doi
+    value: "10.5281/zenodo.21723672"
+    description: "Version DOI for v2026.07.0"
+keywords:
+  - HEALPix
+  - Discrete Global Grid Systems
+  - DGGS
+  - resampling
+  - regridding
+  - point spread function
+  - inverse problems
+  - Earth observation
+  - Sentinel-2
+  - GRID4EARTH
+authors:
+  - family-names: Delouis
+    given-names: Jean-Marc
+    orcid: "https://orcid.org/0000-0002-0713-1658"
+    affiliation: "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzané, France"
+  - family-names: Bovy
+    given-names: Benoît
+    orcid: "https://orcid.org/0009-0001-4011-3574"
+    affiliation: "GEORODE, Liège, Belgium"
+  - family-names: Fouilloux
+    given-names: Anne
+    orcid: "https://orcid.org/0000-0002-1784-2920"
+    affiliation: "LifeWatch ERIC, Seville, Spain"
+  - family-names: Gueguen
+    given-names: Camille
+    orcid: "https://orcid.org/0009-0008-3748-9395"
+    affiliation: "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzané, France"
+  - family-names: Odaka
+    given-names: Tina
+    orcid: "https://orcid.org/0000-0002-1500-0156"
+    affiliation: "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzané, France"
+  - family-names: Magin
+    given-names: Justus
+    orcid: "https://orcid.org/0000-0002-4254-8002"
+    affiliation: "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzané, France"
+  - family-names: Iaquinta
+    given-names: Jean
+    orcid: "https://orcid.org/0000-0002-8763-1643"
+    affiliation: "VitenHub AS, Norway"
+  - family-names: Cap
+    given-names: Etienne
+    orcid: "https://orcid.org/0009-0007-0360-0692"
+    affiliation: "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzané, France"
