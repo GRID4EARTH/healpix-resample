@@ -1,0 +1,78 @@
+{
+  "title": "healpix-resample: PSF-aware resampling tools for HEALPix Earth-observation grids",
+  "description": "<p>A lightweight, GPU-friendly Python package for regridding data from unstructured longitude/latitude samples onto a HEALPix grid. Every resampler builds a sparse PyTorch operator mapping input samples to a subset of HEALPix cells at a chosen resolution level, so the same forward/inverse operator can be reused, batched, and run on CPU or CUDA.</p><p>The <code>PSFResampler</code> treats projected-grid pixels as sparse, spatially weighted measurements of an unknown HEALPix field and recovers that field through a matrix-free weighted least-squares problem, jointly accounting for the sensor point spread function and the source-to-HEALPix geometry. Nearest-neighbour, bilinear, bicubic, conservative, group-by and cell-point resamplers share the same API.</p><p>Part of the GRID4EARTH open-source HEALPix tool stack, alongside healpix-geo, healpix-analyse and healpix-plot.</p>",
+  "upload_type": "software",
+  "license": "Apache-2.0",
+  "access_right": "open",
+  "creators": [
+    {
+      "name": "Delouis, Jean-Marc",
+      "orcid": "0000-0002-0713-1658",
+      "affiliation": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzane, France"
+    },
+    {
+      "name": "Bovy, Benoit",
+      "orcid": "0009-0001-4011-3574",
+      "affiliation": "GEORODE, Liege, Belgium"
+    },
+    {
+      "name": "Fouilloux, Anne",
+      "orcid": "0000-0002-1784-2920",
+      "affiliation": "LifeWatch ERIC, Seville, Spain"
+    },
+    {
+      "name": "Gueguen, Camille",
+      "orcid": "0009-0008-3748-9395",
+      "affiliation": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzane, France"
+    },
+    {
+      "name": "Odaka, Tina",
+      "orcid": "0000-0002-1500-0156",
+      "affiliation": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzane, France"
+    },
+    {
+      "name": "Magin, Justus",
+      "orcid": "0000-0002-4254-8002",
+      "affiliation": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzane, France"
+    },
+    {
+      "name": "Iaquinta, Jean",
+      "orcid": "0000-0002-8763-1643",
+      "affiliation": "VitenHub AS, Norway"
+    },
+    {
+      "name": "Cap, Etienne",
+      "orcid": "0009-0007-0360-0692",
+      "affiliation": "LOPS UMR 6523, CNRS-IFREMER-IRD-Univ. Brest-IUEM, Plouzane, France"
+    }
+  ],
+  "keywords": [
+    "HEALPix",
+    "Discrete Global Grid Systems",
+    "DGGS",
+    "resampling",
+    "regridding",
+    "point spread function",
+    "inverse problems",
+    "Earth observation",
+    "Sentinel-2",
+    "GRID4EARTH",
+    "xarray",
+    "PyTorch"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "10.5281/zenodo.19337734",
+      "relation": "requires",
+      "resource_type": "software",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "https://github.com/GRID4EARTH/healpix-resample",
+      "relation": "isSupplementTo",
+      "resource_type": "software",
+      "scheme": "url"
+    }
+  ],
+  "notes": "Developed primarily in the frame of the ESA-funded GRID4EARTH project, ESA Digital Twin Earth Framework: Common DGGS for DestinE and Copernicus Sentinel Data, ESA contract 4000147951/25/I-NS."
+}
