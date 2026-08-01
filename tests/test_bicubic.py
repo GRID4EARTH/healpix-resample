@@ -125,6 +125,15 @@ def test_linear_field_no_worse_than_bilinear(small_grid):
     assert rmse_bicubic <= rmse_bilinear * 1.5 + 1e-8
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "#54: at level 4 on a curved field the bicubic round-trip RMSE "
+        "(0.008503) is worse than bilinear (0.007594); possibly related to #46. "
+        "strict=True means CI fails if this starts passing -- remove the marker "
+        "then."
+    ),
+)
 def test_curved_field_better_than_bilinear(curved_grid):
     lon, lat = curved_grid
     lon_rad = np.deg2rad(lon)

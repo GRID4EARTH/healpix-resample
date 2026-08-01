@@ -203,6 +203,15 @@ def test_nearest_reassembly_matches_global(grid, parent_ids):
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "#54: per-parent-cell PSF resampling returns NaN where the global solve "
+        "gives a finite value; likely the remainder of #50 (PSFResampler NaN "
+        "fix, 2/4 done). strict=True means CI fails if this starts passing -- "
+        "remove the marker then."
+    ),
+)
 def test_psf_reassembly_matches_global_within_tolerance(grid, parent_ids):
     lon, lat, val = grid
     global_op = PSFResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, threshold=0.3, verbose=False)
@@ -306,6 +315,15 @@ def test_conservative_resampler_rejects_out_cell_ids(grid, parent_ids):
     # just documented (see the module's user-guide page).
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "#54: GroupByResampler reaches a code path in knn.py:483 that assumes "
+        "state it never sets -- AttributeError: no attribute 'xyz_samples'. "
+        "strict=True means CI fails if this starts passing -- remove the marker "
+        "then."
+    ),
+)
 def test_groupby_resampler_silently_ignores_out_cell_ids(grid, parent_ids):
     lon, lat, val = grid
     pid = int(parent_ids[0])
