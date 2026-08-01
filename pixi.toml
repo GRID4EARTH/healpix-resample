@@ -55,6 +55,41 @@ jupyter-resource-usage = "*"
 jupyterlab_code_formatter = "*"
 isort = "*"
 
+[feature.notebooks.dependencies]
+# Everything notebooks/test-resample-paper.ipynb imports. Previously none of
+# these were declared in any environment, so the notebook that produces the
+# paper's tables and figures could not be run from a checkout.
+# numba is pulled in by xarray-eopf -> xcube-resampling (numba>=0.52).
+# numba 0.66 requires numpy<2.5; without this ceiling the resolver
+# backtracks to numba 0.53.1 (2021), whose setup.py rejects Python >=3.10.
+numpy = ">=2.4.2,<2.5"
+cdsapi = "*"
+cfgrib = "*"
+healpy = "*"
+matplotlib-base = ">=3.7,<4"
+pandas = "*"
+pillow = "*"
+pyproj = "*"
+pystac-client = "*"
+scikit-image = "*"
+scikit-learn = "*"
+scipy = "*"
+xarray = "*"
+# xarray-eopf 0.3.0 is the only package in the tree constraining zarr, and it
+# does not yet support Zarr v3. The notebook only round-trips its own cache,
+# so v2 is sufficient here.
+zarr = ">=2.11,<3"
+
+[feature.notebooks.pypi-dependencies]
+# not packaged on conda-forge; provides the engine="xarray-eopf" backend used
+# to open Sentinel-2 assets from the EOPF STAC
+xarray-eopf = ">=0.3.0"
+# reached via xarray-eopf -> dask-image -> pims. slicerator declares no
+# requires_python at all, so without a floor the resolver can select
+# pre-3.10 releases whose setup.py rejects modern Python.
+slicerator = ">=1.1.0"
+
 [environments]
 default = ["test", "dev", "affine"]
 docs = ["docs"]
+notebooks = ["notebooks"]
