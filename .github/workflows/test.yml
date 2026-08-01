@@ -1,0 +1,32 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install pixi
+        uses: prefix-dev/setup-pixi@v0.9.6
+        with:
+          # the default environment already includes the `test` feature
+          # (pytest + pytest-cov), see [environments] in pixi.toml
+          environments: default
+
+      - name: Run tests
+        run: pixi run pytest -v --cov=healpix_resample --cov-report=term-missing
