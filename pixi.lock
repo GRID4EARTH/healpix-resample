@@ -5566,7 +5566,7 @@ packages:
   - numpy
   - torch
   - healpix-geo
-  requires_python: '>=3.8'
+  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/1d/11/2e5967fff7af438c08ab23cf6366cd15e80e99e28c30954cf76d1898cf12/healpix_geo-0.2.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
   name: healpix-geo
   version: 0.2.1
