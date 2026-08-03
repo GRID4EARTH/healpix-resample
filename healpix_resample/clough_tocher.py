@@ -19,23 +19,23 @@ Clough-Tocher macro-element is built, by construction, to be C1 (value
 Design decisions (do not re-litigate here -- see the planning doc):
 
 - **Full custom torch implementation, not a scipy wrapper.** Gradient
-  estimation, the Bezier control-net assembly, and the final evaluation are
-  all precompiled into one sparse ``(N, K)`` matrix ``self.M``, built once
-  in ``__init__`` -- exactly like every other resampler in this package
-  (`comp_matrix()`-equivalent construction), so that ``resample(val)`` is a
-  single batched sparse matmul, not a per-call computation. The **one**
-  unavoidable exception is the Delaunay triangulation *topology* itself
-  (`scipy.spatial.Delaunay`, Qhull-backed): no mature GPU/torch-native
-  Delaunay library exists, so this -- and locating which triangle each
-  candidate HEALPix cell center falls in (`Delaunay.find_simplex`) -- runs
-  once per construction, on CPU/NumPy, exactly analogous to how this
-  package already treats `healpix_geo` (see `knn.py`'s
-  ``lon_np = longitude1.detach().cpu().numpy()`` pattern). The sparse
-  `(N, K)` operator assembly itself (turning "which triangle, which
-  micro-triangle, which Bezier weights" into COO index/value arrays) is
-  also done in NumPy for implementation-risk reasons specific to this
-  session (see the module-level `NOTE` below), then handed to torch as a
-  proper sparse tensor for GPU-batched use at `resample()` time.
+  estimation (`_build_gradient_operators`), the per-triangle Bezier
+  control-net assembly (`_triangle_ct_coefficients`), and the final sparse
+  `(N, K)` operator assembly (`_assemble_M`) are all torch tensor
+  operations, capable of running on GPU (`device="cuda"`) exactly like
+  every other resampler's `comp_matrix()`. `self.M` is built once in
+  `__init__`, so `resample(val)` is a single batched sparse matmul, not a
+  per-call computation. The **only** unavoidable CPU/NumPy steps are the
+  Delaunay triangulation *topology* itself (`scipy.spatial.Delaunay`,
+  Qhull-backed -- no mature GPU/torch-native Delaunay library exists) and
+  locating which triangle each candidate HEALPix cell center falls in
+  (`Delaunay.find_simplex`), plus the `healpix_geo` calls used to enumerate
+  candidate cells -- exactly analogous to how this package already treats
+  `healpix_geo` elsewhere (see `knn.py`'s
+  ``lon_np = longitude1.detach().cpu().numpy()`` pattern). Everything
+  downstream of "which triangle, which micro-triangle" -- i.e. everything
+  whose cost scales with `N` (samples), the number of Delaunay edges, or
+  `K` (output cells) -- runs as torch tensor ops on `self.device`.
 - **Gradient estimation: local least-squares plane fit** at each
   triangulation vertex, using that vertex's direct Delaunay 1-ring
   neighbours. This is precomputed as two sparse ``(N, N)`` matrices
@@ -90,9 +90,17 @@ affine field exactly by induction -- this is a structural argument, not a
 substitute for actually running the numeric check in the test suite).
 **Before trusting this module, run `tests/test_clough_tocher.py` and, in
 particular, `test_affine_field_is_exact` and
-`test_c1_continuity_across_shared_edge` -- these are the two checks
+`test_edge_value_continuity_from_both_sides` -- these are the two checks
 `planning/05_clough_tocher_resampler.md` says must pass before anything
-built on top of this is trustworthy.**
+built on top of this is trustworthy.** The gradient-estimation and
+Bezier-assembly code was subsequently ported from NumPy to torch tensor
+ops (`_build_gradient_operators`, `_triangle_ct_coefficients`,
+`_barycentric_2d`, `_assemble_M`) so construction can run on GPU -- this is
+a mechanical, op-by-op port of the same already-reasoned-through formulas
+(no new math), but it is itself equally unexecuted; the NumPy/torch op
+correspondence (`torch.bincount` for `np.bincount`, `torch.repeat_interleave`
+for `np.repeat`, the `cumsum`-based ragged-gather index trick, etc.) should
+be spot-checked against the test suite too.
 
 This module is designed for large N and batched values (B,N), matching the
 rest of the package, though the Delaunay/assembly step itself is CPU-only.
@@ -173,13 +181,18 @@ def _gnomonic_project(lon_deg, lat_deg, t, east, north, radius: float):
 # ─────────────────────────────────────────────────────────────────────────
 
 def _build_gradient_operators(
-    points2d: np.ndarray,
+    points2d: torch.Tensor,
     tri: Delaunay,
     device: torch.device,
     dtype: torch.dtype,
     det_floor_rel: float = 1e-9,
 ):
     """Build sparse (N,N) Gx, Gy s.t. grad_x = Gx @ f, grad_y = Gy @ f.
+
+    Torch tensor ops throughout (GPU-capable) -- the only NumPy/CPU input is
+    `tri.vertex_neighbor_vertices` (scipy's Delaunay adjacency, cheap
+    bookkeeping), converted to torch immediately. `points2d` must already be
+    a torch tensor on `device`.
 
     For vertex i with 1-ring Delaunay neighbours j, fit a local plane
     (gx_i, gy_i) by least squares on value differences:
@@ -193,53 +206,63 @@ def _build_gradient_operators(
     f_j = f_i) must give zero gradient, each row of Gx/Gy sums to exactly
     zero by construction (the diagonal is set to minus the row's
     off-diagonal sum, not fit independently).
+
+    Returns
+    -------
+    Gx, Gy : sparse (N,N) torch tensors.
+    edges_j, coef_gx_edge, coef_gy_edge : (E,) torch tensors -- per-edge
+        neighbour index / gradient-estimator coefficients, reused directly
+        by `_assemble_M`'s ragged gather (avoids re-deriving them from Gx/Gy
+        by sparse-row extraction).
+    diag_gx, diag_gy : (N,) torch tensors -- per-vertex diagonal terms.
+    indptr : (N+1,) torch long tensor -- `tri`'s own CSR neighbour-list
+        offsets, reused by `_assemble_M`.
     """
     N = points2d.shape[0]
-    indptr, indices = tri.vertex_neighbor_vertices
-    indptr = indptr.astype(np.int64)
-    indices = indices.astype(np.int64)
-    degree = np.diff(indptr)
+    tiny = torch.finfo(dtype).tiny
 
-    edges_i = np.repeat(np.arange(N, dtype=np.int64), degree)
-    edges_j = indices
+    indptr_np, indices_np = tri.vertex_neighbor_vertices
+    indptr = torch.as_tensor(indptr_np.astype(np.int64), device=device)
+    edges_j = torch.as_tensor(indices_np.astype(np.int64), device=device)
+    degree = indptr[1:] - indptr[:-1]
+
+    edges_i = torch.repeat_interleave(torch.arange(N, device=device, dtype=torch.long), degree)
 
     dx = points2d[edges_j, 0] - points2d[edges_i, 0]
     dy = points2d[edges_j, 1] - points2d[edges_i, 1]
 
-    Sxx = np.bincount(edges_i, weights=dx * dx, minlength=N)
-    Sxy = np.bincount(edges_i, weights=dx * dy, minlength=N)
-    Syy = np.bincount(edges_i, weights=dy * dy, minlength=N)
+    Sxx = torch.bincount(edges_i, weights=dx * dx, minlength=N).to(dtype)
+    Sxy = torch.bincount(edges_i, weights=dx * dy, minlength=N).to(dtype)
+    Syy = torch.bincount(edges_i, weights=dy * dy, minlength=N).to(dtype)
     det = Sxx * Syy - Sxy * Sxy
 
     # Guard near-singular 1-rings (e.g. a vertex with < 2 non-collinear
     # neighbours) -- floor |det| away from zero relative to the 1-ring's own
     # squared length scale, rather than dividing by ~0. This only perturbs
     # pathological vertices; well-conditioned ones (the vast majority of any
-    # real Delaunay triangulation) are unaffected.
+    # real Delaunay triangulation) are unaffected. `tiny` (not a hardcoded
+    # 1e-300) so this stays sane under float32 too, not just the package's
+    # float64 default.
     scale2 = (Sxx + Syy) ** 2
-    floor = det_floor_rel * np.maximum(scale2, 1e-300)
-    det_sign = np.where(det >= 0, 1.0, -1.0)
-    det_safe = np.where(np.abs(det) < floor, det_sign * np.maximum(floor, 1e-300), det)
+    floor = det_floor_rel * torch.clamp(scale2, min=tiny)
+    det_sign = torch.where(det >= 0, torch.ones_like(det), -torch.ones_like(det))
+    det_safe = torch.where(det.abs() < floor, det_sign * torch.clamp(floor, min=tiny), det)
 
     coef_gx_edge = (Syy[edges_i] * dx - Sxy[edges_i] * dy) / det_safe[edges_i]
     coef_gy_edge = (-Sxy[edges_i] * dx + Sxx[edges_i] * dy) / det_safe[edges_i]
 
-    diag_gx = -np.bincount(edges_i, weights=coef_gx_edge, minlength=N)
-    diag_gy = -np.bincount(edges_i, weights=coef_gy_edge, minlength=N)
+    diag_gx = -torch.bincount(edges_i, weights=coef_gx_edge, minlength=N).to(dtype)
+    diag_gy = -torch.bincount(edges_i, weights=coef_gy_edge, minlength=N).to(dtype)
 
-    idx_np = np.arange(N, dtype=np.int64)
-    rows_all = np.concatenate([edges_i, idx_np])
-    cols_all = np.concatenate([edges_j, idx_np])
-    gx_vals_all = np.concatenate([coef_gx_edge, diag_gx])
-    gy_vals_all = np.concatenate([coef_gy_edge, diag_gy])
+    idx_all = torch.arange(N, device=device, dtype=torch.long)
+    rows_all = torch.cat([edges_i, idx_all])
+    cols_all = torch.cat([edges_j, idx_all])
+    gx_vals_all = torch.cat([coef_gx_edge, diag_gx])
+    gy_vals_all = torch.cat([coef_gy_edge, diag_gy])
 
-    indices_t = torch.as_tensor(np.stack([rows_all, cols_all]), dtype=torch.long, device=device)
-    Gx = torch.sparse_coo_tensor(
-        indices_t, torch.as_tensor(gx_vals_all, dtype=dtype, device=device), size=(N, N)
-    ).coalesce()
-    Gy = torch.sparse_coo_tensor(
-        indices_t, torch.as_tensor(gy_vals_all, dtype=dtype, device=device), size=(N, N)
-    ).coalesce()
+    indices_t = torch.stack([rows_all, cols_all], dim=0)
+    Gx = torch.sparse_coo_tensor(indices_t, gx_vals_all, size=(N, N), device=device, dtype=dtype).coalesce()
+    Gy = torch.sparse_coo_tensor(indices_t, gy_vals_all, size=(N, N), device=device, dtype=dtype).coalesce()
 
     return Gx, Gy, edges_j, coef_gx_edge, coef_gy_edge, diag_gx, diag_gy, indptr
 
@@ -289,30 +312,32 @@ def _candidate_output_cells(
 # Barycentric coordinates (2D)
 # ─────────────────────────────────────────────────────────────────────────
 
-def _barycentric_2d(px: np.ndarray, py: np.ndarray, A: np.ndarray, B: np.ndarray, C: np.ndarray) -> np.ndarray:
+def _barycentric_2d(px: torch.Tensor, py: torch.Tensor, A: torch.Tensor, B: torch.Tensor, C: torch.Tensor) -> torch.Tensor:
     """Barycentric coords (u, v, w) of (px, py) w.r.t. triangle (A, B, C).
 
-    P = u*A + v*B + w*C, u + v + w = 1. Standard 2x2-solve formula (e.g.
-    Ericson, "Real-Time Collision Detection"); well-defined (up to the
-    `denom` floor below) for any non-degenerate triangle, including for
-    points outside it (u/v/w can go negative -- the Clough-Tocher patch is a
-    polynomial, well-defined there too, which is exactly what's wanted at a
-    shared-edge continuity check evaluated "from both sides").
+    Torch tensors throughout (GPU-capable). P = u*A + v*B + w*C,
+    u + v + w = 1. Standard 2x2-solve formula (e.g. Ericson, "Real-Time
+    Collision Detection"); well-defined (up to the `denom` floor below) for
+    any non-degenerate triangle, including for points outside it (u/v/w can
+    go negative -- the Clough-Tocher patch is a polynomial, well-defined
+    there too, which is exactly what's wanted at a shared-edge continuity
+    check evaluated "from both sides").
     """
+    tiny = torch.finfo(px.dtype).tiny
     v0 = B - A
     v1 = C - A
-    v2 = np.stack([px, py], axis=-1) - A
-    d00 = (v0 * v0).sum(axis=-1)
-    d01 = (v0 * v1).sum(axis=-1)
-    d11 = (v1 * v1).sum(axis=-1)
-    d20 = (v2 * v0).sum(axis=-1)
-    d21 = (v2 * v1).sum(axis=-1)
+    v2 = torch.stack([px, py], dim=-1) - A
+    d00 = (v0 * v0).sum(dim=-1)
+    d01 = (v0 * v1).sum(dim=-1)
+    d11 = (v1 * v1).sum(dim=-1)
+    d20 = (v2 * v0).sum(dim=-1)
+    d21 = (v2 * v1).sum(dim=-1)
     denom = d00 * d11 - d01 * d01
-    denom_safe = np.where(np.abs(denom) < 1e-300, 1e-300, denom)
+    denom_safe = torch.where(denom.abs() < tiny, torch.full_like(denom, tiny), denom)
     v = (d11 * d20 - d01 * d21) / denom_safe
     w = (d00 * d21 - d01 * d20) / denom_safe
     u = 1.0 - v - w
-    return np.stack([u, v, w], axis=-1)
+    return torch.stack([u, v, w], dim=-1)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -328,36 +353,38 @@ def _barycentric_2d(px: np.ndarray, py: np.ndarray, A: np.ndarray, B: np.ndarray
 # planning/05 asks for).
 # ─────────────────────────────────────────────────────────────────────────
 
-def _triangle_ct_coefficients(U: np.ndarray):
+def _triangle_ct_coefficients(U: torch.Tensor):
     """9-dim linear-functional coefficients for every named CT quantity.
 
-    `U` has shape (T, 3, 2): the 3 (projected) vertex positions of each of
-    T triangles, in the triangle's own local order 0, 1, 2 (matching
-    `Delaunay.simplices`' own vertex order -- this function does not care
-    which vertex ends up being an "apex"; that's resolved later, per query
-    point, in `_assemble_M`).
+    Torch tensors throughout (GPU-capable). `U` has shape (T, 3, 2): the 3
+    (projected) vertex positions of each of T triangles, in the triangle's
+    own local order 0, 1, 2 (matching `Delaunay.simplices`' own vertex order
+    -- this function does not care which vertex ends up being an "apex";
+    that's resolved later, per query point, in `_assemble_M`).
 
-    Every returned array has shape (T, 9); column order is
+    Every returned tensor has shape (T, 9); column order is
     [f0, f1, f2, gx0, gy0, gx1, gy1, gx2, gy2]. A quantity Q's coefficient
     row `c` means `Q = c[0]*f0 + c[1]*f1 + ... + c[8]*gy2`.
 
     Returns a dict with keys:
-      "V"  : list of 3 arrays, coef(V_i) = coef(f_i) (trivial, one-hot)
+      "V"  : list of 3 tensors, coef(V_i) = coef(f_i) (trivial, one-hot)
       "T"  : dict {(i, j): coef(T_ij)} for i != j in {0, 1, 2}
-      "I1" : list of 3 arrays, coef(I_{i,1})  (Step 1, eq. 12)
-      "C"  : list of 3 arrays, coef(C_c)      (Step 2, eq. 15/16, CTo)
-      "I2" : list of 3 arrays, coef(I_{i,2})  (Step 3, eq. 13)
-      "S"  : array, coef(S) = coef(f(Z))      (Step 3, eq. 14)
+      "I1" : list of 3 tensors, coef(I_{i,1})  (Step 1, eq. 12)
+      "C"  : list of 3 tensors, coef(C_c)      (Step 2, eq. 15/16, CTo)
+      "I2" : list of 3 tensors, coef(I_{i,2})  (Step 3, eq. 13)
+      "S"  : tensor, coef(S) = coef(f(Z))      (Step 3, eq. 14)
     """
     Tn = U.shape[0]
+    device, dtype = U.device, U.dtype
+    tiny = torch.finfo(dtype).tiny
 
     def e(i):
-        c = np.zeros((Tn, 9))
+        c = torch.zeros((Tn, 9), dtype=dtype, device=device)
         c[:, i] = 1.0
         return c
 
     def grad_dot(i, d):
-        c = np.zeros((Tn, 9))
+        c = torch.zeros((Tn, 9), dtype=dtype, device=device)
         c[:, 3 + 2 * i] = d[:, 0]
         c[:, 3 + 2 * i + 1] = d[:, 1]
         return c
@@ -380,7 +407,7 @@ def _triangle_ct_coefficients(U: np.ndarray):
         j, k = [x for x in range(3) if x != i]
         I1.append((V[i] + T_coef[(i, j)] + T_coef[(i, k)]) / 3.0)
 
-    Z = U.mean(axis=1)  # (T, 2) centroid
+    Z = U.mean(dim=1)  # (T, 2) centroid
 
     # Step 2 (eq. 15/16, CTo -- orthogonal projection direction): for each
     # macro-edge (a, b) opposite vertex c, C_c is the interior ("b111")
@@ -392,9 +419,9 @@ def _triangle_ct_coefficients(U: np.ndarray):
         Ua = U[:, a, :]
         Ub = U[:, b, :]
         edge = Ub - Ua
-        edge_len2 = (edge * edge).sum(axis=1)
-        edge_len2_safe = np.where(edge_len2 < 1e-300, 1e-300, edge_len2)
-        lam_b = ((Z - Ua) * edge).sum(axis=1) / edge_len2_safe
+        edge_len2 = (edge * edge).sum(dim=1)
+        edge_len2_safe = torch.where(edge_len2 < tiny, torch.full_like(edge_len2, tiny), edge_len2)
+        lam_b = ((Z - Ua) * edge).sum(dim=1) / edge_len2_safe
         lam_a = 1.0 - lam_b
         C[c] = (
             lam_a[:, None] * T_coef[(a, b)]
@@ -427,24 +454,33 @@ def _triangle_ct_coefficients(U: np.ndarray):
 # ─────────────────────────────────────────────────────────────────────────
 
 def _assemble_M(
-    points2d: np.ndarray,
+    points2d: torch.Tensor,
     tri: Delaunay,
     simplex_idx: np.ndarray,
     qx: np.ndarray,
     qy: np.ndarray,
     N: int,
     K: int,
-    edges_j: np.ndarray,
-    coef_gx_edge: np.ndarray,
-    coef_gy_edge: np.ndarray,
-    diag_gx: np.ndarray,
-    diag_gy: np.ndarray,
-    nbr_indptr: np.ndarray,
+    edges_j: torch.Tensor,
+    coef_gx_edge: torch.Tensor,
+    coef_gy_edge: torch.Tensor,
+    diag_gx: torch.Tensor,
+    diag_gy: torch.Tensor,
+    nbr_indptr: torch.Tensor,
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.Tensor:
     """Build sparse CSR (N, K) `M` such that `hval = y @ M` evaluates the CT
     interpolant at the K (already hull-filtered) query points `(qx, qy)`.
+
+    Torch tensor ops throughout (GPU-capable). `points2d`, `edges_j`,
+    `coef_gx_edge`, `coef_gy_edge`, `diag_gx`, `diag_gy`, `nbr_indptr` must
+    already be torch tensors on `device` (as returned by
+    `_build_gradient_operators`). `simplex_idx`/`qx`/`qy` are still NumPy at
+    the call site (they come straight out of `scipy.spatial.Delaunay.
+    find_simplex`, which is CPU-only) and are converted to torch immediately
+    below -- everything scaling with `K` (query points) or the Delaunay edge
+    count from that point on runs as batched tensor ops.
 
     For each query point: locate its macro-triangle (`simplex_idx`), compute
     barycentric coordinates w.r.t. that triangle to pick the micro-triangle
@@ -452,35 +488,42 @@ def _assemble_M(
     `planning/05_clough_tocher_resampler.md` step 5), evaluate the cubic
     Bernstein-Bezier basis against that micro-triangle's 10 control points,
     and expand every control point's 9-dim (f, gradient) linear-functional
-    coefficients (from `_triangle_ct_coefficients`) through `Gx`/`Gy`'s
-    per-vertex edge lists into sparse (sample, query-point) entries.
+    coefficients (from `_triangle_ct_coefficients`) through the per-vertex
+    Delaunay edge lists into sparse (sample, query-point) entries.
     """
+    # Triangle bookkeeping (which of the K query points share a triangle) is
+    # cheap, small (<= K), and scipy-adjacent -- do it in NumPy, then move
+    # only the resulting compact per-triangle geometry to torch.
     used_simplices, simplex_local = np.unique(simplex_idx, return_inverse=True)
-    verts = tri.simplices[used_simplices].astype(np.int64)  # (Tloc, 3)
-    U = points2d[verts]  # (Tloc, 3, 2)
+    verts_np = tri.simplices[used_simplices].astype(np.int64)  # (Tloc, 3)
+    verts = torch.as_tensor(verts_np, device=device)  # (Tloc, 3) long
+
+    U = points2d[verts]  # (Tloc, 3, 2) torch, gathers directly from points2d
 
     ct = _triangle_ct_coefficients(U)
     V, T_coef, I1, C, I2, S = ct["V"], ct["T"], ct["I1"], ct["C"], ct["I2"], ct["S"]
-    Z = U.mean(axis=1)
+    Z = U.mean(dim=1)
 
-    tl = simplex_local  # (K,) local (compacted) triangle index per query point
+    tl = torch.as_tensor(simplex_local, dtype=torch.long, device=device)  # (K,)
+    qx_t = torch.as_tensor(qx, dtype=dtype, device=device)
+    qy_t = torch.as_tensor(qy, dtype=dtype, device=device)
 
-    beta = _barycentric_2d(qx, qy, U[tl, 0, :], U[tl, 1, :], U[tl, 2, :])
-    c_local = np.argmin(beta, axis=1)  # apex = smallest barycentric coordinate
+    beta = _barycentric_2d(qx_t, qy_t, U[tl, 0, :], U[tl, 1, :], U[tl, 2, :])
+    c_local = torch.argmin(beta, dim=1)  # apex = smallest barycentric coordinate
 
     rows_list = []
     cols_list = []
     vals_list = []
 
     for c in range(3):
-        sel = np.nonzero(c_local == c)[0]
-        if sel.size == 0:
+        sel = torch.nonzero(c_local == c, as_tuple=True)[0]
+        if sel.numel() == 0:
             continue
         a = (c + 1) % 3
         b = (c + 2) % 3
         tl_sel = tl[sel]
 
-        gamma = _barycentric_2d(qx[sel], qy[sel], U[tl_sel, a, :], U[tl_sel, b, :], Z[tl_sel])
+        gamma = _barycentric_2d(qx_t[sel], qy_t[sel], U[tl_sel, a, :], U[tl_sel, b, :], Z[tl_sel])
         ga, gb, gz = gamma[:, 0], gamma[:, 1], gamma[:, 2]
 
         w_va = ga ** 3
@@ -526,30 +569,31 @@ def _assemble_M(
             vals_list.append(diag_val)
 
             # off-diagonal neighbour-gradient contribution: ragged gather
-            # over v's 1-ring (same CSR-style trick used to build edges_i in
-            # _build_gradient_operators / to build sample_idx in knn.py).
+            # over v's 1-ring, via the same CSR-offset trick used to build
+            # edges_i in _build_gradient_operators (torch.repeat_interleave
+            # is the exact analogue of NumPy's per-element np.repeat here).
             deg = nbr_indptr[v + 1] - nbr_indptr[v]
-            total = int(deg.sum())
+            total = int(deg.sum().item())  # one small GPU->CPU sync, unavoidable for a ragged gather
             if total > 0:
-                k_rep = np.repeat(sel, deg)
+                k_rep = torch.repeat_interleave(sel, deg)
                 starts = nbr_indptr[v]
-                pos = np.arange(total) - np.repeat(np.cumsum(deg) - deg, deg)
-                src_idx = np.repeat(starts, deg) + pos
+                group_start = torch.cumsum(deg, dim=0) - deg
+                pos = torch.arange(total, device=device, dtype=torch.long) - torch.repeat_interleave(group_start, deg)
+                src_idx = torch.repeat_interleave(starts, deg) + pos
                 rows_off = edges_j[src_idx]
-                cgx_rep = np.repeat(c_gx, deg)
-                cgy_rep = np.repeat(c_gy, deg)
+                cgx_rep = torch.repeat_interleave(c_gx, deg)
+                cgy_rep = torch.repeat_interleave(c_gy, deg)
                 vals_off = cgx_rep * coef_gx_edge[src_idx] + cgy_rep * coef_gy_edge[src_idx]
                 rows_list.append(rows_off)
                 cols_list.append(k_rep)
                 vals_list.append(vals_off)
 
-    rows_all = np.concatenate(rows_list).astype(np.int64)
-    cols_all = np.concatenate(cols_list).astype(np.int64)
-    vals_all = np.concatenate(vals_list)
+    rows_all = torch.cat(rows_list)
+    cols_all = torch.cat(cols_list)
+    vals_all = torch.cat(vals_list)
 
-    indices_t = torch.as_tensor(np.stack([rows_all, cols_all]), dtype=torch.long, device=device)
-    values_t = torch.as_tensor(vals_all, dtype=dtype, device=device)
-    M_coo = torch.sparse_coo_tensor(indices_t, values_t, size=(N, K), device=device, dtype=dtype).coalesce()
+    indices_t = torch.stack([rows_all, cols_all], dim=0)
+    M_coo = torch.sparse_coo_tensor(indices_t, vals_all, size=(N, K), device=device, dtype=dtype).coalesce()
     return M_coo.to_sparse_csr()
 
 
@@ -697,6 +741,12 @@ class CloughTocherResampler:
                 "large dataset one local patch at a time."
             )
         self.points2d = np.stack([x, y], axis=-1)
+        # Torch copy on `self.device`, used for every downstream computation
+        # whose cost scales with N/edges/K (gradient operators, CT
+        # coefficients, sparse M assembly) -- `self.points2d` itself stays
+        # NumPy (documented public attribute, and scipy.spatial.Delaunay
+        # needs a NumPy array anyway).
+        points2d_t = torch.as_tensor(self.points2d, dtype=self.dtype, device=self.device)
 
         # ---- 2. Delaunay triangulation ---------------------------------
         try:
@@ -719,7 +769,7 @@ class CloughTocherResampler:
             diag_gy,
             nbr_indptr,
         ) = _build_gradient_operators(
-            self.points2d, self.tri, self.device, self.dtype, det_floor_rel=grad_det_floor_rel
+            points2d_t, self.tri, self.device, self.dtype, det_floor_rel=grad_det_floor_rel
         )
 
         # ---- 4. candidate output cells, filtered to the convex hull ----
@@ -767,7 +817,7 @@ class CloughTocherResampler:
 
         # ---- 5. assemble sparse M ---------------------------------------
         self.M = _assemble_M(
-            points2d=self.points2d,
+            points2d=points2d_t,
             tri=self.tri,
             simplex_idx=simplex_idx,
             qx=qx_k,

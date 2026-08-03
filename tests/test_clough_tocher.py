@@ -189,17 +189,21 @@ def test_edge_value_continuity_from_both_sides(small_grid):
     Q = op.points2d[q]
 
     def eval_from_simplex(simplex_id, px, py):
+        # _triangle_ct_coefficients / _barycentric_2d now operate on torch
+        # tensors (ported from NumPy so CloughTocherResampler's own
+        # construction can run on GPU) -- mirror that here.
         verts = simplices[simplex_id].astype(np.int64)
-        U = op.points2d[verts][None, :, :]  # (1, 3, 2)
+        U_np = op.points2d[verts][None, :, :]  # (1, 3, 2)
+        U = torch.as_tensor(U_np, dtype=op.dtype, device=op.device)
         ct = _triangle_ct_coefficients(U)
-        beta = _barycentric_2d(np.array([px]), np.array([py]), U[:, 0, :], U[:, 1, :], U[:, 2, :])
-        c = int(np.argmin(beta[0]))
+        px_t = torch.as_tensor([px], dtype=op.dtype, device=op.device)
+        py_t = torch.as_tensor([py], dtype=op.dtype, device=op.device)
+        beta = _barycentric_2d(px_t, py_t, U[:, 0, :], U[:, 1, :], U[:, 2, :])
+        c = int(torch.argmin(beta[0]).item())
         a_, b_ = (c + 1) % 3, (c + 2) % 3
-        Z = U.mean(axis=1)
-        gamma = _barycentric_2d(
-            np.array([px]), np.array([py]), U[:, a_, :], U[:, b_, :], Z
-        )[0]
-        ga, gb, gz = gamma
+        Z = U.mean(dim=1)
+        gamma = _barycentric_2d(px_t, py_t, U[:, a_, :], U[:, b_, :], Z)[0]
+        ga, gb, gz = float(gamma[0]), float(gamma[1]), float(gamma[2])
 
         def coef_to_value(coef_row):
             fvals = f.cpu().numpy()[verts]
@@ -210,7 +214,8 @@ def test_edge_value_continuity_from_both_sides(small_grid):
             )
             # column order [f0,f1,f2,gx0,gy0,gx1,gy1,gx2,gy2] matches
             # concatenation of fvals (3) then interleaved (gx,gy) per vertex.
-            return float(coef_row[0] @ local)
+            coef_np = coef_row[0].detach().cpu().numpy()
+            return float(coef_np @ local)
 
         val = (
             ga ** 3 * coef_to_value(ct["V"][a_])
