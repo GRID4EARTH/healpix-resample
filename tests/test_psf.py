@@ -273,3 +273,62 @@ def test_fill_missing_out_cells_true_restores_fallback(grid):
 
     assert bad_id in by_id
     assert np.isfinite(by_id[bad_id])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ring_search_max auto-correction for Npt beyond the historical default of 9
+#
+# Found via the paper review: recommend_npt() (psf_geometry.py) can recommend
+# Npt well above 9 for a PSF wider than one cell. Before this fix, that Npt
+# was silently unusable -- KNeighborsResampler's ring_search_max=2 default is
+# too small once ring_search_init(Npt) exceeds 2, so healpix_weighted_nearest's
+# per-sample KNN search loop never executes at all (every `hi` stays -1), and
+# every retained cell then looks orphaned and gets pruned: essentially the
+# whole operator silently vanishes, surfacing as
+# "[KNeighborsResampler] dropping N retained cell(s)..." at N close to the
+# total. BicubicResampler/NearestResampler already auto-correct this;
+# PSFResampler didn't until this fix.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_large_npt_does_not_orphan_every_cell(grid):
+    lon, lat = grid
+    val = _field(lon, lat)
+
+    # Npt=64 comfortably exceeds the historical default of 9, and would have
+    # needed ring_search_init=5 > the old hardcoded ring_search_max=2 --
+    # reproducing exactly the "+50%"/wide-PSF case from the review at a
+    # small enough Npt to run quickly in a test.
+    op = PSFResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, threshold=0.3, verbose=False, Npt=64)
+
+    # Before the fix: op.K would still report the un-pruned "passed the wide
+    # threshold" count, but every column would in fact be empty (`hi` all
+    # -1), so resample() would silently return all zeros here instead of a
+    # real field.
+    res = op.resample(val, lam=0.0, tol=1e-8, max_iter=100)
+    assert np.all(np.isfinite(res.cell_data))
+    assert not np.allclose(res.cell_data, 0.0)
+
+    # Every retained cell should be genuinely reachable (nothing pruned as
+    # orphaned) -- i.e. K should reflect actual, usable columns.
+    assert op.K == res.cell_ids.size
+    assert op.K > 0
+
+
+def test_ring_search_max_not_overridden_when_caller_supplies_it(grid):
+    lon, lat = grid
+
+    # An explicit (too-small) ring_search_max should still be respected, not
+    # silently replaced -- the auto-correction only fills in when the caller
+    # hasn't supplied one at all. With ring_search_max forced back down to 2,
+    # the per-sample KNN search loop can't run at all for Npt=64 (it would
+    # need ring_search_init=5): every sample's `hi` stays -1, every retained
+    # cell then looks unreachable and gets pruned, and K collapses to 0 --
+    # this is the exact broken state the fix above prevents by default; it
+    # documents the caller-override contract (an explicit ring_search_max is
+    # honoured even when it's a bad choice), not desirable behaviour --
+    # don't force ring_search_max down like this in real code.
+    op = PSFResampler(
+        lon_deg=lon, lat_deg=lat, level=LEVEL, threshold=0.3, verbose=False,
+        Npt=64, ring_search_max=2,
+    )
+    assert op.K == 0
