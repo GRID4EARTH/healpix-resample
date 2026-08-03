@@ -332,3 +332,18 @@ def test_ring_search_max_not_overridden_when_caller_supplies_it(grid):
         Npt=64, ring_search_max=2,
     )
     assert op.K == 0
+
+
+def test_device_accepts_torch_device_object(grid):
+    # Found in practice: passing device=torch.device(...) (e.g. reusing
+    # another resampler's own `.device` attribute) instead of a plain string
+    # crashed with "'torch.device' object has no attribute 'startswith'" --
+    # KNeighborsResampler.__init__ called device.startswith("cuda") without
+    # checking device was actually a str first. clough_tocher.py's
+    # equivalent constructor already guarded this with
+    # isinstance(device, str); knn.py now does the same.
+    lon, lat = grid
+    dev = torch.device("cpu")
+    op = PSFResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, threshold=0.3,
+                       verbose=False, device=dev)
+    assert op.device == dev

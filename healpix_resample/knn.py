@@ -336,7 +336,11 @@ class KNeighborsResampler(Generic[T_Array]):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
-            if device.startswith("cuda") and not torch.cuda.is_available():
+            # device may already be a torch.device (e.g. passed through from
+            # another resampler's .device attribute) rather than a string --
+            # only str has .startswith(). Same guard already used in
+            # clough_tocher.py's equivalent constructor.
+            if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
                 raise RuntimeError("CUDA requested but not available.")
 
         self.device = torch.device(device)
