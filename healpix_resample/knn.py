@@ -152,6 +152,10 @@ def healpix_weighted_nearest(
     dist = radius * ang                                              # (N,Kw)
 
     # --- poids et somme par pixel
+    # Same default as KNeighborsResampler.__init__: when sigma is not supplied,
+    # fall back to the HEALPix pixel scale sqrt(4*pi/(12*4**level))*R.
+    if sigma is None:
+        sigma = _sigma_level_m(level, radius=radius)
     # w = exp(-2*d^2/sigma^2)
     w = torch.exp((-2.0) * (dist * dist) / (sigma * sigma))          # (N,Kw)
 
