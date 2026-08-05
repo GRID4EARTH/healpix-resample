@@ -97,6 +97,13 @@ def test_bitmask_recovers_independent_flags_deep_inside_regions(grid):
         res.cell_ids.astype(np.uint64), LEVEL, ellipsoid="WGS84"
     )
     cell_lon, cell_lat = np.asarray(cell_lon), np.asarray(cell_lat)
+    # healpix_to_lonlat returns longitudes in [0, 360), so cells just west of
+    # the grid's 0-degree edge come back as ~359.96. Compared naively they look
+    # greater than lon_mid + margin and get classified as "deep in the high-
+    # longitude quadrant" while actually sitting at about -0.04 degrees, in the
+    # low half -- which is what made this test expect 3 where the resampler
+    # correctly returned 2. Re-centre on the branch the data lives on.
+    cell_lon = (cell_lon + 180.0) % 360.0 - 180.0
     margin = SPAN * 0.15  # comfortably away from the mid-point boundary
 
     by_id = dict(zip(res.cell_ids.tolist(), res.cell_data.tolist()))

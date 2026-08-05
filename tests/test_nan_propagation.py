@@ -93,5 +93,11 @@ def test_finite_input_never_silently_zero(grid, name):
     lon, lat = grid
     op = RESAMPLER_FACTORIES[name](lon, lat)
 
-    res = op.resample(lon)
+    # `lon` itself is exactly 0.0 along the whole first grid column (40 of the
+    # 1600 samples), and NearestResampler copies its nearest sample's value
+    # verbatim -- so cells near that edge read back an entirely legitimate
+    # 0.0. Offset the field so it is bounded away from zero, which is what
+    # "essentially-never-exactly-zero" above intends; then any exact 0.0 really
+    # does indicate an orphaned cell.
+    res = op.resample(lon + 1.0)
     assert not np.any(res.cell_data == 0.0), f"{name}: found a suspicious exact-0.0 cell"

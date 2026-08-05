@@ -75,7 +75,21 @@ def test_single_nan_sample_keeps_field_finite(grid):
     # This is the assertion that would have failed before the fix: without
     # filtering, the single NaN sample poisons every cell in the CG solve,
     # not just cells near it.
-    assert np.all(np.isfinite(res_nan.cell_data))
+    #
+    # Cells that `out_cell_ids` asked for but that have too little real kernel
+    # support are flagged uncomputable at construction and rendered nan by
+    # design, because fill_missing_out_cells defaults to False -- that is what
+    # test_fill_missing_out_cells_default_false_produces_nan asserts, on this
+    # very configuration. Those nans are not poisoning: the same cells come
+    # back nan for a perfectly clean field. So the property to check is that
+    # the bad sample introduces no *further* nan cells.
+    expected_nan = np.zeros(res_nan.cell_data.shape, dtype=bool)
+    if (
+        op_nan.uncomputable_out_cells is not None
+        and op_nan.uncomputable_out_cells.numel() > 0
+    ):
+        expected_nan[op_nan.uncomputable_out_cells.cpu().numpy()] = True
+    assert np.all(np.isfinite(res_nan.cell_data) | expected_nan)
 
     # Sanity check: cells far from the excluded sample should be close to
     # the result you'd get with that sample entirely absent from the
