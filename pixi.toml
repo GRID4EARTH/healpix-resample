@@ -23,6 +23,8 @@ affine = "*"
 [feature.test.dependencies]
 pytest = "*"
 pytest-cov = "*"
+# tests/test_kernel_geometry.py imports pyproj
+pyproj = "*"
 
 [feature.docs.dependencies]
 fftw = "*"
