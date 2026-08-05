@@ -652,7 +652,8 @@ class CloughTocherResampler:
         scale (`sigma_m`-style quantities are not used by this resampler).
     ellipsoid : str
         Passed through to `healpix_geo`.
-    dtype, device : torch dtype/device for `self.Gx`, `self.Gy`, `self.M`.
+    dtype, device : torch.dtype, torch.device
+        dtype and device used for ``self.Gx``, ``self.Gy`` and ``self.M``.
     verbose : bool
         Print a one-line construction summary.
     out_cell_ids : array-like or None
@@ -673,13 +674,18 @@ class CloughTocherResampler:
 
     Attributes (after construction)
     ---------------------------------
-    N, K, cell_ids : as in every other resampler.
-    points2d : (N, 2) numpy array -- samples projected to the local
+    N, K, cell_ids
+        As in every other resampler.
+    points2d : numpy.ndarray
+        Shape ``(N, 2)`` -- samples projected to the local
         gnomonic tangent plane.
-    tri : the `scipy.spatial.Delaunay` triangulation object.
-    Gx, Gy : sparse (N, N) torch tensors -- ``grad_x = Gx @ f``,
+    tri
+        The ``scipy.spatial.Delaunay`` triangulation object.
+    Gx, Gy : torch.Tensor
+        Sparse ``(N, N)`` -- ``grad_x = Gx @ f``,
         ``grad_y = Gy @ f`` for any sample-space field `f`.
-    M : sparse CSR (N, K) torch tensor -- ``hval = y @ M``.
+    M : torch.Tensor
+        Sparse CSR ``(N, K)`` -- ``hval = y @ M``.
     """
 
     def __init__(
