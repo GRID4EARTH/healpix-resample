@@ -298,7 +298,12 @@ def test_large_npt_does_not_orphan_every_cell(grid):
     # needed ring_search_init=5 > the old hardcoded ring_search_max=2 --
     # reproducing exactly the "+50%"/wide-PSF case from the review at a
     # small enough Npt to run quickly in a test.
-    op = PSFResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, threshold=0.3, verbose=False, Npt=64)
+    # LEVEL (8) is too coarse for this check: the level-8 pixel scale is
+    # ~25.5 km against a ~33.4 km patch, so only 17 cells are retained in
+    # total and asking for the 64 nearest is unsatisfiable by construction.
+    # Level 11 retains 151 cells, so Npt=64 is a genuine "large Npt" case
+    # rather than an impossible one, and still runs in about a second.
+    op = PSFResampler(lon_deg=lon, lat_deg=lat, level=11, threshold=0.3, verbose=False, Npt=64)
 
     # Before the fix: op.K would still report the un-pruned "passed the wide
     # threshold" count, but every column would in fact be empty (`hi` all
