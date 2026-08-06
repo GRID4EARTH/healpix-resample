@@ -57,6 +57,31 @@ jupyter-resource-usage = "*"
 jupyterlab_code_formatter = "*"
 isort = "*"
 
+[feature.notebooks.dependencies]
+# Everything notebooks/ needs. None of this was declared anywhere, so the
+# notebook producing the paper's tables and figures could not be run from a
+# checkout. All conda-forge: mixing a PyPI pyproj wheel with conda's libproj
+# breaks PROJ's database lookup and silently unregisters the eopf-zarr backend.
+cfgrib = "*"
+foscat = "*"
+healpy = "*"
+matplotlib-base = ">=3.7,<4"
+pandas = "*"
+pillow = "*"
+pyproj = "*"
+pystac-client = "*"
+scikit-image = "*"
+scikit-learn = "*"
+scipy = "*"
+xarray = "*"
+# provides the engine="eopf-zarr" backend used to read Sentinel-2 from the
+# EOPF STAC. Nothing imports it by name, so an import scan will not see it.
+xarray-eopf = "*"
+# xarray-eopf does not support Zarr v3 yet; the notebook only round-trips its
+# own cache, so v2 is sufficient.
+zarr = ">=2.11,<3"
+
 [environments]
 default = ["test", "dev", "affine"]
 docs = ["docs"]
+notebooks = ["notebooks", "test"]
