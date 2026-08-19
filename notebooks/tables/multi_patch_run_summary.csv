@@ -1,2 +1,2 @@
 device,cpu,logical_cpu_count,python,torch,healpix_resample,platform,healpix_level,patch_size,oversample,lambda,max_iter,accelerator,accelerator_memory_gib,cuda_version,patches_selected,patches_computed,metric_cache_hits,warmup_patches_excluded,benchmark_patches,failures,run_wall_s,benchmark_patch_wall_s,benchmark_patches_per_hour
-cuda:0,x86_64,128,3.13.13,2.10.0,unknown,Linux-6.8.0-136-generic-x86_64-with-glibc2.39,20,256,4,0.001,14,NVIDIA A10,22.0601806640625,13.0,360,360,0,1,359,0,4605.080451821908,4563.627440429758,283.195772851759
+cuda:0,x86_64,128,3.13.13,2.10.0,unknown,Linux-6.8.0-136-generic-x86_64-with-glibc2.39,20,256,4,0.001,14,NVIDIA A10,22.0601806640625,13.0,1,1,0,1,0,0,11.193236107006669,,
