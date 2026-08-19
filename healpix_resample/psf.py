@@ -241,6 +241,36 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             - If an explicit array: used as-is (own convention/units; only
               ratios matter).
         """
+        # Ensure ring_search_max >= ring_search_init(Npt) so the KNN search
+        # loop in healpix_weighted_nearest actually executes.
+        #
+        # healpix_weighted_nearest computes:
+        #   r_min            = ceil((sqrt(Npt) - 1) / 2)
+        #   ring_search_init = max(1, r_min + 1)
+        #
+        # KNeighborsResampler's default ring_search_max=2 is too small for
+        # Npt >= 16 (needs ring_search_init=3) -- when that happens the
+        # search loop's `while r <= ring_search_max` condition is false
+        # before its first iteration, every sample's `hi` stays at -1 for
+        # every slot, and *every* retained cell then looks "never selected
+        # by any sample's own Npt-nearest search" and gets pruned --
+        # surfacing as KNeighborsResampler's "dropping N retained cell(s)"
+        # warning at N == essentially the whole operator. BicubicResampler
+        # and NearestResampler already auto-correct this (see their
+        # __init__); PSFResampler didn't, which went unnoticed while every
+        # caller used the historical default Npt=9 (small enough that
+        # ring_search_init=2 == the old ring_search_max=2 by coincidence).
+        # It starts mattering as soon as Npt grows past ~9 -- e.g. via
+        # healpix_resample.recommend_npt() for a PSF wider than one cell.
+        # Auto-correct here only when the caller hasn't supplied
+        # ring_search_max explicitly -- copied from
+        # NearestResampler.__init__ (nearest.py:67-84).
+        if "ring_search_max" not in kwargs:
+            r_min = int(math.ceil((math.sqrt(Npt) - 1.0) / 2.0))
+            ring_search_init_needed = max(1, r_min + 1)
+            # +2 margin so the loop has room to grow and find Npt candidates
+            kwargs["ring_search_max"] = ring_search_init_needed + 2
+
         N = lon_deg.numel() if isinstance(lon_deg, torch.Tensor) else len(lon_deg)
         if device is None:
             dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")

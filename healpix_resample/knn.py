@@ -152,6 +152,10 @@ def healpix_weighted_nearest(
     dist = radius * ang                                              # (N,Kw)
 
     # --- poids et somme par pixel
+    # Same default as KNeighborsResampler.__init__: when sigma is not supplied,
+    # fall back to the HEALPix pixel scale sqrt(4*pi/(12*4**level))*R.
+    if sigma is None:
+        sigma = _sigma_level_m(level, radius=radius)
     # w = exp(-2*d^2/sigma^2)
     w = torch.exp((-2.0) * (dist * dist) / (sigma * sigma))          # (N,Kw)
 
@@ -336,7 +340,11 @@ class KNeighborsResampler(Generic[T_Array]):
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
-            if device.startswith("cuda") and not torch.cuda.is_available():
+            # device may already be a torch.device (e.g. passed through from
+            # another resampler's .device attribute) rather than a string --
+            # only str has .startswith(). Same guard already used in
+            # clough_tocher.py's equivalent constructor.
+            if isinstance(device, str) and device.startswith("cuda") and not torch.cuda.is_available():
                 raise RuntimeError("CUDA requested but not available.")
 
         self.device = torch.device(device)

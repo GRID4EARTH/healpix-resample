@@ -29,6 +29,7 @@ dependencies = [
   "numpy",
   "torch",
   "healpix-geo",
+  "scipy",
 ]
 
 [tool.setuptools.packages.find]
@@ -36,5 +37,13 @@ include = [
     "healpix_resample",
     "healpix_resample.*",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+  "notebooks: needs the `notebooks` pixi environment (run with `pixi run -e notebooks pytest -m notebooks`)",
+]
+# The notebook-environment guards need dependencies the default environment
+# deliberately does not carry, so they are opt-in.
+addopts = "-m 'not notebooks'"
 
 [tool.setuptools_scm]
