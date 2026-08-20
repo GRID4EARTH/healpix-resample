@@ -116,15 +116,15 @@ water__lake_taupo__r1c2,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.7803613185
 water__lake_taupo__r2c0,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.74357898669962,176.01445105069422,30-45,32760,-4000.0,4000.0,2,0
 water__lake_taupo__r2c1,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.74395795835227,176.06047276531856,30-45,32760,0.0,4000.0,2,1
 water__lake_taupo__r2c2,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.744318814566775,176.10649532513014,30-45,32760,4000.0,4000.0,2,2
-water__lake_geneva__r0c0,water,lake_geneva,Lake Geneva,46.44,6.55,46.40290867559343,6.4996225547589885,45-60,32632,-4000.0,-4000.0,0,0
-water__lake_geneva__r0c1,water,lake_geneva,Lake Geneva,46.44,6.55,46.40403422604905,6.551611511859023,45-60,32632,0.0,-4000.0,0,1
-water__lake_geneva__r0c2,water,lake_geneva,Lake Geneva,46.44,6.55,46.40513616135981,6.603603547241783,45-60,32632,4000.0,-4000.0,0,2
-water__lake_geneva__r1c0,water,lake_geneva,Lake Geneva,46.44,6.55,46.43887304337045,6.497976910250337,45-60,32632,-4000.0,0.0,1,0
-water__lake_geneva__r1c1,water,lake_geneva,Lake Geneva,46.44,6.55,46.43999999999999,6.550000000000001,45-60,32632,0.0,0.0,1,1
-water__lake_geneva__r1c2,water,lake_geneva,Lake Geneva,46.44,6.55,46.44110331203779,6.602026175366326,45-60,32632,4000.0,0.0,1,2
-water__lake_geneva__r2c0,water,lake_geneva,Lake Geneva,46.44,6.55,46.47483713884009,6.496328114936276,45-60,32632,-4000.0,4000.0,2,0
-water__lake_geneva__r2c1,water,lake_geneva,Lake Geneva,46.44,6.55,46.475965503479806,6.54838540252023,45-60,32632,0.0,4000.0,2,1
-water__lake_geneva__r2c2,water,lake_geneva,Lake Geneva,46.44,6.55,46.477070194042625,6.600445783079305,45-60,32632,4000.0,4000.0,2,2
+water__lake_geneva__r0c0,water,lake_geneva,Lake Geneva,46.459,6.43,46.42185721598893,6.379689345780408,45-60,32632,-4000.0,-4000.0,0,0
+water__lake_geneva__r0c1,water,lake_geneva,Lake Geneva,46.459,6.43,46.423037650688954,6.4316915123654566,45-60,32632,0.0,-4000.0,0,1
+water__lake_geneva__r0c2,water,lake_geneva,Lake Geneva,46.459,6.43,46.42419446102112,6.483696910550786,45-60,32632,4000.0,-4000.0,0,2
+water__lake_geneva__r1c0,water,lake_geneva,Lake Geneva,46.459,6.43,46.45781809065042,6.377963678998391,45-60,32632,-4000.0,0.0,1,0
+water__lake_geneva__r1c1,water,lake_geneva,Lake Geneva,46.459,6.43,46.459,6.43,45-60,32632,0.0,0.0,1,1
+water__lake_geneva__r1c2,water,lake_geneva,Lake Geneva,46.459,6.43,46.46015825553086,6.48203956030391,45-60,32632,4000.0,0.0,1,2
+water__lake_geneva__r2c0,water,lake_geneva,Lake Geneva,46.459,6.43,46.49377868859477,6.376234707690337,45-60,32632,-4000.0,4000.0,2,0
+water__lake_geneva__r2c1,water,lake_geneva,Lake Geneva,46.459,6.43,46.49496207452051,6.42830524832795,45-60,32632,0.0,4000.0,2,1
+water__lake_geneva__r2c2,water,lake_geneva,Lake Geneva,46.459,6.43,46.496121777138406,6.480379035995644,45-60,32632,4000.0,4000.0,2,2
 water__lake_michigan__r0c0,water,lake_michigan,Lake Michigan,43.0,-87.85,42.96360901691799,-87.89854417672127,30-45,32616,-4000.0,-4000.0,0,0
 water__lake_michigan__r0c1,water,lake_michigan,Lake Michigan,43.0,-87.85,42.96398349270397,-87.84950395424866,30-45,32616,0.0,-4000.0,0,1
 water__lake_michigan__r0c2,water,lake_michigan,Lake Michigan,43.0,-87.85,42.96433696087617,-87.80046281908129,30-45,32616,4000.0,-4000.0,0,2
@@ -143,15 +143,15 @@ water__lake_tahoe__r1c2,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.1011805985963
 water__lake_tahoe__r2c0,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.1347947521602,-120.04774572275976,30-45,32611,-4000.0,4000.0,2,0
 water__lake_tahoe__r2c1,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.13599515380014,-120.00152824311934,30-45,32611,0.0,4000.0,2,1
 water__lake_tahoe__r2c2,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.13717725884428,-119.95530802497149,30-45,32611,4000.0,4000.0,2,2
-water__great_salt_lake__r0c0,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.16330659154836,-112.65677819885623,30-45,32612,-4000.0,-4000.0,0,0
-water__great_salt_lake__r0c1,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.16398243265884,-112.60911792245048,30-45,32612,0.0,-4000.0,0,1
-water__great_salt_lake__r0c2,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.16463856162641,-112.56145604736236,30-45,32612,4000.0,-4000.0,0,2
-water__great_salt_lake__r1c0,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.199323306711754,-112.6576863738207,30-45,32612,-4000.0,0.0,1,0
-water__great_salt_lake__r1c1,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.199999999999996,-112.61,30-45,32612,0.0,0.0,1,1
-water__great_salt_lake__r1c2,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.2006569563067,-112.5623120241781,30-45,32612,4000.0,0.0,1,2
-water__great_salt_lake__r2c0,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.2353397793716,-112.65859619813803,30-45,32612,-4000.0,4000.0,2,0
-water__great_salt_lake__r2c1,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.23601732576126,-112.61088367955246,30-45,32612,0.0,4000.0,2,1
-water__great_salt_lake__r2c2,water,great_salt_lake,Great Salt Lake,41.2,-112.61,41.23667511030388,-112.5631695556367,30-45,32612,4000.0,4000.0,2,2
+water__great_salt_lake__r0c0,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.263305868872024,-112.65684772756683,30-45,32612,-4000.0,-4000.0,0,0
+water__great_salt_lake__r0c1,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.26398306005126,-112.6091148171065,30-45,32612,0.0,-4000.0,0,1
+water__great_salt_lake__r0c2,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.26464046998351,-112.56138030117226,30-45,32612,4000.0,-4000.0,0,2
+water__great_salt_lake__r1c0,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.299321955355346,-112.657759139712,30-45,32612,-4000.0,0.0,1,0
+water__great_salt_lake__r1c1,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.29999999999999,-112.61,30-45,32612,0.0,0.0,1,1
+water__great_salt_lake__r1c2,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.30065823848409,-112.56223925147232,30-45,32612,4000.0,0.0,1,2
+water__great_salt_lake__r2c0,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.33533779917703,-112.65867220829838,30-45,32612,-4000.0,4000.0,2,0
+water__great_salt_lake__r2c1,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.33601669821545,-112.6108867917109,30-45,32612,0.0,4000.0,2,1
+water__great_salt_lake__r2c2,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.336675766152744,-112.56309976295579,30-45,32612,4000.0,4000.0,2,2
 water__caspian_sea__r0c0,water,caspian_sea,Caspian Sea,42.0,48.355,41.962890474981585,48.308271183739436,30-45,32639,-4000.0,-4000.0,0,0
 water__caspian_sea__r0c1,water,caspian_sea,Caspian Sea,42.0,48.355,41.964011654720714,48.3564900532219,30-45,32639,0.0,-4000.0,0,1
 water__caspian_sea__r0c2,water,caspian_sea,Caspian Sea,42.0,48.355,41.96511260556185,48.40471163804328,30-45,32639,4000.0,-4000.0,0,2
