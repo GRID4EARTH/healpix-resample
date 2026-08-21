@@ -97,27 +97,27 @@ NATIVE_FWHM_M = 12.5    # the paper's own empirically calibrated 10 m
                          # effective response, reused here to build the best
                          # available PSF-aware estimate of the true field
                          # from real, undegraded 10 m data
-NATIVE_LAMBDA = 0.01
-REF_LEVEL = 18          # target level for the reference AND for the
+NATIVE_LAMBDA = 0.1
+REF_LEVEL = 19          # target level for the reference AND for the
                          # reconstruction under test (step 6)
 MIN_CHILDREN_FRAC = 0.5 # healpix_down() drops a level-18 cell if fewer than
                          # this fraction of its 16 level-20 children were
                          # actually retained by the level-20 operator
 
 # -- Steps 4-5: degradation (real native data -> coarse UTM samples) -----------
-BLOCK = 6                                    # 10 m -> 60 m
+BLOCK = 2                                    # 10 m -> 20 m
 CENTRAL_SIZE = (PATCH_SIZE // BLOCK) * BLOCK  # largest multiple of BLOCK <= PATCH_SIZE
 PIXEL_SIZE_COARSE_M = PIXEL_SIZE_M * BLOCK
 
 # Gaussian blur, then point-sample (decimate) every BLOCK-th pixel --
 # deliberately NOT a block average (see degrade_to_coarse's docstring).
-DEGRADE_FWHM_M = 1.0 * PIXEL_SIZE_COARSE_M
+DEGRADE_FWHM_M = 1.25 * PIXEL_SIZE_COARSE_M
 
-# -- Step 6: reconstruction under test (60 m samples -> REF_LEVEL) -------------
-RECON_FWHM_M = 1.25 * PIXEL_SIZE_COARSE_M   # assumed effective response;
+# -- Step 6: reconstruction under test (20 m samples -> REF_LEVEL) -------------
+RECON_FWHM_M = DEGRADE_FWHM_M   # assumed effective response;
                                               # deliberately != DEGRADE_FWHM_M
 LAMBDA_COARSE = 0.01
-MAX_ITER      = 14
+MAX_ITER      = 100
 THRESHOLD     = 0.1
 RICHARDSON_LUCY_ITER = 100
 
@@ -126,7 +126,6 @@ EDGE_MARGIN_M = 8 * RECON_FWHM_M
 
 CLASSICAL_METHODS = ["nearest", "linear", "cubic"]
 CLASSICAL_LABELS = {"nearest": "Nearest", "linear": "Bilinear", "cubic": "Bicubic"}
-
 
 def describe_config():
     """Print the physical meaning of the current level/size configuration.
@@ -500,7 +499,7 @@ def build_reference(scene_name, force=False):
     resampler = PSFResampler(
         lon_deg=lon_n.reshape(-1), lat_deg=lat_n.reshape(-1),
         level=NATIVE_LEVEL, sigma_m=scale_m, Npt=npt,
-        threshold=THRESHOLD, device=DEVICE, verbose=False,
+        threshold=THRESHOLD, device=DEVICE, verbose=True,
     )
     res = resampler.resample(img_n.reshape(-1), lam=NATIVE_LAMBDA, max_iter=MAX_ITER)
 
@@ -574,7 +573,7 @@ def build_coarse_grid(scene_name):
 # Step 6: PSF-aware reconstruction at REF_LEVEL
 # =============================================================================
 
-def reconstruct_psf_aware(scene_name, force=False):
+def reconstruct_psf_aware(scene_name, force=True):
     """out_cell_ids=ref["cell_ids_ref"] restricts the operator's own
     retained cells to (a subset of) the reference's cells directly at
     construction time -- reconstruction and reference already live at the
