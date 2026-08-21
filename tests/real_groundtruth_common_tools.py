@@ -97,7 +97,7 @@ NATIVE_FWHM_M = 12.5    # the paper's own empirically calibrated 10 m
                          # effective response, reused here to build the best
                          # available PSF-aware estimate of the true field
                          # from real, undegraded 10 m data
-NATIVE_LAMBDA = 0.1
+NATIVE_LAMBDA = 0.01
 REF_LEVEL = 19          # target level for the reference AND for the
                          # reconstruction under test (step 6)
 MIN_CHILDREN_FRAC = 0.5 # healpix_down() drops a level-18 cell if fewer than
