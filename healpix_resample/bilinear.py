@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from healpix_resample.base import ResampleResults, T_Array
-from healpix_resample.knn import KNeighborsResampler, _conservative_resample
+from healpix_resample.knn import KNeighborsInterpolator, KNeighborsResampler, _conservative_resample
 
 
 class BilinearResampler(KNeighborsResampler):
@@ -181,3 +181,24 @@ class BilinearResampler(KNeighborsResampler):
         if not conservative:
             return super().resample(val, **kwargs)
         return _conservative_resample(self, val, self.area)
+
+
+class BilinearInterp(KNeighborsInterpolator):
+    """Evaluate HEALPix values at query coordinates of any common shape."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, Npt=4, **kwargs)
+
+    def comp_matrix(self):
+        weights = 1.0 / (1e-6 + self.d_m / self.sigma_m)
+        weights = weights / weights.sum(dim=1, keepdim=True)
+        rows = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None]
+        rows = rows.expand(self.N, self.Npt)
+        indices = torch.stack((rows.reshape(-1), self.hi.reshape(-1)), dim=0)
+        self.matrix = torch.sparse_coo_tensor(
+            indices,
+            weights.reshape(-1).to(self.dtype),
+            size=(self.N, self.K),
+            device=self.device,
+            dtype=self.dtype,
+        ).coalesce().to_sparse_csr()
