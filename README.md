@@ -9,7 +9,7 @@ package for regridding data from unstructured longitude/latitude samples onto a
 [HEALPix](https://healpix.sourceforge.io/) grid — one sparse linear operator, several interpolation
 strategies, and a consistent API across all of them.
 
-Under the hood, every resampler builds a sparse [PyTorch](https://pytorch.org/) operator mapping input
+Under The hood, every resampler builds a sparse [PyTorch](https://pytorch.org/) operator mapping input
 samples to a subset of HEALPix cells at a chosen resolution level, so the same forward/inverse operator
 can be reused, batched `(B, N)`, and run on CPU or CUDA. The package manages the HEALPix authalic
 definition and the Earth ellipsoid using the **WGS84** reference system.
