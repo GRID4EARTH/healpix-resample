@@ -130,6 +130,15 @@ PIXEL_SIZE_COARSE_M = PIXEL_SIZE_M * BLOCK
 # deliberately NOT a block average (see degrade_to_coarse's docstring).
 DEGRADE_FWHM_M = 1.25 * PIXEL_SIZE_COARSE_M
 
+# Shape of the *imposed* degradation.  The publication configuration remains
+# isotropic.  The anisotropic values define a deliberately severe shape-
+# mismatch control: the current public PSFResampler interface still accepts a
+# single isotropic Gaussian width, so the reconstruction below remains
+# isotropic even when the simulated observation is blurred by 24 m x 45 m.
+DEGRADE_PSF_MODE = "isotropic"
+ANISOTROPIC_DEGRADE_FWHM_X_M = 24.0
+ANISOTROPIC_DEGRADE_FWHM_Y_M = 45.0
+
 # -- Step 6: reconstruction under test (20 m samples -> REF_LEVEL) -------------
 # Assumed effective response for the reconstruction. Set equal to
 # DEGRADE_FWHM_M: this is the *matched* configuration, the primary case used
@@ -148,7 +157,8 @@ THRESHOLD     = 0.1
 RICHARDSON_LUCY_ITER = 100
 
 # -- Evaluation: geometric edge margin (metres), not a pixel crop --------------
-EDGE_MARGIN_M = 8 * RECON_FWHM_M
+EDGE_MARGIN_FACTOR = 8.0
+EDGE_MARGIN_M = EDGE_MARGIN_FACTOR * RECON_FWHM_M
 
 # How the raster-based baselines are read out at each REF_LEVEL cell:
 #   "cell_average" -- mean of the 4**(NATIVE_LEVEL-REF_LEVEL) child-cell
@@ -195,8 +205,11 @@ def describe_config():
     print(f"REF_LEVEL={REF_LEVEL}:    cell size ~= {cell_size_m(REF_LEVEL):.2f} m "
           f"(comparison level for every method, vs. {PIXEL_SIZE_COARSE_M:.0f} m "
           f"coarse/degraded pixel, step 7)")
-    print(f"EDGE_MARGIN_M={EDGE_MARGIN_M:.0f} m excluded from every metric "
-          f"(8x RECON_FWHM_M={RECON_FWHM_M:.1f} m)")
+    fwhm_x_m, fwhm_y_m = degradation_fwhm_xy()
+    print(f"DEGRADE_PSF_MODE={DEGRADE_PSF_MODE!r}: "
+          f"FWHM_x={fwhm_x_m:.1f} m, FWHM_y={fwhm_y_m:.1f} m; "
+          f"isotropic reconstruction FWHM={RECON_FWHM_M:.1f} m")
+    print(f"EDGE_MARGIN_M={EDGE_MARGIN_M:.0f} m excluded from every metric")
     print(f"REFERENCE_MODE={REFERENCE_MODE!r}, BASELINE_ESTIMAND={BASELINE_ESTIMAND!r}, "
           f"MAX_ITER={MAX_ITER}")
 
@@ -206,9 +219,15 @@ def _cache_suffix():
     into intermediate .npz cache filenames, so changing the configuration
     always recomputes rather than silently reusing a stale result from a
     different configuration."""
+    degradation_tag = ""
+    if DEGRADE_PSF_MODE == "anisotropic":
+        degradation_tag = (
+            f"_deganiso{ANISOTROPIC_DEGRADE_FWHM_X_M:g}x"
+            f"{ANISOTROPIC_DEGRADE_FWHM_Y_M:g}"
+        )
     return (f"native{NATIVE_LEVEL}_ref{REF_LEVEL}_block{BLOCK}"
             f"_fwhm{int(round(RECON_FWHM_M))}_it{MAX_ITER}"
-            f"_ref{REFERENCE_MODE}_est{BASELINE_ESTIMAND}")
+            f"_ref{REFERENCE_MODE}_est{BASELINE_ESTIMAND}{degradation_tag}")
 
 
 # =============================================================================
@@ -649,15 +668,45 @@ def _fwhm_to_gauss_sigma_px(fwhm_m, pixel_size_m=None):
     return sigma_m / pixel_size_m
 
 
-def degrade_to_coarse(img_native, fwhm_m=None, block=None):
-    """Gaussian blur (the only shaping applied), then point-sample
-    (decimate) every `block`-th pixel -- deliberately NOT a block average."""
-    if fwhm_m is None:
-        fwhm_m = DEGRADE_FWHM_M
+def degradation_fwhm_xy():
+    """Return imposed degradation widths along projected x/east and y/north.
+
+    The anisotropic branch changes only the synthetic 10 m -> 20 m
+    degradation.  Reconstruction intentionally keeps the current isotropic
+    public operator, making this a PSF-shape-mismatch test rather than a claim
+    that arbitrary kernels are already exposed by the package API.
+    """
+    if DEGRADE_PSF_MODE == "isotropic":
+        return float(DEGRADE_FWHM_M), float(DEGRADE_FWHM_M)
+    if DEGRADE_PSF_MODE == "anisotropic":
+        return (
+            float(ANISOTROPIC_DEGRADE_FWHM_X_M),
+            float(ANISOTROPIC_DEGRADE_FWHM_Y_M),
+        )
+    raise ValueError(f"Unknown DEGRADE_PSF_MODE={DEGRADE_PSF_MODE!r}")
+
+
+def degrade_to_coarse(img_native, fwhm_m=None, block=None,
+                      fwhm_x_m=None, fwhm_y_m=None):
+    """Gaussian blur, then point-sample every `block`-th pixel.
+
+    With the default isotropic mode this reproduces the publication protocol.
+    With ``DEGRADE_PSF_MODE='anisotropic'`` (or explicit x/y widths), SciPy
+    receives ``sigma=(sigma_y, sigma_x)`` in array-axis order.  No block
+    average is applied, so this Gaussian is the only imposed response shape.
+    """
+    if fwhm_x_m is None or fwhm_y_m is None:
+        if fwhm_m is not None:
+            fwhm_x_m = fwhm_y_m = fwhm_m
+        else:
+            fwhm_x_m, fwhm_y_m = degradation_fwhm_xy()
     if block is None:
         block = BLOCK
-    sigma_px = _fwhm_to_gauss_sigma_px(fwhm_m)
-    blurred = gaussian_filter(img_native, sigma=sigma_px, mode="reflect")
+    sigma_x_px = _fwhm_to_gauss_sigma_px(fwhm_x_m)
+    sigma_y_px = _fwhm_to_gauss_sigma_px(fwhm_y_m)
+    blurred = gaussian_filter(
+        img_native, sigma=(sigma_y_px, sigma_x_px), mode="reflect"
+    )
     return decimate_2d(blurred, block=block)
 
 
@@ -898,7 +947,14 @@ def compute_metrics(estimate, reference, scene, method):
                 rmse=rmse, mae=mae, bias=bias, corr=corr, psnr=psnr)
 
 
-def run_all(force=False):
+def run_all(force=False, csv_name=None):
+    """Run every method on every scene and return the metrics DataFrame.
+
+    `csv_name` overrides the output filename. run_variant() passes a
+    variant-specific name so that a control run never overwrites the main
+    result file -- the default name is the one the paper's table is built
+    from.
+    """
     TABLE_DIR.mkdir(exist_ok=True)
     rows = []
     for scene in benchmark_coordinates:
@@ -928,26 +984,38 @@ def run_all(force=False):
             print(f"[WARN] Richardson-Lucy failed for {scene}: {exc}")
 
     df = pd.DataFrame(rows)
-    df.to_csv(TABLE_DIR / "real_groundtruth_downscale_metrics.csv", index=False)
+    df.to_csv(TABLE_DIR / (csv_name or "real_groundtruth_downscale_metrics.csv"),
+              index=False)
     return df
 
 
 def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
-                 force=False, label=None):
+                 degrade_psf_mode=None, degrade_fwhm_x_m=None,
+                 degrade_fwhm_y_m=None, force=False, label=None):
     """Run the whole protocol under a temporarily overridden configuration and
     return its metrics DataFrame, with the configuration recorded in extra
     columns. Restores the previous configuration afterwards, including on
     error, so it is safe to call several times in a row from a notebook.
 
-    Used for the two control experiments discussed in the paper's limitations:
+    Used for the control experiments discussed in the paper's limitations:
     `reference_mode='geometric'` removes the shared-estimator component
     between the reference and the PSF-aware method under test, and
     `baseline_estimand='point_sample'` reproduces the earlier, asymmetric
-    baseline readout. Cache filenames already encode all three settings, so
-    variants never collide with each other or with the main run.
+    baseline readout. ``degrade_psf_mode='anisotropic'`` imposes a 24 m x
+    45 m Gaussian degradation while retaining the scalar isotropic
+    reconstruction width.  This last variant probes response-shape mismatch;
+    it does not imply that the public API already accepts an arbitrary kernel.
+    Cache filenames encode every result-changing setting, so variants never
+    collide with each other or with the main run.
     """
     global REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER
-    saved = (REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER)
+    global DEGRADE_PSF_MODE, ANISOTROPIC_DEGRADE_FWHM_X_M
+    global ANISOTROPIC_DEGRADE_FWHM_Y_M, EDGE_MARGIN_M
+    saved = (
+        REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER, DEGRADE_PSF_MODE,
+        ANISOTROPIC_DEGRADE_FWHM_X_M, ANISOTROPIC_DEGRADE_FWHM_Y_M,
+        EDGE_MARGIN_M,
+    )
     try:
         if reference_mode is not None:
             REFERENCE_MODE = reference_mode
@@ -955,14 +1023,56 @@ def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
             BASELINE_ESTIMAND = baseline_estimand
         if max_iter is not None:
             MAX_ITER = max_iter
-        df = run_all(force=force)
+        if degrade_psf_mode is not None:
+            DEGRADE_PSF_MODE = degrade_psf_mode
+        if degrade_fwhm_x_m is not None:
+            ANISOTROPIC_DEGRADE_FWHM_X_M = float(degrade_fwhm_x_m)
+        if degrade_fwhm_y_m is not None:
+            ANISOTROPIC_DEGRADE_FWHM_Y_M = float(degrade_fwhm_y_m)
+        degradation_x_m, degradation_y_m = degradation_fwhm_xy()
+        EDGE_MARGIN_M = EDGE_MARGIN_FACTOR * max(
+            RECON_FWHM_M, degradation_x_m, degradation_y_m
+        )
+        # Never write over the main metrics CSV: that file is the one the
+        # paper's table is generated from, and a control run must not be able
+        # to silently replace it.
+        df = run_all(
+            force=force,
+            csv_name=f"real_groundtruth_downscale_metrics_{_cache_suffix()}.csv",
+        )
         df["reference_mode"] = REFERENCE_MODE
         df["baseline_estimand"] = BASELINE_ESTIMAND
         df["max_iter"] = MAX_ITER
+        df["degrade_psf_mode"] = DEGRADE_PSF_MODE
+        df["degrade_fwhm_x_m"] = degradation_x_m
+        df["degrade_fwhm_y_m"] = degradation_y_m
+        df["recon_fwhm_m"] = RECON_FWHM_M
+        df["edge_margin_m"] = EDGE_MARGIN_M
         df["variant"] = label or f"{REFERENCE_MODE}/{BASELINE_ESTIMAND}/it{MAX_ITER}"
         return df
     finally:
-        REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER = saved
+        (
+            REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER, DEGRADE_PSF_MODE,
+            ANISOTROPIC_DEGRADE_FWHM_X_M,
+            ANISOTROPIC_DEGRADE_FWHM_Y_M, EDGE_MARGIN_M,
+        ) = saved
+
+
+def run_anisotropic_psf_mismatch(force=False, fwhm_x_m=24.0, fwhm_y_m=45.0):
+    """Run the deliberately non-matched 24 m x 45 m degradation control.
+
+    The observation is blurred anisotropically in projected UTM axes, whereas
+    PSF-aware reconstruction and Richardson--Lucy retain the current scalar
+    isotropic response.  Use this to quantify robustness to a response shape
+    not implemented by the released interface, not as an arbitrary-PSF test.
+    """
+    return run_variant(
+        degrade_psf_mode="anisotropic",
+        degrade_fwhm_x_m=fwhm_x_m,
+        degrade_fwhm_y_m=fwhm_y_m,
+        force=force,
+        label=f"anisotropic degradation {fwhm_x_m:g}m x {fwhm_y_m:g}m",
+    )
 
 
 def rank_table(df):
@@ -979,7 +1089,7 @@ def rank_table(df):
     return out.pivot_table(index="method", columns="scene", values="rank")
 
 
-def format_table(df):
+def format_table(df, csv_name="real_groundtruth_downscale_table.csv"):
     methods = ["psf_aware"] + [f"classical_{m}" for m in CLASSICAL_METHODS] + ["richardson_lucy"]
     labels = {
         "psf_aware": "PSF-aware",
@@ -1004,7 +1114,7 @@ def format_table(df):
         records.append(row)
     table = pd.DataFrame(records)
     TABLE_DIR.mkdir(exist_ok=True)
-    table.to_csv(TABLE_DIR / "real_groundtruth_downscale_table.csv", index=False)
+    table.to_csv(TABLE_DIR / csv_name, index=False)
     return table
 
 
