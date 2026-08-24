@@ -95,6 +95,10 @@ DATA_DIR  = Path("data")
 FIG_DIR   = Path("figures")
 TABLE_DIR = Path("tables")
 
+# Publication default: inputs must come from the versioned DOI archive.
+# Set to False only when intentionally constructing that frozen input bundle.
+OFFLINE = True
+
 RANDOM_SEED = 1234
 np.random.seed(RANDOM_SEED)
 
@@ -308,9 +312,9 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
 
     DATA_DIR.mkdir(exist_ok=True)
     xr.set_options(keep_attrs=True, display_expand_attrs=False)
-    catalog = pystac_client.Client.open("https://stac.core.eopf.eodc.eu")
     path = DATA_DIR / f"{scene}_data.zarr"
-    if path.exists() and not force:
+    # OFFLINE takes precedence over force: never refresh a frozen input.
+    if path.exists() and (OFFLINE or not force):
         try:
             import zarr as _zarr
             _a = _zarr.open_group(str(path), mode="r").attrs.asdict()
@@ -324,6 +328,12 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
         except Exception as _exc:
             print(f"[{scene}] cached  <- could not read provenance: {_exc}")
         return
+    if OFFLINE:
+        raise FileNotFoundError(
+            f"Missing frozen Sentinel-2 input: {path}. Download the DOI data "
+            "archive and place its data/ directory under notebooks/."
+        )
+    catalog = pystac_client.Client.open("https://stac.core.eopf.eodc.eu")
     coords = benchmark_coordinates[scene] if coords is None else coords
     lat0, lon0 = coords["wgs84"]["lat"], coords["wgs84"]["lon"]
 
