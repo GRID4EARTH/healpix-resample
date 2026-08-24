@@ -32,6 +32,23 @@ and revision history):
   5. point-sample (decimate) every BLOCK-th pixel                            -> build_coarse_grid (step 5 of 4-5)
   6. PSF-aware resample the coarse samples directly onto REF_LEVEL           -> reconstruct_psf_aware
   7. compare against the reference, cell-for-cell, at REF_LEVEL              -> align_and_mask + compute_metrics
+
+Two control experiments address known asymmetries of this protocol; both are
+driven by `run_variant()` and compared with `rank_table()`:
+
+  * `run_variant(reference_mode="geometric")` rebuilds the reference by direct
+    unweighted aggregation of the native 10 m pixels onto REF_LEVEL cells, with
+    no spatial-response model at any stage. Steps 2-3 otherwise use the same
+    PSF-aware operator family as the method under test in step 6, so a
+    systematic signature of that operator would appear in both the reference
+    and the PSF-aware estimate but not in the baselines. Absolute RMSE is not
+    comparable between the two reference modes (the geometric reference targets
+    the observed rather than the latent field) -- compare the *ranking*.
+
+  * `run_variant(baseline_estimand="point_sample")` reproduces the earlier
+    behaviour, where raster baselines were read out as a single sample at each
+    cell centre while the reference is a child-cell average. The default,
+    "cell_average", puts both sides on the same estimand.
 """
 
 from pathlib import Path
@@ -114,15 +131,54 @@ PIXEL_SIZE_COARSE_M = PIXEL_SIZE_M * BLOCK
 DEGRADE_FWHM_M = 1.25 * PIXEL_SIZE_COARSE_M
 
 # -- Step 6: reconstruction under test (20 m samples -> REF_LEVEL) -------------
-RECON_FWHM_M = DEGRADE_FWHM_M   # assumed effective response;
-                                              # deliberately != DEGRADE_FWHM_M
+# Assumed effective response for the reconstruction. Set equal to
+# DEGRADE_FWHM_M: this is the *matched* configuration, the primary case used
+# throughout the paper. Set it to a different value to run a PSF-mismatch
+# variant of this experiment (the cache suffix already encodes it, so results
+# will not be silently reused).
+RECON_FWHM_M = DEGRADE_FWHM_M
 LAMBDA_COARSE = 0.01
-MAX_ITER      = 100
+# Matches the paper's stated solver configuration ("at most 14 iterations"),
+# which the paper also relies on as an implicit iterative regularization.
+# Earlier runs of this notebook used 100, i.e. a *different* regularization
+# regime from every other experiment in the paper; keep this at 14 unless you
+# deliberately want to characterize that difference.
+MAX_ITER      = 14
 THRESHOLD     = 0.1
 RICHARDSON_LUCY_ITER = 100
 
 # -- Evaluation: geometric edge margin (metres), not a pixel crop --------------
 EDGE_MARGIN_M = 8 * RECON_FWHM_M
+
+# How the raster-based baselines are read out at each REF_LEVEL cell:
+#   "cell_average" -- mean of the 4**(NATIVE_LEVEL-REF_LEVEL) child-cell
+#                     centres, i.e. the SAME estimand as the reference, which
+#                     is itself a child-cell average (healpix_down). This is
+#                     the estimand the paper uses for every method in the
+#                     synthetic experiment.
+#   "point_sample" -- a single sample at the parent cell centre. Cheaper, but
+#                     a different estimand from the reference (the paper
+#                     measures a 2.3-2.5x RMSE difference between the two in
+#                     the synthetic setting).
+# Run both and compare: for smooth interpolators the difference is small here,
+# because a field interpolated from a 20 m raster varies slowly across a
+# 12.44 m cell, but "cell_average" is the symmetric choice.
+BASELINE_ESTIMAND = "cell_average"
+
+# Reference construction mode (step 2-3):
+#   "psf_aware" -- PSFResampler at NATIVE_LEVEL, then healpix_down. Uses the
+#                  paper's own calibrated 10 m response to estimate the latent
+#                  field, but shares its estimator family with the PSF-aware
+#                  method under test.
+#   "geometric" -- direct, unweighted average of the native 10 m pixels whose
+#                  centres fall in each REF_LEVEL cell. NO spatial-response
+#                  model at any stage, so it shares nothing with any method
+#                  under test. Control experiment for the shared-estimator
+#                  concern; note it targets the *observed* (still 12.5 m
+#                  PSF-blurred) field rather than the latent one, so absolute
+#                  RMSE values are not comparable to the "psf_aware" mode --
+#                  only the *ranking* of methods is.
+REFERENCE_MODE = "psf_aware"
 
 CLASSICAL_METHODS = ["nearest", "linear", "cubic"]
 CLASSICAL_LABELS = {"nearest": "Nearest", "linear": "Bilinear", "cubic": "Bicubic"}
@@ -141,6 +197,8 @@ def describe_config():
           f"coarse/degraded pixel, step 7)")
     print(f"EDGE_MARGIN_M={EDGE_MARGIN_M:.0f} m excluded from every metric "
           f"(8x RECON_FWHM_M={RECON_FWHM_M:.1f} m)")
+    print(f"REFERENCE_MODE={REFERENCE_MODE!r}, BASELINE_ESTIMAND={BASELINE_ESTIMAND!r}, "
+          f"MAX_ITER={MAX_ITER}")
 
 
 def _cache_suffix():
@@ -149,7 +207,8 @@ def _cache_suffix():
     always recomputes rather than silently reusing a stale result from a
     different configuration."""
     return (f"native{NATIVE_LEVEL}_ref{REF_LEVEL}_block{BLOCK}"
-            f"_fwhm{int(round(RECON_FWHM_M))}")
+            f"_fwhm{int(round(RECON_FWHM_M))}_it{MAX_ITER}"
+            f"_ref{REFERENCE_MODE}_est{BASELINE_ESTIMAND}")
 
 
 # =============================================================================
@@ -475,11 +534,54 @@ def interior_mask(x, y, x_axis, y_axis, margin_m=None):
 # Steps 2-3: reference construction from real native data
 # =============================================================================
 
+def build_reference_geometric(img_n, lon_n, lat_n):
+    """Control reference (REFERENCE_MODE='geometric'): assign every native
+    10 m pixel to the REF_LEVEL cell containing its centre and take the plain
+    unweighted mean per cell.
+
+    No spatial-response model, no inversion, no PSFResampler -- so this
+    reference shares nothing with any method under test, which removes the
+    shared-estimator concern affecting the 'psf_aware' mode.
+
+    Caveat, and the reason this is a control rather than the default: it
+    estimates the *observed* field (still carrying the sensor's own ~12.5 m
+    response) averaged over each cell, not the latent field. Every method is
+    then scored against a blurrier target, so absolute RMSE values are not
+    comparable with the 'psf_aware' mode. What IS comparable, and what this
+    control is for, is the *ranking* of the methods.
+
+    Cells receiving fewer than MIN_CHILDREN_FRAC of the pixels they would get
+    under uniform coverage are dropped, mirroring healpix_down()'s pruning.
+    """
+    ids = healpix_geo.nested.lonlat_to_healpix(
+        np.asarray(lon_n, dtype=np.float64).reshape(-1),
+        np.asarray(lat_n, dtype=np.float64).reshape(-1),
+        REF_LEVEL, ellipsoid=ELLIPSOID,
+    )
+    ids = np.asarray(ids, dtype=np.int64)
+    vals = np.asarray(img_n, dtype=np.float64).reshape(-1)
+
+    uniq, inv = np.unique(ids, return_inverse=True)
+    sums = np.bincount(inv, weights=vals, minlength=uniq.size)
+    counts = np.bincount(inv, minlength=uniq.size)
+    means = sums / np.maximum(counts, 1)
+
+    # Expected pixels per cell under uniform coverage: (cell area)/(pixel area).
+    expected = max(1.0, (cell_size_m(REF_LEVEL) / PIXEL_SIZE_M) ** 2)
+    keep = counts >= (MIN_CHILDREN_FRAC * expected)
+    return uniq[keep].astype(np.int64), means[keep].astype(np.float32)
+
+
 def build_reference(scene_name, force=False):
-    """Steps 1-3: real native 10 m patch -> PSF-aware HEALPix field at
-    NATIVE_LEVEL (the best available PSF-aware estimate of the true field,
-    built from real, undegraded data using the paper's own calibrated 10 m
-    response) -> plain (no-PSF) NESTED downgrade to REF_LEVEL.
+    """Steps 1-3: real native 10 m patch -> reference field at REF_LEVEL.
+
+    REFERENCE_MODE='psf_aware' (default): PSF-aware HEALPix field at
+    NATIVE_LEVEL (the best available estimate of the latent field, built from
+    real, undegraded data using the paper's own calibrated 10 m response),
+    then a plain (no-PSF) NESTED downgrade to REF_LEVEL.
+
+    REFERENCE_MODE='geometric': direct pixel aggregation onto REF_LEVEL, with
+    no spatial-response model anywhere -- see build_reference_geometric().
     """
     TABLE_DIR.mkdir(exist_ok=True)
     DATA_DIR.mkdir(exist_ok=True)
@@ -493,6 +595,18 @@ def build_reference(scene_name, force=False):
     img_n = central_crop(img_n)
     lon_n = central_crop(lon_n)
     lat_n = central_crop(lat_n)
+
+    if REFERENCE_MODE == "geometric":
+        cell_ids_ref, cell_data_ref = build_reference_geometric(img_n, lon_n, lat_n)
+        np.savez_compressed(
+            out_npz, scene=scene_name,
+            cell_ids_native=np.asarray([], dtype=np.int64),
+            cell_data_native=np.asarray([], dtype=np.float32),
+            cell_ids_ref=cell_ids_ref, cell_data_ref=cell_data_ref,
+        )
+        return dict(np.load(out_npz, allow_pickle=True))
+    if REFERENCE_MODE != "psf_aware":
+        raise ValueError(f"Unknown REFERENCE_MODE {REFERENCE_MODE!r}")
 
     scale_m = fwhm_to_scale(NATIVE_FWHM_M)
     npt = recommend_npt(scale_m, NATIVE_LEVEL)["npt"]
@@ -614,6 +728,44 @@ def reconstruct_psf_aware(scene_name, force=True):
 # Baselines, evaluated at the same reference cell centres
 # =============================================================================
 
+def _readout_points(cell_ids):
+    """Query points at which a raster baseline is sampled to produce a value
+    for each REF_LEVEL cell, plus the grouping needed to reduce them.
+
+    Returns (lon, lat, n_per_cell). With BASELINE_ESTIMAND='point_sample'
+    there is one query point per cell (the cell centre). With
+    'cell_average' there is one per NATIVE_LEVEL child cell, and the caller
+    averages each consecutive block of n_per_cell samples -- giving the same
+    child-cell-average estimand as the reference itself, instead of a single
+    point sample at a different estimand.
+    """
+    ids = np.asarray(cell_ids, dtype=np.int64)
+    if BASELINE_ESTIMAND == "point_sample":
+        lon, lat = cell_centers_lonlat(ids, REF_LEVEL)
+        return lon, lat, 1
+    if BASELINE_ESTIMAND != "cell_average":
+        raise ValueError(f"Unknown BASELINE_ESTIMAND {BASELINE_ESTIMAND!r}")
+
+    dl = NATIVE_LEVEL - REF_LEVEL
+    if dl <= 0:
+        raise ValueError("NATIVE_LEVEL must exceed REF_LEVEL for cell averaging")
+    factor = 4 ** dl
+    # NESTED indexing: the children of cell c at depth dl are exactly
+    # [c*factor, (c+1)*factor) -- the same relation healpix_down() inverts.
+    children = (ids[:, None] * factor + np.arange(factor)[None, :]).reshape(-1)
+    lon, lat = cell_centers_lonlat(children, NATIVE_LEVEL)
+    return lon, lat, factor
+
+
+def _reduce_readout(vals, n_per_cell):
+    """Average consecutive blocks of n_per_cell samples back to one value
+    per REF_LEVEL cell (a no-op when n_per_cell == 1)."""
+    vals = np.asarray(vals, dtype=np.float64)
+    if n_per_cell == 1:
+        return vals
+    return vals.reshape(-1, n_per_cell).mean(axis=1)
+
+
 def _axes_ascending(y_ax, x_ax, img):
     """RegularGridInterpolator requires ascending axes; UTM y is usually
     descending (north-up raster). Flip whichever axis needs it."""
@@ -640,9 +792,9 @@ def reconstruct_classical(scene_name, method="linear", force=False):
     interp = RegularGridInterpolator((y_ax, x_ax), img_ax, method=method,
                                       bounds_error=False, fill_value=None)
 
-    lon_ref, lat_ref = cell_centers_lonlat(ref["cell_ids_ref"], REF_LEVEL)
-    x_ref, y_ref = lonlat_to_utm(lon_ref, lat_ref, g["da"])
-    vals = interp(np.stack([y_ref, x_ref], axis=-1))
+    lon_q, lat_q, n_per_cell = _readout_points(ref["cell_ids_ref"])
+    x_q, y_q = lonlat_to_utm(lon_q, lat_q, g["da"])
+    vals = _reduce_readout(interp(np.stack([y_q, x_q], axis=-1)), n_per_cell)
 
     np.savez_compressed(
         out_npz, scene=scene_name, method=method,
@@ -684,9 +836,9 @@ def reconstruct_richardson_lucy(scene_name, force=False):
     interp = RegularGridInterpolator((y_ax, x_ax), img_ax, method="cubic",
                                       bounds_error=False, fill_value=None)
 
-    lon_ref, lat_ref = cell_centers_lonlat(ref["cell_ids_ref"], REF_LEVEL)
-    x_ref, y_ref = lonlat_to_utm(lon_ref, lat_ref, g["da"])
-    vals = interp(np.stack([y_ref, x_ref], axis=-1))
+    lon_q, lat_q, n_per_cell = _readout_points(ref["cell_ids_ref"])
+    x_q, y_q = lonlat_to_utm(lon_q, lat_q, g["da"])
+    vals = _reduce_readout(interp(np.stack([y_q, x_q], axis=-1)), n_per_cell)
 
     np.savez_compressed(
         out_npz, scene=scene_name,
@@ -778,6 +930,53 @@ def run_all(force=False):
     df = pd.DataFrame(rows)
     df.to_csv(TABLE_DIR / "real_groundtruth_downscale_metrics.csv", index=False)
     return df
+
+
+def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
+                 force=False, label=None):
+    """Run the whole protocol under a temporarily overridden configuration and
+    return its metrics DataFrame, with the configuration recorded in extra
+    columns. Restores the previous configuration afterwards, including on
+    error, so it is safe to call several times in a row from a notebook.
+
+    Used for the two control experiments discussed in the paper's limitations:
+    `reference_mode='geometric'` removes the shared-estimator component
+    between the reference and the PSF-aware method under test, and
+    `baseline_estimand='point_sample'` reproduces the earlier, asymmetric
+    baseline readout. Cache filenames already encode all three settings, so
+    variants never collide with each other or with the main run.
+    """
+    global REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER
+    saved = (REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER)
+    try:
+        if reference_mode is not None:
+            REFERENCE_MODE = reference_mode
+        if baseline_estimand is not None:
+            BASELINE_ESTIMAND = baseline_estimand
+        if max_iter is not None:
+            MAX_ITER = max_iter
+        df = run_all(force=force)
+        df["reference_mode"] = REFERENCE_MODE
+        df["baseline_estimand"] = BASELINE_ESTIMAND
+        df["max_iter"] = MAX_ITER
+        df["variant"] = label or f"{REFERENCE_MODE}/{BASELINE_ESTIMAND}/it{MAX_ITER}"
+        return df
+    finally:
+        REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER = saved
+
+
+def rank_table(df):
+    """Rank of every method by RMSE within each scene (1 = best).
+
+    This is the output that matters for the `reference_mode='geometric'`
+    control: that reference targets the observed rather than the latent
+    field, so its absolute RMSE values are not comparable with the default
+    configuration -- but the ranking is. If PSF-aware stays first in every
+    scene under both references, the shared-estimator concern is addressed.
+    """
+    out = df.copy()
+    out["rank"] = out.groupby("scene")["rmse"].rank(method="min").astype(int)
+    return out.pivot_table(index="method", columns="scene", values="rank")
 
 
 def format_table(df):
