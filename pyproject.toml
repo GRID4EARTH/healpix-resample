@@ -29,6 +29,7 @@ dependencies = [
   "numpy",
   "torch",
   "healpix-geo",
+  "healpix-plot",
   "scipy",
 ]
 
