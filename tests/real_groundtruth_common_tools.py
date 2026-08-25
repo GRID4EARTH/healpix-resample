@@ -52,6 +52,7 @@ driven by `run_variant()` and compared with `rank_table()`:
 """
 
 from pathlib import Path
+import shutil
 import time
 import warnings
 
@@ -1540,7 +1541,8 @@ def check_region_sites(scenes=None):
     return df
 
 
-def acquire_region_sites(scenes=None, stop_on_error=False):
+def acquire_region_sites(scenes=None, stop_on_error=False, force=False,
+                          screen=True):
     """ONE-OFF: download the 40 region patches into the frozen-bundle layout.
 
     This is the only function here that touches the network, and it exists to
@@ -1594,15 +1596,28 @@ def acquire_region_sites(scenes=None, stop_on_error=False):
             {"patch_id": meta.get("patch_id", scene),
              "patch_row": -1, "patch_col": -1, "wgs84": meta.get("wgs84", {})}
         ]
-        last_exc, errors = None, []
+        last_exc, errors, ok_row = None, [], None
         for attempt, cand in enumerate(candidates, 1):
             coords = dict(meta, wgs84=cand["wgs84"])
             coords.pop("product_id", None)   # resolve afresh for this position
             try:
-                extract_bench_data(scene, coords=coords)
+                extract_bench_data(scene, coords=coords, force=force)
                 meta["patch_id"] = cand["patch_id"]
                 meta["wgs84"] = cand["wgs84"]
-                rows.append({
+
+                # A patch can download perfectly and still be unusable: mostly
+                # no-data at a granule edge, or entirely under a cloud the
+                # scene-level percentage did not reveal. Advancing only on a
+                # download *exception* would leave those in, so the quality
+                # screen drives the fallback too. All criteria read the input
+                # alone, so this cannot select for any method.
+                quality = patch_quality(scene) if screen else {"usable": True}
+                if not quality.get("usable", False):
+                    errors.append(f"quality: {quality.get('flags', '?')}")
+                    shutil.rmtree(scene_zarr_path(scene), ignore_errors=True)
+                    continue
+
+                ok_row = {
                     "scene": scene, "status": "ok",
                     "scene_class": meta.get("scene_class", ""),
                     "region_id": meta.get("region_id", ""),
@@ -1610,8 +1625,10 @@ def acquire_region_sites(scenes=None, stop_on_error=False):
                     "patch_row": cand["patch_row"], "patch_col": cand["patch_col"],
                     "attempt": attempt,
                     "product_id": meta.get("product_id", ""),
+                    "quality_flags": quality.get("flags", ""),
                     "error": "",
-                })
+                }
+                rows.append(ok_row)
                 extra = "" if attempt == 1 else f"  (fallback #{attempt}: {cand['patch_id']})"
                 print(f"[{i:3d}/{len(scenes)}] {scene}: ok{extra}")
                 last_exc = None
@@ -1619,6 +1636,9 @@ def acquire_region_sites(scenes=None, stop_on_error=False):
             except Exception as exc:
                 last_exc = exc
                 errors.append(f"{type(exc).__name__}: {exc}")
+        if ok_row is None and last_exc is None and errors:
+            # Every position downloaded but none passed the screen.
+            last_exc = RuntimeError(errors[-1])
         if last_exc is not None:
             # Keep every distinct reason: "no items" (catalogue has no product
             # there at all) is a completely different problem from "no finite
@@ -1893,6 +1913,93 @@ def plot_paired_summary(metrics, pooled=None, fname="real_groundtruth_multiregio
     FIG_DIR.mkdir(exist_ok=True)
     fig.savefig(FIG_DIR / fname, dpi=200)
     return fig
+
+
+def align_synthetic_to_real(real_metrics,
+                             synthetic_csv="multi_patch_latitude_metrics.csv",
+                             csv_prefix="real_groundtruth_multiregion"):
+    """Restrict the synthetic multi-region results to the regions that also
+    produced a usable real Sentinel-2 patch.
+
+    Sentinel-2 availability decides which regions survive, and it decides it
+    for reasons unrelated to the method: catalogue coverage, cloud, granule
+    edges. Comparing a 40-region synthetic result against a 32-region real one
+    would leave open whether any difference comes from the method or from the
+    two experiments sitting on different sites. Filtering the synthetic set to
+    the same regions removes that question.
+
+    Returns (aligned_synthetic, real_regions). The synthetic frame keeps its
+    own per-patch structure -- nine patches per region -- because that is how
+    it was run; only the region list is intersected.
+    """
+    path = TABLE_DIR / synthetic_csv
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found. Run multi_patch_latitude_validation.ipynb "
+            "first, or pass synthetic_csv=."
+        )
+    syn = pd.read_csv(path)
+    real_regions = sorted(real_metrics.region_id.unique())
+    aligned = syn[syn.region_id.isin(real_regions)].copy()
+
+    missing = sorted(set(real_regions) - set(syn.region_id.unique()))
+    dropped = sorted(set(syn.region_id.unique()) - set(real_regions))
+    print(f"Synthetic aligned to the real sample: "
+          f"{aligned.region_id.nunique()}/{syn.region_id.nunique()} regions kept.")
+    if dropped:
+        print(f"  {len(dropped)} synthetic-only region(s) dropped "
+              f"(no usable Sentinel-2 patch): {', '.join(dropped[:8])}"
+              f"{' ...' if len(dropped) > 8 else ''}")
+    if missing:
+        print(f"  WARNING: {len(missing)} real region(s) absent from the "
+              f"synthetic run: {', '.join(missing)}")
+    print("  per class:",
+          aligned.groupby('scene_class').region_id.nunique().to_dict())
+
+    TABLE_DIR.mkdir(exist_ok=True)
+    aligned.to_csv(TABLE_DIR / f"{csv_prefix}_synthetic_aligned.csv", index=False)
+    return aligned, real_regions
+
+
+def compare_real_and_synthetic(real_metrics, aligned_synthetic,
+                                csv_prefix="real_groundtruth_multiregion"):
+    """Side-by-side recovery of the same regions, synthetic versus real.
+
+    The two experiments measure different things -- the synthetic one recovers
+    a known latent texture, the real one an independently built HEALPix
+    reference -- so absolute RMSE is not comparable. What is comparable, and
+    what this tabulates, is the *ranking* and the paired margin over a common
+    set of sites.
+    """
+    rows = []
+    syn_method = {"psf_aware_matched": "psf_aware", "nearest": "classical_nearest",
+                  "bilinear": "classical_linear", "bicubic": "classical_cubic"}
+    syn = aligned_synthetic.copy()
+    syn["method_common"] = syn.method.map(syn_method)
+    syn = syn.dropna(subset=["method_common"])
+    syn_region = (syn.groupby(["scene_class", "region_id", "method_common"])
+                     .rmse_vs_latent.mean().reset_index())
+
+    for source, frame, col in (("synthetic", syn_region, "rmse_vs_latent"),
+                                ("real", real_metrics.rename(
+                                    columns={"method": "method_common"}), "rmse")):
+        wide = frame.pivot_table(index=["scene_class", "region_id"],
+                                  columns="method_common", values=col)
+        if "psf_aware" not in wide.columns:
+            continue
+        for comp in [c for c in wide.columns if c != "psf_aware"]:
+            d = (wide[comp] - wide["psf_aware"]).dropna()
+            if d.empty:
+                continue
+            rows.append({"source": source, "competitor": comp,
+                          "n_regions": int(d.size),
+                          "psf_aware_wins": int((d > 0).sum()),
+                          "win_fraction": float((d > 0).mean()),
+                          "mean_delta_rmse": float(d.mean())})
+    out = pd.DataFrame(rows)
+    TABLE_DIR.mkdir(exist_ok=True)
+    out.to_csv(TABLE_DIR / f"{csv_prefix}_real_vs_synthetic.csv", index=False)
+    return out
 
 
 def paired_summary(metrics, csv_prefix="real_groundtruth_multiregion"):
