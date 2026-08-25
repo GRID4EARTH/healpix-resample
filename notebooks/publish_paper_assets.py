@@ -58,6 +58,7 @@ TABLE_SOURCES = [
     "real_groundtruth_downscale_table.csv",
     "real_groundtruth_downscale_metrics.csv",
     "real_groundtruth_downscale_anisotropic_24x45_table.csv",
+    "real_groundtruth_downscale_width_sweep.csv",
     "real_groundtruth_multiregion_table.csv",
     "real_groundtruth_multiregion_products.csv",
     "real_groundtruth_multiregion_quality.csv",

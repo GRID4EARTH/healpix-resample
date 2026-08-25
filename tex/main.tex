@@ -820,8 +820,12 @@ is deliberate: averaging a $2\times2$ block on top of an
 already-blurred field adds a boxcar (square, non-circular)
 component to the true degradation kernel, which the isotropic
 Gaussian weights of Eq.~\eqref{eq:experimental_gaussian} cannot
-represent, penalizing the \psf-aware method for an artefact of the
-test rather than of the method. The 20~m samples are then resampled
+represent. Decimating keeps the true degradation kernel exactly the shape the
+inverse model assumes, so that any difference between methods is attributable
+to the reconstruction rather than to a shape the test introduced. The
+anisotropic control below shows this precaution is not the decisive one --
+the method tolerates a far more severe shape error -- but it costs nothing and
+removes the question from the primary comparison. The 20~m samples are then resampled
 onto the reference's level-19 grid using the matched $25$~m
 response, and every method under test -- \psf-aware,
 nearest-neighbor, bilinear, bicubic, and Richardson--Lucy
@@ -878,6 +882,8 @@ Thirty-eight regions remain -- eight agricultural and ten of each other class
 count is identical across all five methods within a region, since they are
 scored on the same cells, so neither screen can select for or against a
 reconstruction method.
+
+\subsection{Experimental Configuration}
 \label{sec:exp_config}
 
 All experiments use $256\times256$ patches. The real-data evaluation uses the Sentinel-2 Level-2A red band (B04) on its native 10~m \utm grid, about $2.56\times2.56$~km per patch, selected with a maximum cloud cover of $20\%$; missing pixels are filled with the patch mean of the valid pixels. Throughout, the effective instrumental response is $\mathrm{FWHM}=12.5~\mathrm{m}$, i.e.\ a Gaussian scale $s_{\mathrm{op}}=s_{\mathrm{gen}}=10.62\,\mathrm{m}$ through Eq.~\eqref{eq:fwhm_code}. Section~\ref{sec:psf_calibration} shows the resulting synthetic spectra reproduce the observed B04 slopes in all four scenes, and the value is independently bracketed by the ESA MSI MTF-at-Nyquist specification. It is therefore an empirically supported effective B04 response, not a claimed unique optical-PSF measurement.
@@ -1520,6 +1526,23 @@ These margins are smaller than the $23.0\%$ of the four-scene urban case
 (Table~\ref{tab:real_downscale}), which is the expected direction: a single
 illustrative patch is not a typical one.
 
+How much of this depends on knowing the response width is worth stating
+directly. Repeating the four-scene test with the degradation held at
+$25$~m but the \emph{assumed} reconstruction width set to $37.5$~m or
+$12.5$~m -- the real-data analogue of the $\pm50\%$ synthetic arms, with the
+edge margin pinned so that all three arms score identical cells -- leaves the
+geometric baselines unchanged to within $3\times10^{-6}\%$, as it must, since
+they never use the assumed width. The two response-modelling methods absorb
+the whole error: \psf-aware RMSE rises by $23$--$59\%$ and Richardson--Lucy by
+$8$--$48\%$, depending on scene. That is enough to change the ranking in the
+smoother scenes: \psf-aware remains best over urban and water under both
+mismatches, but bicubic overtakes it in agriculture and forest at $+50\%$,
+and Richardson--Lucy in agriculture and bicubic in forest at $-50\%$. The
+advantage demonstrated above is therefore conditional on an effective response
+known to well within $50\%$, which is what makes the spectral calibration of
+Section~\ref{sec:psf_calibration} part of the method rather than a
+preliminary.
+
 This result supersedes the four-scene study as the paper's main real-data
 evidence. It uses the same site list as the synthetic multi-region validation
 of Section~\ref{sec:multiregion}, so the two are directly comparable in
@@ -1578,8 +1601,8 @@ deconvolution rather than complete inversion.
 
 The mismatch spectra explain their asymmetric RMSE. The $+50\%$
 operator compensates for excessive assumed attenuation and
-amplifies weakly constrained high-frequency components, requiring
-stronger damping. The $-50\%$ operator applies too little
+amplifies weakly constrained high-frequency components, which a common
+damping does not suppress. The $-50\%$ operator applies too little
 correction and remains under-restored without the same strong
 instability.
 
@@ -1872,30 +1895,35 @@ diagnostics derived from the normal operator or its approximations.
 
 On the tested NVIDIA A100 80GB PCIe system, the median core runtime
 (operator construction plus matrix-free conjugate-gradient solve)
-over 357 timed $256\times256$ patches was $0.316\,\mathrm{s}$ for
+over 357 timed $256\times256$ patches was $0.315\,\mathrm{s}$ for
 the matched configuration (interquartile range
-$0.313$--$0.321\,\mathrm{s}$). The $-50\%$ and $+50\%$ mismatch
-configurations required $0.197\,\mathrm{s}$ and $0.514\,\mathrm{s}$,
+$0.312$--$0.320\,\mathrm{s}$). The $-50\%$ and $+50\%$ mismatch
+configurations required $0.198\,\mathrm{s}$ and $0.519\,\mathrm{s}$,
 respectively, because their retained neighbourhoods differ. For
 comparison, nearest-neighbor, bilinear, and bicubic interpolation
-required $0.122\,\mathrm{s}$, $0.108\,\mathrm{s}$, and
-$0.762\,\mathrm{s}$ in this implementation.
+required $0.123\,\mathrm{s}$, $0.109\,\mathrm{s}$, and
+$0.764\,\mathrm{s}$ in this implementation.
 
-Operator construction accounts for $0.275\,\mathrm{s}$ ($87\%$) of
+Operator construction accounts for $0.274\,\mathrm{s}$ ($87\%$) of
 the matched core runtime and the solve for $0.040\,\mathrm{s}$
 ($13\%$). Operators depend on geometry rather than image values and
 can therefore be reused for acquisitions sharing a footprint. The
 separate detector-grid projection used only for spectral diagnostics
-costs about $1.8\,\mathrm{s}$ and is excluded from these resampling
+costs about $1.76\,\mathrm{s}$ and is excluded from these resampling
 times. Regional deployment will still require parallel construction,
 chunk scheduling, and preconditioning.
 
 For the matched configuration ($q=22$), the sparse operator has a
 median of $1{,}441{,}792$ non-zero coefficients and retains
 $171{,}259$ \healpix cells. Peak GPU memory had a median of
-$1021\,\mathrm{MiB}$ and a maximum of $1382\,\mathrm{MiB}$. Host
-resident memory is not reported as method memory because it was
-dominated by the surrounding notebook and its cached scenes.
+$1021\,\mathrm{MiB}$ and a maximum of $1382\,\mathrm{MiB}$. Peak host
+resident-set size was $18{,}197\,\mathrm{MiB}$ (maximum
+$18{,}276\,\mathrm{MiB}$), but that figure measures the whole validation
+process -- cached scene arrays, spectral records and the accumulated metric
+tables -- rather than the resampler, so it is an upper bound for a batch job
+and not the memory required for one reconstruction. Across the run the
+post-cleanup resident set drifted by $-0.16\,\mathrm{MiB}$ per patch, i.e.\
+no accumulation.
 
 A single batch-scaling sweep on the same system
 (Appendix~\ref{app:throughput_scaling}) observed an
@@ -1956,7 +1984,7 @@ cases. Selecting $\lambda$ dynamically from noise covariance,
 resolution ratio, and scene structure is therefore left to future
 work. Geolocation errors remain a separate material limitation.
 
-The matched core runtime was $0.316\,\mathrm{s}$ per
+The matched core runtime was $0.315\,\mathrm{s}$ per
 $256\times256$ patch on an NVIDIA A100, dominated by reusable
 operator construction. Exact area-integral conservation is available
 through optional methods evaluated separately. Scaling to regional or
