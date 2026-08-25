@@ -124,7 +124,7 @@ def expected_assets(doi: str):
             rows.append(asset(
                 f"notebooks/data/multi_patch_sentinel2/{scene}_data.zarr",
                 asset_id=f"sentinel2_{scene}", category="primary_input",
-                source="Copernicus Sentinel-2 L2A",
+                source="Copernicus Sentinel-2 L2A (earth-search COG)",
                 source_identifier=(
                     f"lat={site['patch_lat']};lon={site['patch_lon']};"
                     "product recorded in the store's source_item_id attribute"

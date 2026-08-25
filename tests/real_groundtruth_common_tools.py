@@ -296,6 +296,154 @@ REGION_DATE_WINDOW = "2023-01-01/2026-09-30"
 REGION_CLOUD_MAX = 10
 
 
+# =============================================================================
+# Sentinel-2 source for the 40 multi-region sites
+#
+# The four paper scenes come from the EOPF STAC, a European demonstration
+# catalogue. Queried at the 40 multi-region anchors it returns nothing outside
+# Europe and part of North America -- Amazon, Borneo, Congo, Punjab, Pampas,
+# Tokyo, Singapore and most of the southern hemisphere all yield "No items"
+# even with a four-year window and a 40% cloud ceiling. That is a catalogue
+# coverage limit, not a weather one, and no filter relaxation can fix it.
+#
+# Element 84's earth-search holds the complete Sentinel-2 L2A archive as
+# Cloud-Optimized GeoTIFFs, so the multi-region experiment reads from there
+# instead and can use exactly the same 40 sites as the synthetic validation.
+# =============================================================================
+
+REGION_STAC_SOURCE = "earth-search"        # or "eopf" for the original path
+EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1"
+EARTH_SEARCH_COLLECTION = "sentinel-2-l2a"
+EARTH_SEARCH_ASSET = "red"                 # B04, 10 m
+S2_REFLECTANCE_SCALE = 1.0 / 10000.0
+S2_NODATA_DN = 0
+# Processing baseline 04.00 (2022-01-25) added a +1000 DN offset to L2A. Some
+# STAC items record whether it has already been removed; when they do not, the
+# baseline decides. Ignoring this silently biases reflectance by 0.1, which is
+# comparable to the signal itself over water.
+S2_BOA_OFFSET_DN = -1000.0
+S2_OFFSET_BASELINE = "04.00"
+
+
+def _boa_offset_dn(properties):
+    """DN offset to apply to a Sentinel-2 L2A COG, given its STAC properties."""
+    applied = properties.get("earthsearch:boa_offset_applied")
+    if applied is True:
+        return 0.0
+    baseline = str(properties.get("s2:processing_baseline", "") or "")
+    if applied is False:
+        return S2_BOA_OFFSET_DN
+    # Property absent: fall back to the baseline string, which sorts correctly
+    # as zero-padded "MM.mm".
+    if baseline and baseline >= S2_OFFSET_BASELINE:
+        return S2_BOA_OFFSET_DN
+    return 0.0
+
+
+def _search_earth_search(lon0, lat0, coords, limit=200):
+    """Cloud-sorted Sentinel-2 L2A items covering a point.
+
+    Sorting by cloud cover then datetime then id makes the choice deterministic
+    and dependent only on the data, so re-running picks the same product and
+    the selection cannot drift as new acquisitions are published.
+    """
+    catalog = pystac_client.Client.open(EARTH_SEARCH_URL)
+    search = catalog.search(
+        collections=[EARTH_SEARCH_COLLECTION],
+        intersects={"type": "Point", "coordinates": [float(lon0), float(lat0)]},
+        datetime=coords["recommended_date"],
+        query={"eo:cloud_cover": {"lt": coords["cloud"]}},
+        limit=limit,
+    )
+    items = list(search.items())
+    items.sort(key=lambda it: (it.properties.get("eo:cloud_cover", 100.0),
+                               str(it.properties.get("datetime", "")), it.id))
+    return items
+
+
+def _read_cog_patch(href, lon0, lat0, patch_size, properties):
+    """Read a patch_size x patch_size window centred on (lon0, lat0) from a COG.
+
+    Returns (reflectance, x, y, crs). No-data is returned as NaN rather than 0
+    so a patch that falls partly outside the granule is caught by the quality
+    screen instead of entering the experiment as very dark ground.
+    """
+    import rasterio
+    from rasterio.windows import Window
+
+    with rasterio.open(href) as src:
+        to_src = pyproj.Transformer.from_crs(
+            pyproj.CRS.from_epsg(4326), src.crs, always_xy=True
+        )
+        cx, cy = to_src.transform(float(lon0), float(lat0))
+        row, col = src.index(cx, cy)
+        half = patch_size // 2
+        window = Window(col - half, row - half, patch_size, patch_size)
+        dn = src.read(1, window=window, boundless=True,
+                      fill_value=S2_NODATA_DN).astype(np.float64)
+        transform = src.window_transform(window)
+        crs = src.crs
+
+    dn[dn == S2_NODATA_DN] = np.nan
+    refl = (dn + _boa_offset_dn(properties)) * S2_REFLECTANCE_SCALE
+
+    cols = np.arange(patch_size)
+    x = transform.c + (cols + 0.5) * transform.a
+    y = transform.f + (cols + 0.5) * transform.e   # transform.e is negative
+    return refl.astype(np.float32), x, y, crs
+
+
+def _fetch_patch_earth_search(scene, coords, patch_size, band):
+    """Build the frozen-bundle Zarr for one scene from an earth-search COG."""
+    lat0, lon0 = coords["wgs84"]["lat"], coords["wgs84"]["lon"]
+    items = _search_earth_search(lon0, lat0, coords)
+    if not items:
+        raise RuntimeError(
+            f"No earth-search items for {scene} in {coords['recommended_date']} "
+            f"below {coords['cloud']}% cloud"
+        )
+    item = items[0]
+    props = item.properties
+    if EARTH_SEARCH_ASSET not in item.assets:
+        raise KeyError(f"asset {EARTH_SEARCH_ASSET!r} missing from {item.id}")
+
+    print(f"[{scene}] {len(items)} product(s); using {item.id} "
+          f"({props.get('datetime', '?')}, cloud "
+          f"{props.get('eo:cloud_cover', '?')}%, baseline "
+          f"{props.get('s2:processing_baseline', '?')})")
+
+    refl, x, y, crs = _read_cog_patch(
+        item.assets[EARTH_SEARCH_ASSET].href, lon0, lat0, patch_size, props
+    )
+
+    to_wgs = pyproj.Transformer.from_crs(
+        crs, pyproj.CRS.from_epsg(4326), always_xy=True
+    )
+    xx, yy = np.meshgrid(x, y)
+    lon, lat = to_wgs.transform(xx, yy)
+
+    ds = xr.Dataset(
+        {band: (("y", "x"), refl)},
+        coords={"x": x, "y": y,
+                "longitude": (("y", "x"), lon),
+                "latitude": (("y", "x"), lat),
+                "spatial_ref": ((), 0)},
+    )
+    ds.spatial_ref.attrs["crs_wkt"] = crs.to_wkt()
+    ds.attrs.update({
+        "source_item_id": item.id,
+        "source_collection": EARTH_SEARCH_COLLECTION,
+        "source_stac_endpoint": EARTH_SEARCH_URL,
+        "source_datetime": str(props.get("datetime", "")),
+        "source_cloud_cover": str(props.get("eo:cloud_cover", "")),
+        "source_processing_baseline": str(props.get("s2:processing_baseline", "")),
+        "boa_offset_dn_applied": str(_boa_offset_dn(props)),
+    })
+    if scene in region_coordinates:
+        region_coordinates[scene]["product_id"] = item.id
+    return ds
+
+
 def check_eopf_engine(raise_on_missing=False):
     """Is xarray's ``eopf-zarr`` backend registered?
 
@@ -460,8 +608,18 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
             "archive by running every cell of "
             "notebooks/load_data_in_zenodo.ipynb first."
         )
-    catalog = pystac_client.Client.open("https://stac.core.eopf.eodc.eu")
     coords = _coords_for(scene) if coords is None else coords
+
+    # Multi-region scenes read Cloud-Optimized GeoTIFFs from earth-search,
+    # which has global coverage; the four paper scenes keep the original EOPF
+    # path so their archived inputs stay bit-identical.
+    is_region = scene in region_coordinates or scene.startswith("region__")
+    if is_region and REGION_STAC_SOURCE == "earth-search":
+        ds_patch = _fetch_patch_earth_search(scene, coords, patch_size, band)
+        ds_patch.to_zarr(path, mode="w")
+        return
+
+    catalog = pystac_client.Client.open("https://stac.core.eopf.eodc.eu")
     lat0, lon0 = coords["wgs84"]["lat"], coords["wgs84"]["lon"]
 
     pinned = coords.get("product_id")
@@ -1410,10 +1568,23 @@ def acquire_region_sites(scenes=None, stop_on_error=False):
             "input bundle rather than reading the frozen one; set it back to "
             "True immediately afterwards."
         )
-    # Fail immediately and with a usable diagnosis rather than after a STAC
-    # query per region: without this backend every single scene dies on the
-    # same generic "unrecognized engine 'eopf-zarr'".
-    check_eopf_engine(raise_on_missing=True)
+    # Fail immediately, with a usable diagnosis, rather than after a STAC query
+    # per region: a missing reader kills all 40 scenes with the same generic
+    # error otherwise.
+    if REGION_STAC_SOURCE == "earth-search":
+        try:
+            import rasterio  # noqa: F401
+        except Exception as exc:
+            raise RuntimeError(
+                "REGION_STAC_SOURCE='earth-search' reads Cloud-Optimized "
+                f"GeoTIFFs and needs rasterio, which is not importable ({exc}).\n"
+                "  pixi run -e notebooks jupyter lab\n"
+                "rasterio is declared in the 'notebooks' feature of pixi.toml."
+            ) from exc
+        print(f"[earth-search] {EARTH_SEARCH_COLLECTION} at {EARTH_SEARCH_URL}, "
+              f"asset {EARTH_SEARCH_ASSET!r}")
+    else:
+        check_eopf_engine(raise_on_missing=True)
 
     scenes = scenes or sorted(region_coordinates)
     rows = []

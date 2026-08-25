@@ -70,6 +70,12 @@ pandas = "*"
 pillow = "*"
 pyproj = "*"
 pystac-client = "*"
+# reads the Sentinel-2 L2A Cloud-Optimized GeoTIFFs served by Element 84's
+# earth-search catalogue. The EOPF STAC used for the four paper scenes is a
+# European demonstration catalogue with partial global coverage, so the
+# multi-region experiment reads COGs instead (see REGION_STAC_SOURCE in
+# tests/real_groundtruth_common_tools.py).
+rasterio = "*"
 scikit-image = "*"
 scikit-learn = "*"
 scipy = "*"
