@@ -296,6 +296,18 @@ REGION_DATA_SUBDIR = "multi_patch_sentinel2"
 REGION_DATE_WINDOW = "2023-01-01/2026-09-30"
 REGION_CLOUD_MAX = 10
 
+# Cloud ceilings tried in order, per region. The strict value is attempted at
+# every lattice position first; only a region with no product at all below it
+# escalates. Persistently cloudy sites (Borneo, equatorial forest) otherwise
+# drop out entirely, which biases the sample towards dry regions -- a worse
+# problem than admitting a cloudier scene, because the patch-level quality
+# screen still has to pass either way.
+#
+# Regions acquired at a relaxed ceiling are recorded in the products CSV
+# (`cloud_max_used`) so the paper can state how many needed it.
+REGION_CLOUD_RELAXED = 25
+REGION_CLOUD_LADDER = [REGION_CLOUD_MAX, REGION_CLOUD_RELAXED]
+
 
 # =============================================================================
 # Sentinel-2 source for the 40 multi-region sites
@@ -316,6 +328,8 @@ REGION_STAC_SOURCE = "earth-search"        # or "eopf" for the original path
 EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1"
 EARTH_SEARCH_COLLECTION = "sentinel-2-l2a"
 EARTH_SEARCH_ASSET = "red"                 # B04, 10 m
+# Public bucket hosting the COGs; only used to rewrite s3:// hrefs to HTTPS.
+AWS_PUBLIC_REGION = "us-west-2"
 S2_REFLECTANCE_SCALE = 1.0 / 10000.0
 S2_NODATA_DN = 0
 # Processing baseline 04.00 (2022-01-25) added a +1000 DN offset to L2A. Some
@@ -362,6 +376,52 @@ def _search_earth_search(lon0, lat0, coords, limit=200):
     return items
 
 
+def _public_https_href(href):
+    """Rewrite an ``s3://bucket/key`` href to its public HTTPS equivalent.
+
+    The Sentinel-2 COGs live in a public bucket, but an ``s3://`` href sends
+    GDAL through /vsis3/, which signs the request with whatever AWS
+    credentials it finds in the environment. Stale or unrelated keys then
+    produce ``The AWS Access Key Id you provided does not exist in our
+    records`` even though no credentials are needed at all. Plain HTTPS avoids
+    signing entirely.
+    """
+    if not str(href).startswith("s3://"):
+        return href
+    bucket, _, key = str(href)[len("s3://"):].partition("/")
+    return f"https://{bucket}.s3.{AWS_PUBLIC_REGION}.amazonaws.com/{key}"
+
+
+def _rasterio_public_env():
+    """GDAL settings for anonymous reads of a public bucket.
+
+    ``AWS_NO_SIGN_REQUEST`` is the one that matters: it stops GDAL using
+    ambient credentials. The other two just avoid pointless directory listings
+    and HEAD requests over HTTP, which make a 256x256 window read noticeably
+    slower.
+    """
+    import rasterio
+    return rasterio.Env(
+        AWS_NO_SIGN_REQUEST="YES",
+        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+        CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif,.TIF,.tiff",
+    )
+
+
+def warn_about_aws_credentials():
+    """Flag ambient AWS credentials, which break reads of a public bucket."""
+    import os
+    present = [k for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                            "AWS_SESSION_TOKEN", "AWS_PROFILE")
+               if os.environ.get(k)]
+    if present:
+        print(f"[earth-search] NOTE: {', '.join(present)} set in the "
+              f"environment. The Sentinel-2 COGs are public and are read "
+              f"unsigned, so these are ignored here; if you still see "
+              f"'AWS Access Key Id ... does not exist', unset them.")
+    return present
+
+
 def _read_cog_patch(href, lon0, lat0, patch_size, properties):
     """Read a patch_size x patch_size window centred on (lon0, lat0) from a COG.
 
@@ -372,18 +432,20 @@ def _read_cog_patch(href, lon0, lat0, patch_size, properties):
     import rasterio
     from rasterio.windows import Window
 
-    with rasterio.open(href) as src:
-        to_src = pyproj.Transformer.from_crs(
-            pyproj.CRS.from_epsg(4326), src.crs, always_xy=True
-        )
-        cx, cy = to_src.transform(float(lon0), float(lat0))
-        row, col = src.index(cx, cy)
-        half = patch_size // 2
-        window = Window(col - half, row - half, patch_size, patch_size)
-        dn = src.read(1, window=window, boundless=True,
-                      fill_value=S2_NODATA_DN).astype(np.float64)
-        transform = src.window_transform(window)
-        crs = src.crs
+    href = _public_https_href(href)
+    with _rasterio_public_env():
+        with rasterio.open(href) as src:
+            to_src = pyproj.Transformer.from_crs(
+                pyproj.CRS.from_epsg(4326), src.crs, always_xy=True
+            )
+            cx, cy = to_src.transform(float(lon0), float(lat0))
+            row, col = src.index(cx, cy)
+            half = patch_size // 2
+            window = Window(col - half, row - half, patch_size, patch_size)
+            dn = src.read(1, window=window, boundless=True,
+                          fill_value=S2_NODATA_DN).astype(np.float64)
+            transform = src.window_transform(window)
+            crs = src.crs
 
     dn[dn == S2_NODATA_DN] = np.nan
     refl = (dn + _boa_offset_dn(properties)) * S2_REFLECTANCE_SCALE
@@ -1542,7 +1604,7 @@ def check_region_sites(scenes=None):
 
 
 def acquire_region_sites(scenes=None, stop_on_error=False, force=False,
-                          screen=True):
+                          screen=True, cloud_ladder=None):
     """ONE-OFF: download the 40 region patches into the frozen-bundle layout.
 
     This is the only function here that touches the network, and it exists to
@@ -1585,6 +1647,7 @@ def acquire_region_sites(scenes=None, stop_on_error=False, force=False,
             ) from exc
         print(f"[earth-search] {EARTH_SEARCH_COLLECTION} at {EARTH_SEARCH_URL}, "
               f"asset {EARTH_SEARCH_ASSET!r}")
+        warn_about_aws_credentials()
     else:
         check_eopf_engine(raise_on_missing=True)
 
@@ -1597,8 +1660,14 @@ def acquire_region_sites(scenes=None, stop_on_error=False, force=False,
              "patch_row": -1, "patch_col": -1, "wgs84": meta.get("wgs84", {})}
         ]
         last_exc, errors, ok_row = None, [], None
-        for attempt, cand in enumerate(candidates, 1):
-            coords = dict(meta, wgs84=cand["wgs84"])
+        # Cloud ceilings outermost: a clean patch at another lattice position
+        # is preferred over a cloudier one at the centre. The screen decides
+        # either way, but this keeps "as clean as available" the first choice.
+        ladder = [c for c in (cloud_ladder or REGION_CLOUD_LADDER)
+                  if c is not None]
+        attempts = [(c, cand) for c in ladder for cand in candidates]
+        for attempt, (cloud_max, cand) in enumerate(attempts, 1):
+            coords = dict(meta, wgs84=cand["wgs84"], cloud=cloud_max)
             coords.pop("product_id", None)   # resolve afresh for this position
             try:
                 extract_bench_data(scene, coords=coords, force=force)
@@ -1624,12 +1693,18 @@ def acquire_region_sites(scenes=None, stop_on_error=False, force=False,
                     "patch_id": cand["patch_id"],
                     "patch_row": cand["patch_row"], "patch_col": cand["patch_col"],
                     "attempt": attempt,
+                    "cloud_max_used": cloud_max,
                     "product_id": meta.get("product_id", ""),
                     "quality_flags": quality.get("flags", ""),
                     "error": "",
                 }
                 rows.append(ok_row)
-                extra = "" if attempt == 1 else f"  (fallback #{attempt}: {cand['patch_id']})"
+                notes = []
+                if cand["patch_id"] != candidates[0]["patch_id"]:
+                    notes.append(f"position {cand['patch_id']}")
+                if cloud_max != ladder[0]:
+                    notes.append(f"cloud<{cloud_max}%")
+                extra = f"  ({'; '.join(notes)})" if notes else ""
                 print(f"[{i:3d}/{len(scenes)}] {scene}: ok{extra}")
                 last_exc = None
                 break
@@ -1650,18 +1725,30 @@ def acquire_region_sites(scenes=None, stop_on_error=False, force=False,
                 "scene_class": meta.get("scene_class", ""),
                 "region_id": meta.get("region_id", ""),
                 "patch_id": "", "patch_row": -1, "patch_col": -1,
-                "attempt": len(candidates), "product_id": "",
+                "attempt": len(attempts), "cloud_max_used": np.nan,
+                "product_id": "",
                 "error": f"{len(candidates)} position(s) tried; {'; '.join(kinds)}"
                           f" | last: {errors[-1]}",
             })
             print(f"[{i:3d}/{len(scenes)}] [FAIL] {scene} after "
-                  f"{len(candidates)} position(s): {errors[-1]}")
+                  f"{len(attempts)} attempt(s) "
+                  f"({len(candidates)} position(s) x {len(ladder)} cloud "
+                  f"ceiling(s)): {errors[-1]}")
             if stop_on_error:
                 raise last_exc
     df = pd.DataFrame(rows)
     n_ok = int((df.status == "ok").sum())
     print(f"\n{n_ok}/{len(df)} region patches acquired into "
           f"{DATA_DIR / REGION_DATA_SUBDIR}.")
+    if n_ok and "cloud_max_used" in df.columns:
+        used = df.loc[df.status == "ok", "cloud_max_used"].value_counts().sort_index()
+        print("  cloud ceiling actually used: "
+              + ", ".join(f"{int(c)}%: {n}" for c, n in used.items()))
+        relaxed = df[(df.status == "ok")
+                     & (df.cloud_max_used > (cloud_ladder or REGION_CLOUD_LADDER)[0])]
+        if len(relaxed):
+            print(f"  {len(relaxed)} region(s) needed a relaxed ceiling: "
+                  + ", ".join(relaxed.region_id.astype(str)))
 
     # Persist the resolved product ids. The STAC query is time-dependent -- the
     # "first matching item" can change as new acquisitions are published -- so
