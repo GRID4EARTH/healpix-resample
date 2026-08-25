@@ -292,8 +292,8 @@ REGION_DATA_SUBDIR = "multi_patch_sentinel2"
 # Acquisition window and cloud ceiling used when searching Sentinel-2 products
 # for a region that has no pinned product_id. Only consulted by the one-off
 # acquisition step that builds the bundle, never by an offline run.
-REGION_DATE_WINDOW = "2026-05-01/2026-09-30"
-REGION_CLOUD_MAX = 10
+REGION_DATE_WINDOW = "2023-01-01/2026-09-30"
+REGION_CLOUD_MAX = 40
 
 
 def check_eopf_engine(raise_on_missing=False):
