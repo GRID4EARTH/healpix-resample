@@ -112,6 +112,34 @@ def expected_assets(doi: str):
                 notes="One of 360 selected patches; retain even when the reference degradation is degenerate.",
             ))
 
+    # Real Sentinel-2 patches at the 40 region anchors, used by the
+    # multi-region real-data downscaling experiment. One patch per region,
+    # taken at the centre of each 3x3 lattice (patch_row = patch_col = 1), so
+    # the site selection matches the synthetic multi-region manifest exactly.
+    with sites_path.open(newline="", encoding="utf-8") as stream:
+        for site in csv.DictReader(stream):
+            if (site.get("patch_row"), site.get("patch_col")) != ("1", "1"):
+                continue
+            scene = f"region__{site['scene_class']}__{site['region_id']}"
+            rows.append(asset(
+                f"notebooks/data/multi_patch_sentinel2/{scene}_data.zarr",
+                asset_id=f"sentinel2_{scene}", category="primary_input",
+                source="Copernicus Sentinel-2 L2A",
+                source_identifier=(
+                    f"lat={site['patch_lat']};lon={site['patch_lon']};"
+                    "product recorded in the store's source_item_id attribute"
+                ), kind="zarr",
+                required_by="real_groundtruth_multiregion.ipynb",
+                expected_shape="256x256 native 10 m patch",
+                archive_doi=doi,
+                notes=(
+                    "One of 40 region anchors. Acquired once via "
+                    "real_groundtruth_common_tools.acquire_region_sites(); "
+                    "a region with no cloud-free acquisition in the search "
+                    "window is absent by design and is skipped downstream."
+                ),
+            ))
+
     rows.append(asset(
         "notebooks/outputFLUX.grib", asset_id="era5_output_flux",
         category="primary_input", source="ERA5 reanalysis-era5-complete",

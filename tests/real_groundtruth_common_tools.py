@@ -277,10 +277,49 @@ benchmark_coordinates = {
 # the default everywhere and nothing silently changes.
 region_coordinates = {}
 
+# The 40 region patches are real Sentinel-2 acquisitions, like the four
+# benchmark scenes -- not the Esri textures used by the synthetic
+# multi-region validation. They live in their own subdirectory of the frozen
+# input bundle so that `data/` keeps one store per paper scene at top level:
+#
+#   data/multi_patch_sentinel2/region__<class>__<region_id>_data.zarr
+#
+# They are part of the archived input set and are covered by
+# notebooks/build_data_manifest.py, so a normal run reads them offline exactly
+# like every other primary input.
+REGION_DATA_SUBDIR = "multi_patch_sentinel2"
+
 # Acquisition window and cloud ceiling used when searching Sentinel-2 products
-# for a region that has no pinned product_id.
+# for a region that has no pinned product_id. Only consulted by the one-off
+# acquisition step that builds the bundle, never by an offline run.
 REGION_DATE_WINDOW = "2026-05-01/2026-09-30"
 REGION_CLOUD_MAX = 10
+
+
+def scene_zarr_path(scene):
+    """Location of a scene's frozen Sentinel-2 patch.
+
+    The four paper scenes sit directly in `data/`; the 40 multi-region scenes
+    sit in `data/<REGION_DATA_SUBDIR>/`, keeping the top level readable.
+    """
+    if scene in region_coordinates or scene.startswith("region__"):
+        return DATA_DIR / REGION_DATA_SUBDIR / f"{scene}_data.zarr"
+    return DATA_DIR / f"{scene}_data.zarr"
+
+
+def _cache_npz_path(scene, stem):
+    """Location of a derived intermediate cache (.npz), not a primary input.
+
+    Region intermediates go next to their patch rather than into the top-level
+    `data/`, which would otherwise accumulate 40 scenes x 5 methods of derived
+    files alongside the four archived paper inputs.
+    """
+    if scene in region_coordinates or scene.startswith("region__"):
+        base = DATA_DIR / REGION_DATA_SUBDIR
+    else:
+        base = DATA_DIR
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"{scene}_{stem}_{_cache_suffix()}.npz"
 
 
 def _coords_for(scene):
@@ -338,7 +377,8 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
 
     DATA_DIR.mkdir(exist_ok=True)
     xr.set_options(keep_attrs=True, display_expand_attrs=False)
-    path = DATA_DIR / f"{scene}_data.zarr"
+    path = scene_zarr_path(scene)
+    path.parent.mkdir(parents=True, exist_ok=True)
     # OFFLINE takes precedence over force: never refresh a frozen input.
     if path.exists() and (OFFLINE or not force):
         try:
@@ -454,7 +494,7 @@ def fill_nan_with_mean(img):
 
 
 def load_scene_patch(scene_name):
-    path = DATA_DIR / f"{scene_name}_data.zarr"
+    path = scene_zarr_path(scene_name)
     dt = xr.open_datatree(path, engine="zarr", consolidated=False, chunks={})
     da = dt[BAND]
     img = fill_nan_with_mean(da.values)
@@ -641,7 +681,7 @@ def build_reference(scene_name, force=False):
     """
     TABLE_DIR.mkdir(exist_ok=True)
     DATA_DIR.mkdir(exist_ok=True)
-    out_npz = DATA_DIR / f"{scene_name}_real_downscale_reference_{_cache_suffix()}.npz"
+    out_npz = _cache_npz_path(scene_name, "real_downscale_reference")
     if out_npz.exists() and not force:
         return dict(np.load(out_npz, allow_pickle=True))
     if PSFResampler is None:
@@ -779,7 +819,7 @@ def reconstruct_psf_aware(scene_name, force=True):
     construction time -- reconstruction and reference already live at the
     same HEALPix level, so no separate readout/interpolation is needed."""
     DATA_DIR.mkdir(exist_ok=True)
-    out_npz = DATA_DIR / f"{scene_name}_real_downscale_psf_aware_{_cache_suffix()}.npz"
+    out_npz = _cache_npz_path(scene_name, "real_downscale_psf_aware")
     if out_npz.exists() and not force:
         return dict(np.load(out_npz, allow_pickle=True))
 
@@ -867,7 +907,7 @@ def reconstruct_classical(scene_name, method="linear", force=False):
     the reference's own HEALPix cell centres (projected to UTM) -- the
     same evaluation points as every other method."""
     DATA_DIR.mkdir(exist_ok=True)
-    out_npz = DATA_DIR / f"{scene_name}_real_downscale_classical_{method}_{_cache_suffix()}.npz"
+    out_npz = _cache_npz_path(scene_name, f"real_downscale_classical_{method}")
     if out_npz.exists() and not force:
         return dict(np.load(out_npz, allow_pickle=True))
 
@@ -894,7 +934,7 @@ def reconstruct_richardson_lucy(scene_name, force=False):
     assumed Gaussian response (RECON_FWHM_M), then read out at the
     reference's own HEALPix cell centres, same as the classical baselines."""
     DATA_DIR.mkdir(exist_ok=True)
-    out_npz = DATA_DIR / f"{scene_name}_real_downscale_richardson_lucy_{_cache_suffix()}.npz"
+    out_npz = _cache_npz_path(scene_name, "real_downscale_richardson_lucy")
     if out_npz.exists() and not force:
         return dict(np.load(out_npz, allow_pickle=True))
     if richardson_lucy is None:
@@ -1191,32 +1231,76 @@ def load_region_sites(csv_name=None, date_window=None, cloud_max=None,
     return registered
 
 
-def fetch_region_sites(scenes=None, stop_on_error=False):
-    """Download (or confirm the cache for) every registered region patch.
+def check_region_sites(scenes=None):
+    """Report which region patches are present in the frozen bundle.
 
-    Returns a DataFrame of per-scene status. Requires ``OFFLINE = False`` for
-    scenes that are not already cached: this experiment adds 40 new Sentinel-2
-    patches to the frozen input bundle, so it must be run once with downloads
-    enabled and the resulting archive re-published.
+    Read-only: never downloads. This is what a normal, offline run calls.
     """
     scenes = scenes or sorted(region_coordinates)
     rows = []
     for scene in scenes:
+        path = scene_zarr_path(scene)
+        rows.append({"scene": scene, "path": str(path),
+                     "present": path.exists()})
+    df = pd.DataFrame(rows)
+    n = int(df.present.sum())
+    print(f"{n}/{len(df)} region patches present under "
+          f"{DATA_DIR / REGION_DATA_SUBDIR}.")
+    if n < len(df):
+        print("Missing patches: install the frozen bundle "
+              "(notebooks/load_data_in_zenodo.ipynb). If they are not in the "
+              "archive yet, build them once with acquire_region_sites().")
+    return df
+
+
+def acquire_region_sites(scenes=None, stop_on_error=False):
+    """ONE-OFF: download the 40 region patches into the frozen-bundle layout.
+
+    This is the only function here that touches the network, and it exists to
+    *construct* an input bundle, not to run an experiment. The 40 Sentinel-2
+    region patches are a new primary input: after running this once, rebuild
+    and publish the manifest, then set OFFLINE back to True so every later run
+    reads the archived copies.
+
+        gt.OFFLINE = False
+        gt.acquire_region_sites()
+        gt.OFFLINE = True
+        # then, from the repository root:
+        #   python notebooks/build_data_manifest.py --doi <new DOI>
+        #   python notebooks/build_data_manifest.py --check --doi <new DOI>
+
+    Patches are written to `data/<REGION_DATA_SUBDIR>/`, and each records the
+    Sentinel-2 product id it came from, so the manifest can pin provenance.
+    A region with no cloud-free acquisition in REGION_DATE_WINDOW simply fails
+    here and is reported; that criterion depends only on data availability and
+    is evaluated long before any method is scored.
+    """
+    if OFFLINE:
+        raise RuntimeError(
+            "acquire_region_sites() needs OFFLINE = False. It builds a new "
+            "input bundle rather than reading the frozen one; set it back to "
+            "True immediately afterwards."
+        )
+    scenes = scenes or sorted(region_coordinates)
+    rows = []
+    for i, scene in enumerate(scenes, 1):
         try:
             extract_bench_data(scene)
             rows.append({"scene": scene, "status": "ok", "error": ""})
+            print(f"[{i:3d}/{len(scenes)}] {scene}: ok")
         except Exception as exc:
             rows.append({"scene": scene, "status": "failed",
                          "error": f"{type(exc).__name__}: {exc}"})
-            print(f"[FAIL] {scene}: {type(exc).__name__}: {exc}")
+            print(f"[{i:3d}/{len(scenes)}] [FAIL] {scene}: "
+                  f"{type(exc).__name__}: {exc}")
             if stop_on_error:
                 raise
     df = pd.DataFrame(rows)
     n_ok = int((df.status == "ok").sum())
-    print(f"{n_ok}/{len(df)} region patches available.")
-    if n_ok < len(df):
-        print("Failed scenes are skipped by run_multiregion(); they are "
-              "recorded in the returned frame and in the failures CSV.")
+    print(f"\n{n_ok}/{len(df)} region patches acquired into "
+          f"{DATA_DIR / REGION_DATA_SUBDIR}.")
+    print("Next: rebuild the manifest and re-publish the archive, then set "
+          "OFFLINE = True.")
     return df
 
 
