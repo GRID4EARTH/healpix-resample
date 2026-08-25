@@ -293,7 +293,7 @@ REGION_DATA_SUBDIR = "multi_patch_sentinel2"
 # for a region that has no pinned product_id. Only consulted by the one-off
 # acquisition step that builds the bundle, never by an offline run.
 REGION_DATE_WINDOW = "2023-01-01/2026-09-30"
-REGION_CLOUD_MAX = 40
+REGION_CLOUD_MAX = 10
 
 
 def check_eopf_engine(raise_on_missing=False):
@@ -1142,7 +1142,7 @@ def run_all(force=False, csv_name=None, scenes=None):
 
 def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
                  degrade_psf_mode=None, degrade_fwhm_x_m=None,
-                 degrade_fwhm_y_m=None, recon_fwhm_m=None,
+                 degrade_fwhm_y_m=None, recon_fwhm_m=None, edge_margin_m=None,
                  force=False, label=None, scenes=None, csv_name=None):
     """Run the whole protocol under a temporarily overridden configuration and
     return its metrics DataFrame, with the configuration recorded in extra
@@ -1187,9 +1187,17 @@ def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
             # cache suffix already encodes RECON_FWHM_M, so nothing is reused.
             RECON_FWHM_M = float(recon_fwhm_m)
         degradation_x_m, degradation_y_m = degradation_fwhm_xy()
-        EDGE_MARGIN_M = EDGE_MARGIN_FACTOR * max(
-            RECON_FWHM_M, degradation_x_m, degradation_y_m
-        )
+        if edge_margin_m is not None:
+            # Pinned by the caller. Needed by the width-mismatch arms: the
+            # margin normally scales with RECON_FWHM_M, so letting it float
+            # would change the set of evaluated cells at the same time as the
+            # assumed width, confounding the two. Every arm must score the
+            # same footprint for the comparison to isolate the width error.
+            EDGE_MARGIN_M = float(edge_margin_m)
+        else:
+            EDGE_MARGIN_M = EDGE_MARGIN_FACTOR * max(
+                RECON_FWHM_M, degradation_x_m, degradation_y_m
+            )
         # Never write over the main metrics CSV: that file is the one the
         # paper's table is generated from, and a control run must not be able
         # to silently replace it.
@@ -1217,7 +1225,7 @@ def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
         ) = saved
 
 
-def run_width_mismatch(scale=1.5, force=False, scenes=None):
+def run_width_mismatch(scale=1.5, force=False, scenes=None, pin_edge_margin=True):
     """Width-mismatch variant of the real-data downscaling protocol.
 
     The degradation stays at DEGRADE_FWHM_M; only the *assumed* reconstruction
@@ -1230,9 +1238,22 @@ def run_width_mismatch(scale=1.5, force=False, scenes=None):
     are unaffected by the mismatch. A width error therefore costs the two
     response-modelling methods and nothing else -- the opposite of a
     handicap for the baselines.
+
+    `pin_edge_margin` (default True) holds the evaluation footprint at the
+    matched-configuration value. Without it, EDGE_MARGIN_M scales with
+    RECON_FWHM_M, so the +50% arm would silently evaluate a smaller interior
+    (300 m margin instead of 200 m) and every method's RMSE would move --
+    including the geometric baselines, which do not use the assumed width at
+    all. That is a confound, not a result: the baselines shifting under a
+    change that cannot affect them is the diagnostic that the footprint, not
+    the width, moved. Leave this True unless you specifically want to measure
+    the footprint effect.
     """
+    matched_margin = EDGE_MARGIN_FACTOR * max(DEGRADE_FWHM_M,
+                                               *degradation_fwhm_xy())
     return run_variant(
         recon_fwhm_m=scale * DEGRADE_FWHM_M,
+        edge_margin_m=matched_margin if pin_edge_margin else None,
         force=force,
         scenes=scenes,
         label=f"recon width x{scale:g} ({scale * DEGRADE_FWHM_M:g} m assumed)",
@@ -1254,21 +1275,41 @@ def run_width_mismatch(scale=1.5, force=False, scenes=None):
 # within-region clustering left to account for with a single patch each).
 # =============================================================================
 
+# Order in which the 3x3 lattice positions of a region are tried when the
+# preferred one has no usable Sentinel-2 acquisition. Centre first, then the
+# edge midpoints, then the corners: a fixed, data-independent ordering, so
+# which patch ends up representing a region never depends on any method's
+# score.
+LATTICE_FALLBACK_ORDER = [(1, 1), (0, 1), (1, 0), (1, 2), (2, 1),
+                          (0, 0), (0, 2), (2, 0), (2, 2)]
+
+# Below this many regions in a class, a per-class bootstrap interval is not
+# reported: with n=2 or 3 the percentile interval describes which two or three
+# sites happened to be usable, not the class. Sentinel-2 availability makes an
+# unbalanced sample the normal outcome, so the pooled statistic is primary and
+# per-class numbers are descriptive.
+MIN_REGIONS_FOR_CI = 6
+
 REGION_SITES_CSV = "multi_patch_sites.csv"
 REGION_BOOTSTRAP_REPLICATES = 5000
 
 
 def load_region_sites(csv_name=None, date_window=None, cloud_max=None,
-                       patch_row=1, patch_col=1):
+                       patch_row=1, patch_col=1, allow_fallback=True):
     """Register the multi-region sites so the real-data protocol can run on
     them, and return the list of registered scene ids.
 
     Reads `tables/multi_patch_sites.csv` (written by
-    `multi_patch_latitude_validation.ipynb`) and takes one patch per region --
-    by default the centre of the 3x3 lattice, `patch_row=patch_col=1`, i.e.
-    the region anchor itself. Choosing the patch by lattice position, before
-    any data is fetched or scored, keeps the selection independent of the
-    results.
+    `multi_patch_latitude_validation.ipynb`) and keeps **one patch per
+    region**, so regions stay the independent statistical unit.
+
+    The preferred patch is the centre of the 3x3 lattice
+    (`patch_row=patch_col=1`, the region anchor). With `allow_fallback`, the
+    other eight positions are registered as ordered alternates, tried only if
+    the preferred one yields no usable acquisition. The order is fixed in
+    advance (LATTICE_FALLBACK_ORDER) and the criterion is data availability,
+    evaluated before any reconstruction, so the selection cannot favour any
+    method.
 
     Returns scene ids of the form ``region__<scene_class>__<region_id>``.
     """
@@ -1279,25 +1320,43 @@ def load_region_sites(csv_name=None, date_window=None, cloud_max=None,
             "first: it writes the site manifest this experiment reuses."
         )
     sites = pd.read_csv(path)
-    sel = sites[(sites.patch_row == patch_row) & (sites.patch_col == patch_col)]
-    if sel.empty:
-        raise ValueError(f"No patches at lattice position ({patch_row},{patch_col}).")
+
+    if allow_fallback:
+        order = [(patch_row, patch_col)] + [p for p in LATTICE_FALLBACK_ORDER
+                                             if p != (patch_row, patch_col)]
+    else:
+        order = [(patch_row, patch_col)]
 
     registered = []
-    for _, r in sel.iterrows():
-        scene = f"region__{r.scene_class}__{r.region_id}"
+    for region_id, grp in sites.groupby("region_id", sort=False):
+        by_pos = {(int(r.patch_row), int(r.patch_col)): r
+                  for _, r in grp.iterrows()}
+        candidates = [by_pos[p] for p in order if p in by_pos]
+        if not candidates:
+            continue
+        head = candidates[0]
+        scene = f"region__{head.scene_class}__{region_id}"
         region_coordinates[scene] = {
-            "location": r.location,
-            "wgs84": {"lat": float(r.patch_lat), "lon": float(r.patch_lon)},
+            "location": head.location,
+            "wgs84": {"lat": float(head.patch_lat), "lon": float(head.patch_lon)},
             "recommended_date": date_window or REGION_DATE_WINDOW,
             "cloud": cloud_max if cloud_max is not None else REGION_CLOUD_MAX,
-            "scene_class": r.scene_class,
-            "region_id": r.region_id,
+            "scene_class": head.scene_class,
+            "region_id": region_id,
+            "patch_id": head.patch_id,
+            "candidates": [
+                {"patch_id": c.patch_id,
+                 "patch_row": int(c.patch_row), "patch_col": int(c.patch_col),
+                 "wgs84": {"lat": float(c.patch_lat), "lon": float(c.patch_lon)}}
+                for c in candidates
+            ],
         }
         registered.append(scene)
-    print(f"Registered {len(registered)} regions "
-          f"({sel.scene_class.nunique()} classes, "
-          f"{sel.groupby('scene_class').size().to_dict()}).")
+
+    per_class = (pd.Series([region_coordinates[s]["scene_class"]
+                            for s in registered]).value_counts().to_dict())
+    print(f"Registered {len(registered)} regions ({len(per_class)} classes, "
+          f"{per_class}); {len(order)} candidate patch position(s) each.")
     return registered
 
 
@@ -1359,20 +1418,55 @@ def acquire_region_sites(scenes=None, stop_on_error=False):
     scenes = scenes or sorted(region_coordinates)
     rows = []
     for i, scene in enumerate(scenes, 1):
-        try:
-            extract_bench_data(scene)
-            rows.append({"scene": scene, "status": "ok",
-                          "product_id": region_coordinates.get(scene, {})
-                                        .get("product_id", ""),
-                          "error": ""})
-            print(f"[{i:3d}/{len(scenes)}] {scene}: ok")
-        except Exception as exc:
-            rows.append({"scene": scene, "status": "failed", "product_id": "",
-                         "error": f"{type(exc).__name__}: {exc}"})
-            print(f"[{i:3d}/{len(scenes)}] [FAIL] {scene}: "
-                  f"{type(exc).__name__}: {exc}")
+        meta = region_coordinates.get(scene, {})
+        candidates = meta.get("candidates") or [
+            {"patch_id": meta.get("patch_id", scene),
+             "patch_row": -1, "patch_col": -1, "wgs84": meta.get("wgs84", {})}
+        ]
+        last_exc, errors = None, []
+        for attempt, cand in enumerate(candidates, 1):
+            coords = dict(meta, wgs84=cand["wgs84"])
+            coords.pop("product_id", None)   # resolve afresh for this position
+            try:
+                extract_bench_data(scene, coords=coords)
+                meta["patch_id"] = cand["patch_id"]
+                meta["wgs84"] = cand["wgs84"]
+                rows.append({
+                    "scene": scene, "status": "ok",
+                    "scene_class": meta.get("scene_class", ""),
+                    "region_id": meta.get("region_id", ""),
+                    "patch_id": cand["patch_id"],
+                    "patch_row": cand["patch_row"], "patch_col": cand["patch_col"],
+                    "attempt": attempt,
+                    "product_id": meta.get("product_id", ""),
+                    "error": "",
+                })
+                extra = "" if attempt == 1 else f"  (fallback #{attempt}: {cand['patch_id']})"
+                print(f"[{i:3d}/{len(scenes)}] {scene}: ok{extra}")
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                errors.append(f"{type(exc).__name__}: {exc}")
+        if last_exc is not None:
+            # Keep every distinct reason: "no items" (catalogue has no product
+            # there at all) is a completely different problem from "no finite
+            # pixels" (anchor outside the granule) or a missing band node, and
+            # only the first is unfixable by trying another position.
+            kinds = sorted(set(e.split(":")[0] for e in errors))
+            rows.append({
+                "scene": scene, "status": "failed",
+                "scene_class": meta.get("scene_class", ""),
+                "region_id": meta.get("region_id", ""),
+                "patch_id": "", "patch_row": -1, "patch_col": -1,
+                "attempt": len(candidates), "product_id": "",
+                "error": f"{len(candidates)} position(s) tried; {'; '.join(kinds)}"
+                          f" | last: {errors[-1]}",
+            })
+            print(f"[{i:3d}/{len(scenes)}] [FAIL] {scene} after "
+                  f"{len(candidates)} position(s): {errors[-1]}")
             if stop_on_error:
-                raise
+                raise last_exc
     df = pd.DataFrame(rows)
     n_ok = int((df.status == "ok").sum())
     print(f"\n{n_ok}/{len(df)} region patches acquired into "
@@ -1456,6 +1550,248 @@ def _bootstrap_ci(values, n_rep=None, seed=20260818, alpha=0.05):
            float(np.percentile(means, 100 * (1 - alpha / 2)))
 
 
+# --- patch quality screening -------------------------------------------------
+#
+# The STAC cloud filter is a *scene-level* percentage: a granule reported at
+# 8% cloud can still have our 2.56 km patch entirely under a cloud, and a
+# patch near a granule edge can be mostly no-data. Both would enter the
+# experiment as legitimate-looking inputs. Every criterion below reads only
+# the input patch -- never a reconstruction or a score -- and is applied
+# before any method runs, so screening cannot favour any method.
+MIN_FINITE_FRACTION = 0.99   # essentially complete patch
+MIN_RELATIVE_STD = 1e-3      # reject flat patches (the degenerate-reference case)
+MAX_BRIGHT_FRACTION = 0.30   # B04 reflectance > BRIGHT_THRESHOLD => likely cloud
+BRIGHT_THRESHOLD = 0.30
+
+
+def patch_quality(scene):
+    """Quality descriptors for one acquired patch, read from the input only."""
+    row = {"scene": scene, "readable": False, "shape": "", "n_pixels": 0,
+           "finite_fraction": np.nan, "mean": np.nan, "std": np.nan,
+           "relative_std": np.nan, "p01": np.nan, "p99": np.nan,
+           "bright_fraction": np.nan, "flags": "", "usable": False}
+    meta = region_coordinates.get(scene, {})
+    row["scene_class"] = meta.get("scene_class", "")
+    row["region_id"] = meta.get("region_id", scene)
+    row["patch_id"] = meta.get("patch_id", "")
+    try:
+        dt = xr.open_datatree(scene_zarr_path(scene), engine="zarr",
+                               consolidated=False, chunks={})
+        img = np.asarray(dt[BAND].values, dtype=np.float64)
+    except Exception as exc:
+        row["flags"] = f"unreadable: {type(exc).__name__}"
+        return row
+
+    row["readable"] = True
+    row["shape"] = "x".join(str(n) for n in img.shape)
+    row["n_pixels"] = int(img.size)
+    finite = np.isfinite(img)
+    row["finite_fraction"] = float(finite.mean())
+
+    flags = []
+    if min(img.shape[-2:]) < CENTRAL_SIZE:
+        flags.append(f"too small (<{CENTRAL_SIZE})")
+    if row["finite_fraction"] < MIN_FINITE_FRACTION:
+        flags.append(f"finite {100 * row['finite_fraction']:.1f}%")
+
+    if finite.any():
+        v = img[finite]
+        row["mean"] = float(v.mean())
+        row["std"] = float(v.std())
+        row["p01"], row["p99"] = (float(x) for x in np.percentile(v, [1, 99]))
+        denom = abs(row["mean"]) if abs(row["mean"]) > 1e-12 else 1.0
+        row["relative_std"] = float(row["std"] / denom)
+        row["bright_fraction"] = float((v > BRIGHT_THRESHOLD).mean())
+        if row["relative_std"] < MIN_RELATIVE_STD:
+            flags.append("flat (degenerate reference)")
+        if row["bright_fraction"] > MAX_BRIGHT_FRACTION:
+            flags.append(f"bright {100 * row['bright_fraction']:.0f}% "
+                          f"(cloud/snow?)")
+    else:
+        flags.append("no finite pixels")
+
+    row["flags"] = "; ".join(flags)
+    row["usable"] = not flags
+    return row
+
+
+def screen_region_patches(scenes=None, csv_name=None, verbose=True):
+    """Quality-screen every acquired region patch before running anything.
+
+    Returns (usable_scenes, report). The report is written to
+    `tables/real_groundtruth_multiregion_quality.csv` so the exclusions are
+    auditable: a reader can check that each one was rejected on an input
+    property, not on how a method scored.
+    """
+    scenes = scenes or sorted(region_coordinates)
+    rows = [patch_quality(s) for s in scenes if scene_zarr_path(s).exists()]
+    report = pd.DataFrame(rows)
+    if report.empty:
+        print("No acquired patches to screen.")
+        return [], report
+
+    TABLE_DIR.mkdir(exist_ok=True)
+    report.to_csv(TABLE_DIR / (csv_name or
+                                "real_groundtruth_multiregion_quality.csv"),
+                  index=False)
+    usable = report.loc[report.usable, "scene"].tolist()
+
+    if verbose:
+        print(f"{len(usable)}/{len(report)} patches pass the input-quality "
+              f"screen.")
+        bad = report[~report.usable]
+        if len(bad):
+            print("\nRejected (input properties only, before any method ran):")
+            for _, r in bad.iterrows():
+                print(f"  {r.scene:44s} {r.flags}")
+        print("\nPer class among the usable patches:")
+        keep = report[report.usable]
+        if len(keep):
+            for cls, n in keep.scene_class.value_counts().sort_index().items():
+                print(f"  {cls:14s} {n:3d}")
+    return usable, report
+
+
+def plot_paired_summary(metrics, pooled=None, fname="real_groundtruth_multiregion_paired.pdf"):
+    """Two-panel view of the pooled paired result.
+
+    Left: every region as one point, PSF-aware RMSE against each competitor's,
+    with the 1:1 line. Points above the line are regions where PSF-aware wins,
+    so the claim is readable directly rather than resting on a summary number.
+
+    Right: mean paired difference per competitor with its bootstrap interval;
+    the zero line is the null. Annotated with wins/n and the exact sign test.
+    """
+    if pooled is None:
+        pooled = paired_summary(metrics)
+    wide = metrics.pivot_table(index=["scene_class", "region_id"],
+                                columns="method", values="rmse")
+    competitors = [c for c in wide.columns if c != "psf_aware"]
+    labels = {"classical_nearest": "Nearest", "classical_linear": "Bilinear",
+              "classical_cubic": "Bicubic", "richardson_lucy": "Richardson-Lucy"}
+    classes = sorted(metrics.scene_class.unique())
+    markers = dict(zip(classes, ["o", "s", "^", "D", "v", "P"]))
+    colours = dict(zip(competitors, plt.rcParams["axes.prop_cycle"].by_key()["color"]))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.6))
+
+    for comp in competitors:
+        d = wide[["psf_aware", comp]].dropna()
+        for cls in classes:
+            sub = d[d.index.get_level_values("scene_class") == cls]
+            if sub.empty:
+                continue
+            ax1.scatter(sub["psf_aware"], sub[comp], s=34, alpha=0.85,
+                        marker=markers.get(cls, "o"), color=colours[comp],
+                        edgecolor="k", linewidth=0.3,
+                        label=f"{labels.get(comp, comp)} / {cls}")
+    lim = [min(wide.min().min(), 0) or wide.min().min(), wide.max().max()]
+    pad = 0.05 * (lim[1] - lim[0])
+    lim = [max(0, lim[0] - pad), lim[1] + pad]
+    ax1.plot(lim, lim, "k-", lw=0.9, zorder=0)
+    ax1.set_xlim(lim); ax1.set_ylim(lim)
+    ax1.set_xscale("log"); ax1.set_yscale("log")
+    ax1.set_xlabel("PSF-aware RMSE"); ax1.set_ylabel("competitor RMSE")
+    ax1.set_title("One point per region\n(above the line = PSF-aware wins)",
+                  fontsize=10)
+    handles = [plt.Line2D([], [], marker=markers.get(c, "o"), ls="", color="grey",
+                          markeredgecolor="k", label=c) for c in classes]
+    handles += [plt.Line2D([], [], marker="o", ls="", color=colours[c],
+                           label=labels.get(c, c)) for c in competitors]
+    ax1.legend(handles=handles, fontsize=7, loc="upper left", ncol=2)
+
+    y = np.arange(len(pooled))
+    ax2.errorbar(pooled.mean_delta_rmse, y,
+                 xerr=[pooled.mean_delta_rmse - pooled.delta_ci95_low,
+                       pooled.delta_ci95_high - pooled.mean_delta_rmse],
+                 fmt="o", capsize=3, color="tab:blue")
+    ax2.axvline(0, color="k", lw=0.9)
+    ax2.set_yticks(y)
+    ax2.set_yticklabels([labels.get(c, c) for c in pooled.competitor])
+    ax2.invert_yaxis()
+    ax2.set_xlabel("mean paired RMSE difference\n(competitor $-$ PSF-aware)")
+    ax2.set_title("Pooled over regions, 95% bootstrap", fontsize=10)
+    for yi, (_, r) in zip(y, pooled.iterrows()):
+        ax2.annotate(f"{int(r.psf_aware_wins)}/{int(r.n_regions)}, "
+                     f"$p$={r.sign_test_p:.1e}",
+                     (r.delta_ci95_high, yi), textcoords="offset points",
+                     xytext=(6, 0), va="center", fontsize=8)
+    ax2.margins(x=0.35)
+
+    fig.tight_layout()
+    FIG_DIR.mkdir(exist_ok=True)
+    fig.savefig(FIG_DIR / fname, dpi=200)
+    return fig
+
+
+def paired_summary(metrics, csv_prefix="real_groundtruth_multiregion"):
+    """Pooled, distribution-light comparison across all available regions.
+
+    This is the statistic to quote when Sentinel-2 availability leaves an
+    unbalanced or small sample: every region counts once, each competitor is
+    paired against PSF-aware *within the same region* so between-site scene
+    variability cancels, and no per-class claim is made.
+
+    Reports, per competitor: regions compared, PSF-aware wins, an exact
+    two-sided sign test, and the bootstrap interval of the mean paired RMSE
+    difference. `n_regions` here is the number of regions with a finite value
+    for *both* methods, which can be smaller than the count in
+    summarize_multiregion() if a region produced NaN metrics.
+    """
+    wide = metrics.pivot_table(index=["scene_class", "region_id"],
+                                columns="method", values="rmse")
+    if "psf_aware" not in wide.columns:
+        raise ValueError("No psf_aware rows to compare against.")
+
+    from math import comb
+    rows = []
+    for method in [c for c in wide.columns if c != "psf_aware"]:
+        delta = (wide[method] - wide["psf_aware"]).dropna()
+        n = int(delta.size)
+        if n == 0:
+            continue
+        wins = int((delta > 0).sum())
+        tail = sum(comb(n, k) for k in range(wins, n + 1)) / 2 ** n
+        mean, lo, hi = _bootstrap_ci(delta.values)
+        rows.append({"competitor": method, "n_regions": n,
+                      "psf_aware_wins": wins, "win_fraction": wins / n,
+                      "sign_test_p": min(1.0, 2 * tail),
+                      "mean_delta_rmse": mean,
+                      "delta_ci95_low": lo, "delta_ci95_high": hi})
+    out = pd.DataFrame(rows)
+    TABLE_DIR.mkdir(exist_ok=True)
+    out.to_csv(TABLE_DIR / f"{csv_prefix}_pooled_{_cache_suffix()}.csv",
+               index=False)
+    return out
+
+
+def region_availability(metrics):
+    """Regions surviving per scene class, and whether a per-class interval is
+    defensible. Also flags regions whose metrics came back non-finite, which
+    otherwise silently shrink the paired comparisons."""
+    n = (metrics.groupby("scene_class").region_id.nunique()
+         .rename("n_regions").reset_index())
+    n["per_class_ci_reportable"] = n.n_regions >= MIN_REGIONS_FOR_CI
+    print(f"{int(n.n_regions.sum())} regions analysed. Per-class breakdown:")
+    for _, r in n.iterrows():
+        flag = "" if r.per_class_ci_reportable else \
+            f"  <- below MIN_REGIONS_FOR_CI={MIN_REGIONS_FOR_CI}, descriptive only"
+        print(f"  {r.scene_class:14s} {r.n_regions:3d}{flag}")
+
+    bad = metrics[~np.isfinite(metrics.rmse)]
+    if len(bad):
+        print(f"\n{bad.region_id.nunique()} region(s) produced non-finite RMSE "
+              f"and will drop out of the paired comparisons:")
+        for rid, grp in bad.groupby("region_id"):
+            print(f"  {rid}: {sorted(grp.method.unique())}")
+
+    if not n.per_class_ci_reportable.all():
+        print("\nQuote the pooled paired_summary() result as the primary "
+              "statistic; report per-class means as descriptive, without "
+              "intervals.")
+    return n
+
+
 def summarize_multiregion(metrics, csv_prefix="real_groundtruth_multiregion"):
     """Region-level summary and paired comparisons against PSF-aware.
 
@@ -1471,11 +1807,18 @@ def summarize_multiregion(metrics, csv_prefix="real_groundtruth_multiregion"):
 
     summary = []
     for (cls, method), grp in metrics.groupby(["scene_class", "method"]):
+        n_reg = grp.region_id.nunique()
+        reportable = n_reg >= MIN_REGIONS_FOR_CI
         mean, lo, hi = _bootstrap_ci(grp.rmse.values)
         summary.append({"scene_class": cls, "method": method,
-                         "n_regions": grp.region_id.nunique(),
-                         "mean_rmse": mean, "rmse_ci95_low": lo,
-                         "rmse_ci95_high": hi,
+                         "n_regions": n_reg,
+                         "mean_rmse": mean,
+                         # Suppressed rather than printed: below n=6 the
+                         # interval describes which sites were usable, not
+                         # the class, and a reader would take it at face value.
+                         "rmse_ci95_low": lo if reportable else np.nan,
+                         "rmse_ci95_high": hi if reportable else np.nan,
+                         "ci_reportable": reportable,
                          "between_region_sd": float(np.std(grp.rmse.values, ddof=1))
                          if grp.rmse.size > 1 else np.nan})
     summary = pd.DataFrame(summary).sort_values(["scene_class", "method"])
