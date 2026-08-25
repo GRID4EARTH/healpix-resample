@@ -56,8 +56,8 @@ Both ZIP files must preserve the paths beginning with `notebooks/`.
 3. Insert the reserved DOI and rebuild the manifest:
 
    ```bash
-   python notebooks/build_data_manifest.py --doi 10.5281/zenodo.RECORD
-   python notebooks/build_data_manifest.py --check --doi 10.5281/zenodo.RECORD
+   python notebooks/build_data_manifest.py --doi 10.5281/zenodo.22083697
+   python notebooks/build_data_manifest.py --check --doi 10.5281/zenodo.22083697
    ```
 
    The second command must exit successfully and report `369/369 assets

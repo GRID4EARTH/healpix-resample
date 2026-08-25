@@ -1,7 +1,8 @@
 # Frozen input-data bundle
 
-Copy the contents of the versioned DOI archive into this directory while
-preserving the layout below:
+The recommended installer is `notebooks/load_data_in_zenodo.ipynb`. Run all of
+its cells once; it downloads and verifies the immutable archives from
+https://doi.org/10.5281/zenodo.22083697 and restores the layout below:
 
 ```text
 data/
@@ -31,8 +32,8 @@ After copying or creating the bundle, rebuild and verify the manifest from the
 repository root:
 
 ```bash
-python notebooks/build_data_manifest.py --doi 10.5281/zenodo.RECORD
-python notebooks/build_data_manifest.py --check --doi 10.5281/zenodo.RECORD
+python notebooks/build_data_manifest.py --doi 10.5281/zenodo.22083697
+python notebooks/build_data_manifest.py --check --doi 10.5281/zenodo.22083697
 ```
 
 `data_manifest.csv` records the expected path, original source identifier,

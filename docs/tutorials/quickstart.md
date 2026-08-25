@@ -73,6 +73,7 @@ print("Batch output shape:", result_batch.cell_data.shape)  # (10, K)
 
 ## Next steps
 
-- Explore the {doc}`4resamplers` notebook to compare all available methods.
+- Run the {doc}`zenodo_resamplers` notebook to compare every method on the
+  same frozen Sentinel-2 scene available from Zenodo.
+- Use the {doc}`4resamplers` notebook as a compact synthetic API reference.
 - Read the {doc}`../user-guide/index` for a detailed explanation of parameters.
-

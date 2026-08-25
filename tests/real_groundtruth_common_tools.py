@@ -331,7 +331,8 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
     if OFFLINE:
         raise FileNotFoundError(
             f"Missing frozen Sentinel-2 input: {path}. Download the DOI data "
-            "archive and place its data/ directory under notebooks/."
+            "archive by running every cell of "
+            "notebooks/load_data_in_zenodo.ipynb first."
         )
     catalog = pystac_client.Client.open("https://stac.core.eopf.eodc.eu")
     coords = benchmark_coordinates[scene] if coords is None else coords

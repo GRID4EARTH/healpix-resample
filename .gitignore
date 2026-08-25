@@ -28,3 +28,12 @@ share/python-wheels/
 MANIFEST
 
 .ipynb_checkpoints/
+
+# Frozen paper inputs are distributed through Zenodo, not Git.
+notebooks/data/*.zarr
+notebooks/data/esri_latent/
+notebooks/data/multi_patch_latitude/esri_patch_cache/
+notebooks/tutorial_data/
+notebooks/outputFLUX.grib
+notebooks/outputFLUX.grib.*.idx
+tmp/zenodo-*/
