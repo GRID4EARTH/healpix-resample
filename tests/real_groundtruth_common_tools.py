@@ -1963,12 +1963,16 @@ def plot_paired_summary(metrics, pooled=None, fname="real_groundtruth_multiregio
                         marker=markers.get(cls, "o"), color=colours[comp],
                         edgecolor="k", linewidth=0.3,
                         label=f"{labels.get(comp, comp)} / {cls}")
-    lim = [min(wide.min().min(), 0) or wide.min().min(), wide.max().max()]
-    pad = 0.05 * (lim[1] - lim[0])
-    lim = [max(0, lim[0] - pad), lim[1] + pad]
+    # Multiplicative padding: the axes are logarithmic, so an additive margin
+    # can put the lower limit at or below zero, which collapses the whole
+    # panel into one corner.
+    finite = wide.to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite) & (finite > 0)]
+    lim = [finite.min() / 1.6, finite.max() * 1.6]
+    ax1.set_xscale("log"); ax1.set_yscale("log")
     ax1.plot(lim, lim, "k-", lw=0.9, zorder=0)
     ax1.set_xlim(lim); ax1.set_ylim(lim)
-    ax1.set_xscale("log"); ax1.set_yscale("log")
+    ax1.set_aspect("equal", adjustable="box")
     ax1.set_xlabel("PSF-aware RMSE"); ax1.set_ylabel("competitor RMSE")
     ax1.set_title("One point per region\n(above the line = PSF-aware wins)",
                   fontsize=10)
@@ -2128,6 +2132,52 @@ def paired_summary(metrics, csv_prefix="real_groundtruth_multiregion"):
     out.to_csv(TABLE_DIR / f"{csv_prefix}_pooled_{_cache_suffix()}.csv",
                index=False)
     return out
+
+
+# A region must evaluate at least this fraction of the median cell count to
+# enter the analysis. The input-quality screen looks at the patch; nothing
+# looked at how many cells the *protocol* actually managed to score. A region
+# whose reference and reconstruction barely overlap can pass the input screen
+# and still contribute a handful of cells, then carry the same weight as a
+# full one in the region-level mean -- or contribute zero cells and silently
+# shrink every paired comparison.
+#
+# `n_cells` is identical across all five methods within a region (they are
+# scored on the same cells), so this criterion cannot favour any method.
+MIN_EVALUATED_CELL_FRACTION = 0.5
+
+
+def screen_region_metrics(metrics, min_fraction=None, verbose=True):
+    """Drop regions that evaluated too few HEALPix cells to be meaningful.
+
+    Returns (kept, rejected). Rejection depends only on how much of the patch
+    survived the protocol's own geometry -- never on a method's score.
+    """
+    min_fraction = (MIN_EVALUATED_CELL_FRACTION if min_fraction is None
+                    else min_fraction)
+    per_region = metrics.groupby("region_id").n_cells.max()
+    median = float(per_region[per_region > 0].median()) if (per_region > 0).any() else 0.0
+    floor = min_fraction * median
+
+    bad = set(per_region[per_region < floor].index)
+    bad |= set(metrics.loc[~np.isfinite(pd.to_numeric(metrics.rmse,
+                                                       errors="coerce")),
+                            "region_id"].unique())
+    kept = metrics[~metrics.region_id.isin(bad)].copy()
+    rejected = metrics[metrics.region_id.isin(bad)].copy()
+
+    if verbose:
+        print(f"Evaluated-cell screen: median {median:,.0f} cells per region, "
+              f"floor {floor:,.0f} ({100 * min_fraction:.0f}%).")
+        if bad:
+            print(f"  {len(bad)} region(s) dropped:")
+            for rid in sorted(bad):
+                n = int(per_region.get(rid, 0))
+                cls = metrics.loc[metrics.region_id == rid, "scene_class"].iloc[0]
+                why = "no evaluable cells" if n == 0 else f"{n:,} cells ({100*n/median:.1f}% of median)"
+                print(f"    {cls:12s} {rid:20s} {why}")
+        print(f"  {kept.region_id.nunique()} region(s) retained.")
+    return kept, rejected
 
 
 def region_availability(metrics):
