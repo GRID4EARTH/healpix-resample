@@ -270,6 +270,32 @@ benchmark_coordinates = {
 }
 
 
+# Additional scenes registered at run time by load_region_sites(): the 40
+# geographically distributed regions of the multi-region synthetic validation,
+# reused here so the real-data protocol can be run on the same site list.
+# Kept separate from benchmark_coordinates so that the four paper scenes stay
+# the default everywhere and nothing silently changes.
+region_coordinates = {}
+
+# Acquisition window and cloud ceiling used when searching Sentinel-2 products
+# for a region that has no pinned product_id.
+REGION_DATE_WINDOW = "2026-05-01/2026-09-30"
+REGION_CLOUD_MAX = 10
+
+
+def _coords_for(scene):
+    """Look a scene up in the paper's four benchmark scenes first, then in the
+    regions registered by load_region_sites()."""
+    if scene in benchmark_coordinates:
+        return benchmark_coordinates[scene]
+    if scene in region_coordinates:
+        return region_coordinates[scene]
+    raise KeyError(
+        f"Unknown scene {scene!r}. Call load_region_sites() first if this is "
+        f"one of the multi-region site ids."
+    )
+
+
 # =============================================================================
 # Step 1: Sentinel-2 fetch utilities
 # =============================================================================
@@ -335,7 +361,7 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
             "notebooks/load_data_in_zenodo.ipynb first."
         )
     catalog = pystac_client.Client.open("https://stac.core.eopf.eodc.eu")
-    coords = benchmark_coordinates[scene] if coords is None else coords
+    coords = _coords_for(scene) if coords is None else coords
     lat0, lon0 = coords["wgs84"]["lat"], coords["wgs84"]["lon"]
 
     pinned = coords.get("product_id")
@@ -958,17 +984,21 @@ def compute_metrics(estimate, reference, scene, method):
                 rmse=rmse, mae=mae, bias=bias, corr=corr, psnr=psnr)
 
 
-def run_all(force=False, csv_name=None):
+def run_all(force=False, csv_name=None, scenes=None):
     """Run every method on every scene and return the metrics DataFrame.
 
     `csv_name` overrides the output filename. run_variant() passes a
     variant-specific name so that a control run never overwrites the main
     result file -- the default name is the one the paper's table is built
     from.
+
+    `scenes` overrides which scenes are processed; it defaults to the four
+    benchmark scenes. The multi-region driver passes the 40 region ids
+    registered by load_region_sites().
     """
     TABLE_DIR.mkdir(exist_ok=True)
     rows = []
-    for scene in benchmark_coordinates:
+    for scene in (scenes if scenes is not None else benchmark_coordinates):
         ref = build_reference(scene, force=force)
         g = build_coarse_grid(scene)
 
@@ -1002,7 +1032,8 @@ def run_all(force=False, csv_name=None):
 
 def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
                  degrade_psf_mode=None, degrade_fwhm_x_m=None,
-                 degrade_fwhm_y_m=None, force=False, label=None):
+                 degrade_fwhm_y_m=None, recon_fwhm_m=None,
+                 force=False, label=None, scenes=None, csv_name=None):
     """Run the whole protocol under a temporarily overridden configuration and
     return its metrics DataFrame, with the configuration recorded in extra
     columns. Restores the previous configuration afterwards, including on
@@ -1021,11 +1052,11 @@ def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
     """
     global REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER
     global DEGRADE_PSF_MODE, ANISOTROPIC_DEGRADE_FWHM_X_M
-    global ANISOTROPIC_DEGRADE_FWHM_Y_M, EDGE_MARGIN_M
+    global ANISOTROPIC_DEGRADE_FWHM_Y_M, EDGE_MARGIN_M, RECON_FWHM_M
     saved = (
         REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER, DEGRADE_PSF_MODE,
         ANISOTROPIC_DEGRADE_FWHM_X_M, ANISOTROPIC_DEGRADE_FWHM_Y_M,
-        EDGE_MARGIN_M,
+        EDGE_MARGIN_M, RECON_FWHM_M,
     )
     try:
         if reference_mode is not None:
@@ -1040,6 +1071,11 @@ def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
             ANISOTROPIC_DEGRADE_FWHM_X_M = float(degrade_fwhm_x_m)
         if degrade_fwhm_y_m is not None:
             ANISOTROPIC_DEGRADE_FWHM_Y_M = float(degrade_fwhm_y_m)
+        if recon_fwhm_m is not None:
+            # Width mismatch: the reconstruction assumes a different response
+            # width from the one actually imposed by the degradation. The
+            # cache suffix already encodes RECON_FWHM_M, so nothing is reused.
+            RECON_FWHM_M = float(recon_fwhm_m)
         degradation_x_m, degradation_y_m = degradation_fwhm_xy()
         EDGE_MARGIN_M = EDGE_MARGIN_FACTOR * max(
             RECON_FWHM_M, degradation_x_m, degradation_y_m
@@ -1049,7 +1085,9 @@ def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
         # to silently replace it.
         df = run_all(
             force=force,
-            csv_name=f"real_groundtruth_downscale_metrics_{_cache_suffix()}.csv",
+            scenes=scenes,
+            csv_name=csv_name
+            or f"real_groundtruth_downscale_metrics_{_cache_suffix()}.csv",
         )
         df["reference_mode"] = REFERENCE_MODE
         df["baseline_estimand"] = BASELINE_ESTIMAND
@@ -1065,8 +1103,267 @@ def run_variant(reference_mode=None, baseline_estimand=None, max_iter=None,
         (
             REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER, DEGRADE_PSF_MODE,
             ANISOTROPIC_DEGRADE_FWHM_X_M,
-            ANISOTROPIC_DEGRADE_FWHM_Y_M, EDGE_MARGIN_M,
+            ANISOTROPIC_DEGRADE_FWHM_Y_M, EDGE_MARGIN_M, RECON_FWHM_M,
         ) = saved
+
+
+def run_width_mismatch(scale=1.5, force=False, scenes=None):
+    """Width-mismatch variant of the real-data downscaling protocol.
+
+    The degradation stays at DEGRADE_FWHM_M; only the *assumed* reconstruction
+    width changes, to `scale * DEGRADE_FWHM_M`. This is the real-data analogue
+    of the paper's +-50% synthetic mismatch arms: `scale=1.5` overestimates
+    the response, `scale=0.5` underestimates it.
+
+    Note the asymmetry that makes this test meaningful: only \\psf-aware and
+    Richardson--Lucy use the assumed width at all, so the geometric baselines
+    are unaffected by the mismatch. A width error therefore costs the two
+    response-modelling methods and nothing else -- the opposite of a
+    handicap for the baselines.
+    """
+    return run_variant(
+        recon_fwhm_m=scale * DEGRADE_FWHM_M,
+        force=force,
+        scenes=scenes,
+        label=f"recon width x{scale:g} ({scale * DEGRADE_FWHM_M:g} m assumed)",
+    )
+
+
+# =============================================================================
+# Multi-region real-data downscaling
+#
+# The four-scene protocol above is a case study: tens of thousands of cells,
+# but four patches and one sensor. This section reruns exactly the same seven
+# steps on the 40 geographically distributed regions already used by the
+# synthetic multi-region validation, so the real-data claim gets the same
+# statistical treatment as the synthetic one.
+#
+# Statistical unit: the region. One patch per region, ten regions per scene
+# class, so the per-class bootstrap below resamples 10 independent values --
+# it is a plain bootstrap over regions, not a cluster bootstrap (there is no
+# within-region clustering left to account for with a single patch each).
+# =============================================================================
+
+REGION_SITES_CSV = "multi_patch_sites.csv"
+REGION_BOOTSTRAP_REPLICATES = 5000
+
+
+def load_region_sites(csv_name=None, date_window=None, cloud_max=None,
+                       patch_row=1, patch_col=1):
+    """Register the multi-region sites so the real-data protocol can run on
+    them, and return the list of registered scene ids.
+
+    Reads `tables/multi_patch_sites.csv` (written by
+    `multi_patch_latitude_validation.ipynb`) and takes one patch per region --
+    by default the centre of the 3x3 lattice, `patch_row=patch_col=1`, i.e.
+    the region anchor itself. Choosing the patch by lattice position, before
+    any data is fetched or scored, keeps the selection independent of the
+    results.
+
+    Returns scene ids of the form ``region__<scene_class>__<region_id>``.
+    """
+    path = TABLE_DIR / (csv_name or REGION_SITES_CSV)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found. Run multi_patch_latitude_validation.ipynb "
+            "first: it writes the site manifest this experiment reuses."
+        )
+    sites = pd.read_csv(path)
+    sel = sites[(sites.patch_row == patch_row) & (sites.patch_col == patch_col)]
+    if sel.empty:
+        raise ValueError(f"No patches at lattice position ({patch_row},{patch_col}).")
+
+    registered = []
+    for _, r in sel.iterrows():
+        scene = f"region__{r.scene_class}__{r.region_id}"
+        region_coordinates[scene] = {
+            "location": r.location,
+            "wgs84": {"lat": float(r.patch_lat), "lon": float(r.patch_lon)},
+            "recommended_date": date_window or REGION_DATE_WINDOW,
+            "cloud": cloud_max if cloud_max is not None else REGION_CLOUD_MAX,
+            "scene_class": r.scene_class,
+            "region_id": r.region_id,
+        }
+        registered.append(scene)
+    print(f"Registered {len(registered)} regions "
+          f"({sel.scene_class.nunique()} classes, "
+          f"{sel.groupby('scene_class').size().to_dict()}).")
+    return registered
+
+
+def fetch_region_sites(scenes=None, stop_on_error=False):
+    """Download (or confirm the cache for) every registered region patch.
+
+    Returns a DataFrame of per-scene status. Requires ``OFFLINE = False`` for
+    scenes that are not already cached: this experiment adds 40 new Sentinel-2
+    patches to the frozen input bundle, so it must be run once with downloads
+    enabled and the resulting archive re-published.
+    """
+    scenes = scenes or sorted(region_coordinates)
+    rows = []
+    for scene in scenes:
+        try:
+            extract_bench_data(scene)
+            rows.append({"scene": scene, "status": "ok", "error": ""})
+        except Exception as exc:
+            rows.append({"scene": scene, "status": "failed",
+                         "error": f"{type(exc).__name__}: {exc}"})
+            print(f"[FAIL] {scene}: {type(exc).__name__}: {exc}")
+            if stop_on_error:
+                raise
+    df = pd.DataFrame(rows)
+    n_ok = int((df.status == "ok").sum())
+    print(f"{n_ok}/{len(df)} region patches available.")
+    if n_ok < len(df):
+        print("Failed scenes are skipped by run_multiregion(); they are "
+              "recorded in the returned frame and in the failures CSV.")
+    return df
+
+
+def _region_metadata(scene):
+    c = region_coordinates.get(scene, {})
+    return c.get("scene_class", "unknown"), c.get("region_id", scene)
+
+
+def run_multiregion(force=False, scenes=None, label="multiregion",
+                     csv_prefix="real_groundtruth_multiregion"):
+    """Run the full seven-step protocol on every registered region.
+
+    Scenes whose patch is missing or degenerate are skipped and recorded,
+    exactly as in the synthetic multi-region validation: the skip criterion
+    depends only on the input or on the reference, never on a method score.
+    """
+    scenes = scenes or sorted(region_coordinates)
+    if not scenes:
+        raise RuntimeError("No regions registered. Call load_region_sites() first.")
+    TABLE_DIR.mkdir(exist_ok=True)
+
+    rows, failures = [], []
+    for i, scene in enumerate(scenes, 1):
+        scene_class, region_id = _region_metadata(scene)
+        try:
+            df = run_all(
+                force=force, scenes=[scene],
+                csv_name=f"{csv_prefix}_scratch_{_cache_suffix()}.csv",
+            )
+            if df.empty:
+                raise RuntimeError("no metric rows produced")
+            df = df.copy()
+            df["scene_class"] = scene_class
+            df["region_id"] = region_id
+            rows.append(df)
+            print(f"[{i:3d}/{len(scenes)}] {scene}: {len(df)} rows")
+        except Exception as exc:
+            failures.append({"scene": scene, "scene_class": scene_class,
+                              "region_id": region_id,
+                              "error": f"{type(exc).__name__}: {exc}"})
+            print(f"[{i:3d}/{len(scenes)}] [FAIL] {scene}: "
+                  f"{type(exc).__name__}: {exc}")
+
+    metrics = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    fail_df = pd.DataFrame(failures)
+    suffix = _cache_suffix()
+    metrics.to_csv(TABLE_DIR / f"{csv_prefix}_metrics_{suffix}.csv", index=False)
+    fail_df.to_csv(TABLE_DIR / f"{csv_prefix}_failures_{suffix}.csv", index=False)
+    print(f"\n{metrics.region_id.nunique() if len(metrics) else 0} regions analysed, "
+          f"{len(fail_df)} failed.")
+    return metrics, fail_df
+
+
+def _bootstrap_ci(values, n_rep=None, seed=20260818, alpha=0.05):
+    """Percentile bootstrap over independent regions."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return np.nan, np.nan, np.nan
+    rng = np.random.default_rng(seed)
+    n_rep = n_rep or REGION_BOOTSTRAP_REPLICATES
+    draws = rng.integers(0, v.size, size=(n_rep, v.size))
+    means = v[draws].mean(axis=1)
+    return float(v.mean()), float(np.percentile(means, 100 * alpha / 2)), \
+           float(np.percentile(means, 100 * (1 - alpha / 2)))
+
+
+def summarize_multiregion(metrics, csv_prefix="real_groundtruth_multiregion"):
+    """Region-level summary and paired comparisons against PSF-aware.
+
+    Mirrors the synthetic multi-region analysis: per scene class, the mean
+    RMSE of each method over regions with a bootstrap interval, plus the
+    paired per-region RMSE difference (competitor minus PSF-aware), its
+    bootstrap interval, and the win fraction.
+    """
+    if metrics.empty:
+        raise ValueError("Empty metrics frame.")
+    TABLE_DIR.mkdir(exist_ok=True)
+    suffix = _cache_suffix()
+
+    summary = []
+    for (cls, method), grp in metrics.groupby(["scene_class", "method"]):
+        mean, lo, hi = _bootstrap_ci(grp.rmse.values)
+        summary.append({"scene_class": cls, "method": method,
+                         "n_regions": grp.region_id.nunique(),
+                         "mean_rmse": mean, "rmse_ci95_low": lo,
+                         "rmse_ci95_high": hi,
+                         "between_region_sd": float(np.std(grp.rmse.values, ddof=1))
+                         if grp.rmse.size > 1 else np.nan})
+    summary = pd.DataFrame(summary).sort_values(["scene_class", "method"])
+
+    wide = metrics.pivot_table(index=["scene_class", "region_id"],
+                                columns="method", values="rmse")
+    comparisons = []
+    if "psf_aware" in wide.columns:
+        for method in [c for c in wide.columns if c != "psf_aware"]:
+            for cls, grp in wide.groupby(level="scene_class"):
+                delta = (grp[method] - grp["psf_aware"]).dropna()
+                if delta.empty:
+                    continue
+                mean, lo, hi = _bootstrap_ci(delta.values)
+                comparisons.append({
+                    "scene_class": cls, "competitor": method,
+                    "n_regions": int(delta.size),
+                    "mean_delta_rmse_competitor_minus_matched": mean,
+                    "delta_ci95_low": lo, "delta_ci95_high": hi,
+                    "matched_win_fraction": float((delta > 0).mean()),
+                })
+    comparisons = pd.DataFrame(comparisons)
+
+    summary.to_csv(TABLE_DIR / f"{csv_prefix}_summary_{suffix}.csv", index=False)
+    comparisons.to_csv(TABLE_DIR / f"{csv_prefix}_comparisons_{suffix}.csv",
+                        index=False)
+    return summary, comparisons
+
+
+def format_multiregion_table(summary, comparisons,
+                              csv_name="real_groundtruth_multiregion_table.csv"):
+    """Paper-shaped table: per scene class, PSF-aware mean RMSE and, for each
+    competitor, its mean RMSE, the paired delta with interval, and the win
+    fraction."""
+    labels = {"psf_aware": "PSF-aware", "classical_nearest": "Nearest-neighbor",
+              "classical_linear": "Bilinear", "classical_cubic": "Bicubic",
+              "richardson_lucy": "Richardson-Lucy"}
+    records = []
+    for cls in sorted(summary.scene_class.unique()):
+        row = {"Scene class": cls}
+        s = summary[summary.scene_class == cls].set_index("method")
+        if "psf_aware" in s.index:
+            row["Regions"] = int(s.loc["psf_aware", "n_regions"])
+            row["PSF-aware RMSE"] = s.loc["psf_aware", "mean_rmse"]
+        for m, lab in labels.items():
+            if m == "psf_aware" or m not in s.index:
+                continue
+            row[f"{lab} RMSE"] = s.loc[m, "mean_rmse"]
+            c = comparisons[(comparisons.scene_class == cls)
+                             & (comparisons.competitor == m)]
+            if not c.empty:
+                row[f"{lab} delta"] = c.mean_delta_rmse_competitor_minus_matched.iloc[0]
+                row[f"{lab} delta lo"] = c.delta_ci95_low.iloc[0]
+                row[f"{lab} delta hi"] = c.delta_ci95_high.iloc[0]
+                row[f"{lab} win"] = c.matched_win_fraction.iloc[0]
+        records.append(row)
+    table = pd.DataFrame(records)
+    TABLE_DIR.mkdir(exist_ok=True)
+    table.to_csv(TABLE_DIR / csv_name, index=False)
+    return table
 
 
 def run_anisotropic_psf_mismatch(force=False, fwhm_x_m=24.0, fwhm_y_m=45.0):
