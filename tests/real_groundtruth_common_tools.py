@@ -296,6 +296,66 @@ REGION_DATE_WINDOW = "2026-05-01/2026-09-30"
 REGION_CLOUD_MAX = 10
 
 
+def check_eopf_engine(raise_on_missing=False):
+    """Is xarray's ``eopf-zarr`` backend registered?
+
+    Reading Sentinel-2 from the EOPF STAC needs ``engine="eopf-zarr"``, which
+    comes from the `xarray-eopf` package. Two distinct failures look identical
+    from the notebook:
+
+    * the package is simply absent (wrong environment), or
+    * it is installed but its backend never registered -- the classic cause is
+      a PyPI `pyproj` wheel shadowing conda's `libproj`, which breaks PROJ's
+      database lookup and silently unregisters the entry point. `pixi.toml`
+      carries this warning next to the dependency for exactly that reason.
+
+    Both surface as ``ValueError: unrecognized engine 'eopf-zarr'`` only once
+    a download is attempted, i.e. after a STAC query per scene. Call this
+    first instead.
+    """
+    try:
+        from xarray.backends import list_engines
+        engines = sorted(list_engines())
+    except Exception as exc:                      # pragma: no cover
+        engines = []
+        print(f"[eopf-zarr] could not list xarray engines: {exc}")
+
+    ok = "eopf-zarr" in engines
+    if ok:
+        print("[eopf-zarr] backend registered.")
+        return True
+
+    try:
+        import xarray_eopf  # noqa: F401
+        installed = True
+    except Exception:
+        installed = False
+
+    msg = [
+        "The xarray 'eopf-zarr' backend is NOT registered, so Sentinel-2 "
+        "products cannot be opened from the EOPF STAC.",
+        f"  engines available: {engines}",
+    ]
+    if installed:
+        msg += [
+            "  xarray_eopf IS importable, so this is a registration failure,",
+            "  not a missing package. The usual cause is a PyPI pyproj wheel",
+            "  shadowing conda's libproj (see the comment in pixi.toml):",
+            "    pixi run -e notebooks python -c \"import pyproj; print(pyproj.__file__)\"",
+            "  It must resolve inside the pixi environment, not site-packages.",
+        ]
+    else:
+        msg += [
+            "  xarray_eopf is not importable: you are in the wrong environment.",
+            "  Run this notebook with:  pixi run -e notebooks jupyter lab",
+        ]
+    text = "\n".join(msg)
+    if raise_on_missing:
+        raise RuntimeError(text)
+    print(text)
+    return False
+
+
 def scene_zarr_path(scene):
     """Location of a scene's frozen Sentinel-2 patch.
 
@@ -437,13 +497,23 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
         print(f"[{scene}]   others: {', '.join(i.id for i in items[1:4])}"
               f"{' ...' if len(items) > 4 else ''}")
 
-    ds = xr.open_dataset(
-        item.assets["product"].href,
-        engine="eopf-zarr",
-        resolution=10,
-        variables=[band],
-        chunks={},
-    )
+    # Pin the resolved product so a re-run is reproducible: the STAC query is
+    # time-dependent and "first match" drifts as new acquisitions appear.
+    if scene in region_coordinates:
+        region_coordinates[scene]["product_id"] = item.id
+
+    try:
+        ds = xr.open_dataset(
+            item.assets["product"].href,
+            engine="eopf-zarr",
+            resolution=10,
+            variables=[band],
+            chunks={},
+        )
+    except ValueError as exc:
+        if "eopf-zarr" in str(exc):
+            check_eopf_engine(raise_on_missing=True)
+        raise
 
     try:
         src_crs = pyproj.CRS.from_wkt(ds.spatial_ref.attrs["crs_wkt"])
@@ -1281,15 +1351,23 @@ def acquire_region_sites(scenes=None, stop_on_error=False):
             "input bundle rather than reading the frozen one; set it back to "
             "True immediately afterwards."
         )
+    # Fail immediately and with a usable diagnosis rather than after a STAC
+    # query per region: without this backend every single scene dies on the
+    # same generic "unrecognized engine 'eopf-zarr'".
+    check_eopf_engine(raise_on_missing=True)
+
     scenes = scenes or sorted(region_coordinates)
     rows = []
     for i, scene in enumerate(scenes, 1):
         try:
             extract_bench_data(scene)
-            rows.append({"scene": scene, "status": "ok", "error": ""})
+            rows.append({"scene": scene, "status": "ok",
+                          "product_id": region_coordinates.get(scene, {})
+                                        .get("product_id", ""),
+                          "error": ""})
             print(f"[{i:3d}/{len(scenes)}] {scene}: ok")
         except Exception as exc:
-            rows.append({"scene": scene, "status": "failed",
+            rows.append({"scene": scene, "status": "failed", "product_id": "",
                          "error": f"{type(exc).__name__}: {exc}"})
             print(f"[{i:3d}/{len(scenes)}] [FAIL] {scene}: "
                   f"{type(exc).__name__}: {exc}")
@@ -1299,6 +1377,16 @@ def acquire_region_sites(scenes=None, stop_on_error=False):
     n_ok = int((df.status == "ok").sum())
     print(f"\n{n_ok}/{len(df)} region patches acquired into "
           f"{DATA_DIR / REGION_DATA_SUBDIR}.")
+
+    # Persist the resolved product ids. The STAC query is time-dependent -- the
+    # "first matching item" can change as new acquisitions are published -- so
+    # an archived patch must record which product it came from, otherwise the
+    # bundle is not reproducible.
+    if n_ok:
+        TABLE_DIR.mkdir(exist_ok=True)
+        out = TABLE_DIR / "real_groundtruth_multiregion_products.csv"
+        df.to_csv(out, index=False)
+        print(f"Resolved product ids written to {out}.")
     print("Next: rebuild the manifest and re-publish the archive, then set "
           "OFFLINE = True.")
     return df
