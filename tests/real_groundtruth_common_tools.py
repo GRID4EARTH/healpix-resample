@@ -1603,6 +1603,72 @@ def check_region_sites(scenes=None):
     return df
 
 
+def region_provenance(scenes=None, verbose=True):
+    """Report where each region patch actually came from, store by store.
+
+    The bundle was built in two passes: an initial one against the EOPF
+    demonstration catalogue, and a second against earth-search after the
+    former turned out to cover only Europe and North America. A store
+    written by the first pass is still a perfectly valid patch, so nothing
+    downstream complains -- but it carries a different endpoint, a different
+    product, and (before the BOA-offset fix) a different radiometric
+    convention from its 36 neighbours. Mixed provenance inside one
+    experiment is exactly the kind of thing a referee is entitled to ask
+    about, and the answer should not be "we think they are all the same".
+
+    Returns a DataFrame with one row per region and, in `needs_refetch`, the
+    stores that did NOT come from the current REGION_STAC_SOURCE. Pass that
+    list straight to `acquire_region_sites(scenes=..., force=True)`.
+    """
+    scenes = scenes or sorted(region_coordinates)
+    want = EARTH_SEARCH_URL if REGION_STAC_SOURCE == "earth-search" else None
+    rows = []
+    for scene in scenes:
+        path = scene_zarr_path(scene)
+        row = {"scene": scene, "present": path.exists(), "endpoint": "",
+               "product_id": "", "baseline": "", "boa_offset_dn": "",
+               "homogeneous": False}
+        if path.exists():
+            try:
+                dt = xr.open_datatree(path, engine="zarr",
+                                      consolidated=False, chunks={})
+                a = dict(dt.attrs)
+                if not a:                      # attrs can sit on the band node
+                    a = dict(dt[BAND].attrs)
+                row.update(
+                    endpoint=str(a.get("source_stac_endpoint", "")),
+                    product_id=str(a.get("source_item_id", "")),
+                    baseline=str(a.get("source_processing_baseline", "")),
+                    boa_offset_dn=str(a.get("boa_offset_dn_applied", "")),
+                )
+            except Exception as exc:           # unreadable store: refetch it
+                row["endpoint"] = f"<unreadable: {type(exc).__name__}>"
+        row["homogeneous"] = bool(
+            row["present"] and want and row["endpoint"] == want
+            and row["product_id"]
+        )
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    needs = df.loc[~df.homogeneous, "scene"].tolist()
+    if verbose:
+        n_ok = int(df.homogeneous.sum())
+        print(f"Provenance: {n_ok}/{len(df)} stores come from "
+              f"{REGION_STAC_SOURCE} ({want}).")
+        for _, r in df[~df.homogeneous].iterrows():
+            why = ("absent" if not r.present
+                   else r.endpoint or "no source_stac_endpoint recorded")
+            print(f"  {r.scene:42s} {why}")
+        if needs:
+            print("\nTo make provenance homogeneous, re-acquire exactly these:")
+            print("  gt.acquire_region_sites(scenes=needs_refetch, force=True)")
+            print("Then rebuild the manifest and re-run the protocol: the "
+                  "product ids change, so the paper's numbers must be "
+                  "re-derived rather than patched.")
+    df.attrs["needs_refetch"] = needs
+    return df
+
+
 def acquire_region_sites(scenes=None, stop_on_error=False, force=False,
                           screen=True, cloud_ladder=None):
     """ONE-OFF: download the 40 region patches into the frozen-bundle layout.
@@ -2177,7 +2243,99 @@ def screen_region_metrics(metrics, min_fraction=None, verbose=True):
                 why = "no evaluable cells" if n == 0 else f"{n:,} cells ({100*n/median:.1f}% of median)"
                 print(f"    {cls:12s} {rid:20s} {why}")
         print(f"  {kept.region_id.nunique()} region(s) retained.")
+        if bad:
+            print("  Run diagnose_alignment(sorted(bad)) to see WHICH stage "
+                  "of the geometry collapsed before accepting the loss.")
     return kept, rejected
+
+
+def diagnose_alignment(scenes, verbose=True):
+    """Account for every cell lost between the reference support and the
+    scored sample, one stage at a time.
+
+    `screen_region_metrics` tells us a region evaluated too few cells; it
+    does not tell us why, and "the two supports did not overlap" is a
+    description rather than a diagnosis. Because `n_cells` is identical
+    across all five methods, whatever goes wrong happens in the single code
+    path they share -- `align_and_mask` followed by the finite mask in
+    `compute_metrics`. There are only four candidate stages, and this
+    function measures all four:
+
+      n_ref       cells in the reference support (build_reference)
+      n_in_ref    ... also present in the estimate support (always == n_ref
+                  for the classical baselines, which are read out ON the
+                  reference cells; a drop here means build_reference and the
+                  operator disagree about the patch)
+      n_interior  ... surviving the EDGE_MARGIN_M interior mask, i.e. whose
+                  centres reproject inside the patch's own UTM box
+      n_finite    ... where the reference value is finite (weakly
+                  constrained cells come back NaN by design)
+
+    It also reports the offset between the centroid of the reprojected cell
+    centres and the centre of the UTM box. A patch-scale offset there means
+    the cell centres and the raster axes are not describing the same ground
+    -- a georeferencing problem -- whereas a near-zero offset with a
+    collapsed n_finite means the reference itself failed to constrain, which
+    is a radiometry or coverage problem. The two have opposite fixes.
+
+    Read-only and cache-backed: no download, no re-solve.
+    """
+    if isinstance(scenes, str):
+        scenes = [scenes]
+    rows = []
+    for scene in scenes:
+        row = {"scene": scene, "n_ref": 0, "n_in_ref": 0, "n_interior": 0,
+               "n_finite": 0, "offset_x_m": np.nan, "offset_y_m": np.nan,
+               "box_w_m": np.nan, "box_h_m": np.nan, "verdict": ""}
+        try:
+            ref = build_reference(scene)
+            g = build_coarse_grid(scene)
+            ref_ids = np.asarray(ref["cell_ids_ref"])
+            ref_vals = np.asarray(ref["cell_data_ref"])
+            row["n_ref"] = int(ref_ids.size)
+            row["n_in_ref"] = int(ref_ids.size)   # baselines read out on ref
+
+            lon_c, lat_c = cell_centers_lonlat(ref_ids, REF_LEVEL)
+            x_c, y_c = lonlat_to_utm(lon_c, lat_c, g["da"])
+            x_ax, y_ax = g["x_native"], g["y_native"]
+            interior = interior_mask(x_c, y_c, x_ax, y_ax)
+            row["n_interior"] = int(interior.sum())
+            row["n_finite"] = int(np.isfinite(ref_vals[interior]).sum())
+
+            bx = 0.5 * (float(x_ax.min()) + float(x_ax.max()))
+            by = 0.5 * (float(y_ax.min()) + float(y_ax.max()))
+            row["offset_x_m"] = float(np.median(x_c) - bx)
+            row["offset_y_m"] = float(np.median(y_c) - by)
+            row["box_w_m"] = float(x_ax.max() - x_ax.min())
+            row["box_h_m"] = float(y_ax.max() - y_ax.min())
+
+            off = max(abs(row["offset_x_m"]), abs(row["offset_y_m"]))
+            half = 0.5 * min(row["box_w_m"], row["box_h_m"])
+            if row["n_ref"] == 0:
+                row["verdict"] = "reference support empty"
+            elif off > 0.25 * half:
+                row["verdict"] = (f"georeferencing: cell centres offset "
+                                  f"{off:,.0f} m from a {half:,.0f} m half-box")
+            elif row["n_interior"] < 0.5 * row["n_ref"]:
+                row["verdict"] = "interior margin removed most of the support"
+            elif row["n_finite"] < 0.5 * max(row["n_interior"], 1):
+                row["verdict"] = "reference values non-finite (weak constraint)"
+            else:
+                row["verdict"] = "healthy"
+        except Exception as exc:
+            row["verdict"] = f"{type(exc).__name__}: {exc}"
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    if verbose:
+        for _, r in df.iterrows():
+            print(f"{r.scene}")
+            print(f"    ref {r.n_ref:>7,}  -> in_ref {r.n_in_ref:>7,}"
+                  f"  -> interior {r.n_interior:>7,}  -> finite {r.n_finite:>7,}")
+            print(f"    centre offset ({r.offset_x_m:+,.0f}, {r.offset_y_m:+,.0f}) m "
+                  f"in a {r.box_w_m:,.0f} x {r.box_h_m:,.0f} m box")
+            print(f"    -> {r.verdict}")
+    return df
 
 
 def region_availability(metrics):
