@@ -35,30 +35,44 @@
 
 \author{
 Jean-Marc Delouis\textsuperscript{1},
-Tina Odaka\textsuperscript{1},
-Benoit Bovy\textsuperscript{2},
-Etienne Cap\textsuperscript{1},
-Thomas Davison\textsuperscript{6},
-Anne Fouilloux\textsuperscript{3},
-Camille Gueguen\textsuperscript{1},
-Alexander Kmoch\textsuperscript{4},
-Justus Magin\textsuperscript{1},
-Pablo Richard\textsuperscript{5},
-and Vincent Dumoulin\textsuperscript{6}%
+Tina Odaka\textsuperscript{2},
+Benoit Bovy\textsuperscript{3},
+Etienne Cap\textsuperscript{4},
+Thomas Davison\textsuperscript{5},
+Anne Fouilloux\textsuperscript{6},
+Camille Gueguen\textsuperscript{7},
+Alexander Kmoch\textsuperscript{8},
+Justus Magin\textsuperscript{9},
+Pablo Richard\textsuperscript{10},
+and Vincent Dumoulin\textsuperscript{11}%
 \thanks{\textsuperscript{1}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
 Corresponding author: jean.marc.delouis@ifremer.fr.}%
-\thanks{\textsuperscript{2}GEORODE, Liège, Belgium.
+\thanks{\textsuperscript{2}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Corresponding author: Tina.Odaka@ifremer.fr.}%
+\thanks{\textsuperscript{3}GEORODE, Liège, Belgium.
 Email: bbovy@georode.com.}%
-\thanks{\textsuperscript{3}LifeWatch ERIC, Seville, Spain.
+\thanks{\textsuperscript{4}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Corresponding author: Etienne.Cap@ifremer.fr.}%
+\thanks{\textsuperscript{5}European Space Agency (ESA)---ESRIN, Frascati, Italy.
+Email: Thomas.Davison@esa.int.}%
+\thanks{\textsuperscript{6}LifeWatch ERIC, Seville, Spain.
 Email: anne.fouilloux@lifewatch.eu.}%
-\thanks{\textsuperscript{4}University of Tartu,
+\thanks{\textsuperscript{7}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Corresponding author: camille.gueguen@ifremer.fr.}%
+\thanks{\textsuperscript{8}University of Tartu,
 Institute of Ecology and Earth Sciences,
 Landscape Geoinformatics Lab, Tartu, Estonia.
 Email: alexander.kmoch@ut.ee.}%
-\thanks{\textsuperscript{5}Pablo Richard EI, Paris, France.
+\thanks{\textsuperscript{9}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Corresponding author: Justus.Magin@ifremer.fr.}%
+\thanks{\textsuperscript{10}Pablo Richard EI, Paris, France.
 Email: pablorichard@hotmail.fr.}%
-\thanks{\textsuperscript{6}European Space Agency (ESA)---ESRIN, Frascati, Italy.
+\thanks{\textsuperscript{11}European Space Agency (ESA)---ESRIN, Frascati, Italy.
 Email: vincent.dumoulin@esa.int.}%
 }
 
@@ -100,9 +114,9 @@ between $2.8\times10^{-6}$ and $1.0\times10^{-5}$, demonstrating numerical
 consistency with the input rather than independent recovery of the instrumental
 \psf. A downscaling experiment addresses this limitation: against a reference
 independent of the imposed 20~m degradation, the matched method has the lowest
-RMSE in all 38 real Sentinel-2 regions tested, against each of four
-competitors (exact sign test $p=7.3\times10^{-12}$; mean paired margins
-$10.3$--$17.9\%$ over the strongest of them). A four-scene version of the same
+RMSE in all 40 real Sentinel-2 regions tested, against each of four
+competitors (exact sign test $p=1.8\times10^{-12}$; mean paired margins
+$11.0$--$17.9\%$ over the strongest of them). A four-scene version of the same
 test ranks it first under an estimator-independent geometric control and under
 an anisotropic $24\times45$~m degradation, and its ranking survives a
 $\pm20\%$ error in the assumed response width -- the level the spectral
@@ -163,7 +177,7 @@ degrades real, undegraded Sentinel-2 pixels to a coarser grid and
     of the imposed degradation from the same real imagery, thereby
 providing a reconstruction-quality assessment on real data without
 relying on the Esri texture as a Sentinel-2 radiometric proxy. It is run
-over 38 geographically distributed regions drawn from the same site list as
+over 40 geographically distributed regions drawn from the same site list as
 the synthetic validation, so the two share their sampling of the globe.
 
 The use of a \healpix support finer than the native sensor grid
@@ -202,7 +216,7 @@ The main contributions of this work are:
 
     \item a real-data downscaling experiment that evaluates
     reconstruction quality on real Sentinel-2 imagery against a reference
-    independent of the imposed degradation, over 38 geographically
+    independent of the imposed degradation, over 40 geographically
     distributed regions, complemented by an estimator-independent geometric
     control and an anisotropic response-shape mismatch control;
 
@@ -872,19 +886,26 @@ each patch.
 Two screens then decide which regions enter the analysis, both reading only
 the observation. The first rejects a patch whose window is clipped at a
 granule edge, carries no-data holes, is flat, or is covered by cloud or snow
-despite a low granule-level cloud fraction; all 40 patches pass it. The
-second requires a region to evaluate at least half the median number of
-interior \healpix cells: one region yields no evaluable cells and another only
-$448$ of a typical $29{,}900$, both because reference and reconstruction
-barely overlap after the edge margin. Retaining them would let a region scored
-on $1.5\%$ of its area carry the same weight in a region-level mean as a
-complete one.
+despite a low granule-level cloud fraction. The second requires a region to
+evaluate at least half the median number of interior \healpix cells, which
+guards against a region scored on a small fraction of its area carrying the
+same weight in a region-level mean as a complete one. All 40 regions pass
+both.
 
-Thirty-eight regions remain -- eight agricultural and ten of each other class
--- contributing $29{,}795$--$29{,}955$ interior cells each. The evaluated-cell
-count is identical across all five methods within a region, since they are
-scored on the same cells, so neither screen can select for or against a
-reconstruction method.
+A third check is applied to the geometry itself, because a reconstruction can
+be internally consistent and still describe the wrong ground. For every
+region we verify that the centroid of the reference cell centres, reprojected
+into the patch's own \utm frame, coincides with the centre of that patch: the
+largest residual over the 40 regions is $6.3$~m, below one native pixel. This
+catches a class of error that no score-based check would reveal, since a
+reference built from a stale or displaced patch yields perfectly finite
+metrics for a location that was never observed.
+
+All 40 regions therefore enter the analysis, ten per scene class, contributing
+$29{,}795$--$29{,}955$ interior cells each. The evaluated-cell count is
+identical across all five methods within a region, since they are scored on
+the same cells, so no screen can select for or against a reconstruction
+method.
 
 \subsection{Experimental Configuration}
 \label{sec:exp_config}
@@ -1471,19 +1492,19 @@ four-scene sensitivity test rather than sensor-wide validation.
 \label{sec:real_downscale_multiregion_results}
 
 Table~\ref{tab:real_multiregion} extends the previous comparison from four
-scenes to the 38 real Sentinel-2 regions of
+scenes to the 40 real Sentinel-2 regions of
 Section~\ref{sec:real_downscale_multiregion}, with the region as the
 independent unit.
 
 The matched \psf-aware reconstruction has the lowest RMSE in
-\emph{every one of the 38 regions, against every one of the four competitors}.
+\emph{every one of the 40 regions, against every one of the four competitors}.
 Pooling regions and pairing each competitor against \psf-aware within the same
 region -- so that between-site scene variability cancels -- gives an exact
-two-sided sign test of $p=7.3\times10^{-12}$ for each competitor, and a mean
+two-sided sign test of $p=1.8\times10^{-12}$ for each competitor, and a mean
 paired RMSE difference whose $95\%$ region-bootstrap interval excludes zero in
-every case: $0.0041$ [$0.0029$, $0.0054$] against bicubic, $0.0050$
-[$0.0035$, $0.0067$] against nearest-neighbor, $0.0055$ [$0.0038$, $0.0073$]
-against bilinear, and $0.0024$ [$0.0016$, $0.0033$] against Richardson--Lucy.
+every case: $0.0041$ [$0.0029$, $0.0053$] against bicubic, $0.0050$
+[$0.0036$, $0.0065$] against nearest-neighbor, $0.0055$ [$0.0039$, $0.0072$]
+against bilinear, and $0.0024$ [$0.0017$, $0.0032$] against Richardson--Lucy.
 Fig.~\ref{fig:real_multiregion_paired} shows the same result without
 aggregation: every region lies above the identity line, across four decades of
 RMSE.
@@ -1502,10 +1523,10 @@ are given in the text.}
 \toprule
 Scene class & Regions & PSF-aware & Richardson--Lucy & $\Delta$ [95\% CI] \\
 \midrule
-Agriculture &  8 & \textbf{0.0105} & 0.0124 & 0.0019 [0.0014, 0.0025] \\
+Agriculture & 10 & \textbf{0.0123} & 0.0143 & 0.0019 [0.0014, 0.0025] \\
 Forest      & 10 & \textbf{0.0106} & 0.0128 & 0.0023 [0.0008, 0.0042] \\
-Urban       & 10 & \textbf{0.0269} & 0.0321 & 0.0052 [0.0040, 0.0067] \\
-Water       & 10 & \textbf{0.0014} & 0.0015 & 0.0002 [0.0001, 0.0003] \\
+Urban       & 10 & \textbf{0.0259} & 0.0311 & 0.0052 [0.0041, 0.0066] \\
+Water       & 10 & \textbf{0.0022} & 0.0025 & 0.0003 [0.0001, 0.0005] \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1513,7 +1534,7 @@ Water       & 10 & \textbf{0.0014} & 0.0015 & 0.0002 [0.0001, 0.0003] \\
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{real_groundtruth_multiregion_paired.pdf}
-\caption{Multi-region real-data downscaling over 38 Sentinel-2 regions.
+\caption{Multi-region real-data downscaling over 40 Sentinel-2 regions.
 \emph{Left:} one point per region and competitor, competitor RMSE against
 \psf-aware RMSE; every point lies above the identity line, so \psf-aware wins
 in every region. Marker shape denotes scene class. \emph{Right:} mean paired
@@ -1524,8 +1545,8 @@ annotated with the win count and the exact two-sided sign test.}
 
 Relative to the strongest competitor in each class -- Richardson--Lucy
 everywhere, consistent with it being the only comparator that models the
-spatial response -- the \psf-aware RMSE is lower by $10.3\%$ over water,
-$15.5\%$ over agriculture, $16.2\%$ over urban and $17.9\%$ over forest.
+spatial response -- the \psf-aware RMSE is lower by $11.0\%$ over water,
+$13.6\%$ over agriculture, $16.7\%$ over urban and $17.9\%$ over forest.
 These margins are smaller than the $23.0\%$ of the four-scene urban case
 (Table~\ref{tab:real_downscale}), which is the expected direction: a single
 illustrative patch is not a typical one.
@@ -1561,10 +1582,10 @@ rather than a preliminary.
 This result supersedes the four-scene study as the paper's main real-data
 evidence. It uses the same site list as the synthetic multi-region validation
 of Section~\ref{sec:multiregion}, so the two are directly comparable in
-coverage; the synthetic experiment retains all 40 regions because it depends
-neither on a cloud-free acquisition nor on the evaluated-cell screen of
-Section~\ref{sec:real_downscale_multiregion}, which only concerns the
-overlap between two independently built \healpix supports. Two limitations remain. The
+coverage, and both retain all 40 regions: every acquired patch passes the
+input-quality screen and the evaluated-cell screen of
+Section~\ref{sec:real_downscale_multiregion}, so no site is dropped from
+either experiment. Two limitations remain. The
 reconstruction still assumes the same $25$~m response used to degrade the
 observation, so this measures reconstruction quality under a known response
 rather than blind recovery. And a single sensor and band are involved, so the
@@ -1831,7 +1852,7 @@ estimator from the reference and preserves the ranking, and the anisotropic
 control probes one additional imposed response shape.
 
 The downscaling result itself is no longer of that kind. Section
-\ref{sec:real_downscale_multiregion_results} repeats it over 38 independent
+\ref{sec:real_downscale_multiregion_results} repeats it over 40 independent
 real Sentinel-2 regions on the same site list as the synthetic multi-region
 validation, with the region as the statistical unit. What that establishes is
 diversity of scene and geography, not of instrument: a single sensor, band and
@@ -1847,19 +1868,20 @@ calibrated in Section~\ref{sec:psf_calibration} would therefore shift by far
 less than the $\pm20\%$ that Section~\ref{sec:real_downscale_multiregion_results}
 shows the ranking tolerates. What genuinely differs between these bands is
 scene content, not instrument response -- and scene content is the axis this
-paper already varies deliberately, across four classes and 38 regions. A
+paper already varies deliberately, across four classes and 40 regions. A
 second $10$~m band would thus add samples along an axis already sampled while
 leaving the untested axes untouched. The scope limit that matters is the one
 we cannot buy this way: the $20$~m and $60$~m bands, which are resampled
 differently on board and would change the resolution ratio, and other sensors
 entirely.
 
-Which regions survive is set by Sentinel-2 availability -- catalogue coverage,
-cloud, granule edges -- through criteria evaluated before any reconstruction.
-That cannot bias the comparison between methods, since all methods see the
-same surviving patches, but it does mean the 38 regions are not a random
-sample of the four scene classes, and the two excluded sites were removed for insufficient overlap between
-reference and reconstruction, not for anything about the scene.
+Which patch represents each region is set by Sentinel-2 availability --
+catalogue coverage, cloud, granule edges -- through criteria evaluated before
+any reconstruction: where the anchor patch yielded no usable acquisition, a
+fixed, pre-declared order of alternates within the same region was tried until
+one did. That cannot bias the comparison between methods, since all methods
+see the same patches, but it does mean the 40 regions are a stratified
+selection rather than a random sample of the four scene classes.
 
 Broader validation should vary sensor, band, target resolution,
 response shape, noise, geolocation, and patch boundaries, and cover
@@ -1998,9 +2020,9 @@ internal consistency under the assumed model, not recovery of a
 latent high-resolution truth. The downscaling experiment supplies that
 missing evidence: against a reference built independently of the imposed
 degradation, the \psf-aware reconstruction has the lowest RMSE in
-\emph{all 38} real Sentinel-2 regions tested, against each of four
-competitors (exact two-sided sign test $p=7.3\times10^{-12}$), with mean
-paired margins from $10.3\%$ over water to $17.9\%$ over forest relative
+\emph{all 40} real Sentinel-2 regions tested, against each of four
+competitors (exact two-sided sign test $p=1.8\times10^{-12}$), with mean
+paired margins from $11.0\%$ over water to $17.9\%$ over forest relative
 to Richardson--Lucy, the strongest comparator throughout. Those regions are
 the same sites as the synthetic multi-region validation, so the two
 experiments are comparable in coverage. On the four-scene version of the

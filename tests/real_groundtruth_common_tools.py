@@ -1938,6 +1938,104 @@ def run_multiregion(force=False, scenes=None, label="multiregion",
     return metrics, fail_df
 
 
+def run_multiregion_variant(reference_mode=None, baseline_estimand=None,
+                             max_iter=None, force=False, scenes=None,
+                             label=None):
+    """`run_multiregion` under a temporarily overridden configuration.
+
+    This is the multi-region counterpart of `run_variant`, and it exists for
+    one reason: the paper's controls were four-scene studies while its main
+    real-data evidence grew to 40 regions, so the control now covers a
+    fraction of what it is supposed to control.
+
+    The important case is `reference_mode='geometric'`. The default reference
+    is built with the same \\psf-aware operator family as one of the methods
+    under test, which is a legitimate objection: the comparison could in
+    principle reward the method for sharing machinery with its own target.
+    The geometric reference assigns each native pixel to the level-19 cell
+    containing its centre and takes an unweighted mean -- no response model,
+    no inversion, nothing shared with any competitor.
+
+    It targets the *observed* field rather than the latent one, so absolute
+    RMSE values are NOT comparable with the main run and must never be
+    tabulated alongside them. What transfers is the *ranking*, which is
+    exactly what the objection is about.
+
+    Results go to their own CSV prefix, and `_cache_suffix()` already encodes
+    REFERENCE_MODE, so nothing here can overwrite or silently reuse the main
+    run's caches.
+    """
+    global REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER
+    saved = (REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER)
+    try:
+        if reference_mode is not None:
+            REFERENCE_MODE = reference_mode
+        if baseline_estimand is not None:
+            BASELINE_ESTIMAND = baseline_estimand
+        if max_iter is not None:
+            MAX_ITER = max_iter
+        tag = label or f"{REFERENCE_MODE}"
+        metrics, failures = run_multiregion(
+            force=force, scenes=scenes,
+            csv_prefix=f"real_groundtruth_multiregion_{tag}",
+        )
+        if len(metrics):
+            metrics["reference_mode"] = REFERENCE_MODE
+            metrics["baseline_estimand"] = BASELINE_ESTIMAND
+            metrics["max_iter"] = MAX_ITER
+            metrics["variant"] = tag
+        return metrics, failures
+    finally:
+        REFERENCE_MODE, BASELINE_ESTIMAND, MAX_ITER = saved
+
+
+def compare_variant_ranking(main_metrics, variant_metrics, verbose=True):
+    """Does the method ordering survive a change of reference?
+
+    Compares only what is comparable between two reference modes: which
+    method wins in each region, the pooled win fraction, and the sign test.
+    Absolute RMSE levels are deliberately not compared, because the two
+    references target different fields.
+
+    Returns a DataFrame with one row per competitor and, in `.attrs`, the
+    regions where the two runs disagree about the winner.
+    """
+    common = sorted(set(main_metrics.region_id) & set(variant_metrics.region_id))
+    rows = []
+    for name, df in (("main", main_metrics), ("variant", variant_metrics)):
+        sub = df[df.region_id.isin(common)]
+        pooled = paired_summary(
+            sub, csv_prefix=f"real_groundtruth_multiregion_rankcheck_{name}")
+        pooled.insert(0, "run", name)
+        rows.append(pooled)
+    out = pd.concat(rows, ignore_index=True)
+
+    def winners(df):
+        sub = df[df.region_id.isin(common)]
+        idx = sub.groupby("region_id").rmse.idxmin()
+        return sub.loc[idx].set_index("region_id").method
+
+    w_main, w_var = winners(main_metrics), winners(variant_metrics)
+    disagree = sorted(w_main.index[w_main.values != w_var.reindex(w_main.index).values])
+    out.attrs["regions_disagreeing"] = disagree
+    out.attrs["n_regions_compared"] = len(common)
+
+    if verbose:
+        print(f"Ranking check over {len(common)} common regions.")
+        for name, grp in out.groupby("run", sort=False):
+            frac = grp.win_fraction.min()
+            print(f"  {name:8s}: \\psf-aware wins at least "
+                  f"{100 * frac:.0f}% of regions against every competitor")
+        if disagree:
+            print(f"  Winner changes in {len(disagree)} region(s): "
+                  f"{', '.join(disagree)}")
+        else:
+            print("  The same method wins in every region under both "
+                  "references: the ranking is not an artefact of building "
+                  "the reference with the operator under test.")
+    return out
+
+
 def _bootstrap_ci(values, n_rep=None, seed=20260818, alpha=0.05):
     """Percentile bootstrap over independent regions."""
     v = np.asarray(values, dtype=float)
