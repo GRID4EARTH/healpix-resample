@@ -4,7 +4,7 @@ Run from either the repository root or ``notebooks/``::
 
     python notebooks/build_data_manifest.py
     python notebooks/build_data_manifest.py --check
-    python notebooks/build_data_manifest.py --doi 10.5281/zenodo.22083697
+    python notebooks/build_data_manifest.py --doi 10.5281/zenodo.22107490
 
 Directory hashes include every contained relative filename and byte, in sorted
 order.  Consequently a changed Zarr chunk, attribute, or metadata file changes

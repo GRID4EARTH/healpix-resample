@@ -9,8 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 
-ZENODO_RECORD_ID = "22083697"
-ZENODO_DOI = "10.5281/zenodo.22083697"
+ZENODO_RECORD_ID = "22107490"
+ZENODO_DOI = "10.5281/zenodo.22107490"
 ZENODO_RECORD_URL = f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
 
 SCENES = ("urban", "water", "forest", "agriculture")
