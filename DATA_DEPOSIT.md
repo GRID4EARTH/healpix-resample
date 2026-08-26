@@ -33,8 +33,10 @@ healpix-resample-paper-data-v1/
         |   |-- water__z17_n256_os4.zarr/
         |   |-- forest__z17_n256_os4.zarr/
         |   `-- agriculture__z17_n256_os4.zarr/
-        `-- multi_patch_latitude/esri_patch_cache/
-            `-- 360 stores <patch_id>__z17_n256_os4_gsd10.zarr/
+        |-- multi_patch_latitude/esri_patch_cache/
+        |   `-- 360 stores <patch_id>__z17_n256_os4_gsd10.zarr/
+        `-- multi_patch_sentinel2/
+            `-- 40 stores region__<class>__<region_id>_data.zarr/
 ```
 
 Do not include `*.idx`, `*.tmp`, generated figures, tables, notebook outputs,
@@ -43,9 +45,19 @@ or result caches. They are derived products, not immutable primary inputs.
 Because Zarr stores contain many small files, package the tree in ZIP archives
 instead of uploading every chunk separately. A practical split is:
 
-1. `healpix-resample-paper-core-data-v1.zip`: the four Sentinel-2 stores, four
+1. `healpix-resample-paper-core-data-v2.zip`: the four Sentinel-2 stores, four
    scene-level Esri stores, ERA5 GRIB, README and manifest.
 2. `healpix-resample-paper-esri-multipatch-v1.zip`: the 360 patch stores.
+   Unchanged since v1; carry it over to the new version rather than
+   re-uploading it.
+3. `healpix-resample-paper-sentinel2-regions-v1.zip`: the 40 real Sentinel-2
+   region patches under `notebooks/data/multi_patch_sentinel2/`.
+
+Keeping the region patches in their own archive means the 1.1 GB Esri bundle
+does not have to be re-uploaded, and the new inputs stay separately citable.
+Thirty-six patches come from earth-search and four from the EOPF Zarr Sample
+Service; the originating catalogue and product identifier are recorded both in
+each store's attributes and in `data_manifest.csv`.
 
 Both ZIP files must preserve the paths beginning with `notebooks/`.
 
@@ -60,10 +72,14 @@ Both ZIP files must preserve the paths beginning with `notebooks/`.
    python notebooks/build_data_manifest.py --check --doi 10.5281/zenodo.22083697
    ```
 
-   The second command must exit successfully and report `369/369 assets
+   The second command must exit successfully and report `409/409 assets
    available`.
 4. Build the ZIP archive(s) only after that check, and include the final
-   `data_manifest.csv` in the core archive.
+   `data_manifest.csv` and `git_commit.txt` in the core archive.
+   `notebooks/load_data_in_zenodo.ipynb` verifies that the set of published
+   files matches `EXPECTED_ARCHIVES` exactly, so update that dictionary with
+   the name, byte size and MD5 of every archive in the new version before
+   the record is used offline.
 5. On a different machine, clone the exact Git commit, extract the archives at
    the repository root, rerun the manifest check, and execute the notebooks
    with their default `OFFLINE=True`.

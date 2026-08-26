@@ -113,30 +113,72 @@ def expected_assets(doi: str):
             ))
 
     # Real Sentinel-2 patches at the 40 region anchors, used by the
-    # multi-region real-data downscaling experiment. One patch per region,
-    # taken at the centre of each 3x3 lattice (patch_row = patch_col = 1), so
-    # the site selection matches the synthetic multi-region manifest exactly.
+    # multi-region real-data downscaling experiment: one patch per region.
+    #
+    # The lattice position is NOT assumed to be the region anchor (1,1). Where
+    # the anchor yielded no usable acquisition, the pre-declared fallback order
+    # moved the window to a neighbouring position, and four regions were in
+    # fact acquired off-anchor. Deriving the recorded coordinates from (1,1)
+    # would therefore publish a location the archived array does not cover --
+    # the one field a reader would use to verify the patch. The catalogue is
+    # likewise not assumed: four stores predate the switch to earth-search and
+    # come from the EOPF Zarr Sample Service.
+    #
+    # Both facts are read from the acquisition record written by
+    # acquire_region_sites(), and the per-store provenance attributes remain
+    # the authority inside each Zarr.
+    products = {}
+    products_path = NOTEBOOKS / "tables" / "real_groundtruth_multiregion_products.csv"
+    if products_path.exists():
+        with products_path.open(newline="", encoding="utf-8") as stream:
+            for row in csv.DictReader(stream):
+                products[row["scene"]] = row
+
+    sites_by_pos = {}
     with sites_path.open(newline="", encoding="utf-8") as stream:
         for site in csv.DictReader(stream):
-            if (site.get("patch_row"), site.get("patch_col")) != ("1", "1"):
+            sites_by_pos[(site["region_id"], site["patch_row"],
+                          site["patch_col"])] = site
+
+    seen = set()
+    with sites_path.open(newline="", encoding="utf-8") as stream:
+        for site in csv.DictReader(stream):
+            region_id = site["region_id"]
+            if region_id in seen:
                 continue
-            scene = f"region__{site['scene_class']}__{site['region_id']}"
+            seen.add(region_id)
+            scene = f"region__{site['scene_class']}__{region_id}"
+            rec = products.get(scene, {})
+            acquired = sites_by_pos.get(
+                (region_id, rec.get("patch_row"), rec.get("patch_col")))
+            lat = (acquired or site)["patch_lat"]
+            lon = (acquired or site)["patch_lon"]
+            product_id = rec.get("product_id") or ""
+            catalogue = ("EOPF Zarr Sample Service"
+                         if not product_id else "earth-search COG")
+            position = (f"r{rec['patch_row']}c{rec['patch_col']}"
+                        if rec.get("patch_row") not in (None, "", "-1")
+                        else "recorded in the store attributes")
             rows.append(asset(
                 f"notebooks/data/multi_patch_sentinel2/{scene}_data.zarr",
                 asset_id=f"sentinel2_{scene}", category="primary_input",
-                source="Copernicus Sentinel-2 L2A (earth-search COG)",
+                source=f"Copernicus Sentinel-2 L2A ({catalogue})",
                 source_identifier=(
-                    f"lat={site['patch_lat']};lon={site['patch_lon']};"
-                    "product recorded in the store's source_item_id attribute"
+                    f"lat={lat};lon={lon};lattice={position};"
+                    + (f"product={product_id}" if product_id
+                       else "product recorded in the store's "
+                            "source_item_id attribute")
                 ), kind="zarr",
                 required_by="real_groundtruth_multiregion.ipynb",
                 expected_shape="256x256 native 10 m patch",
                 archive_doi=doi,
                 notes=(
-                    "One of 40 region anchors. Acquired once via "
+                    "One of 40 regions, one patch each. Acquired via "
                     "real_groundtruth_common_tools.acquire_region_sites(); "
-                    "a region with no cloud-free acquisition in the search "
-                    "window is absent by design and is skipped downstream."
+                    "where the region anchor yielded no usable acquisition, "
+                    "a pre-declared fallback position within the same region "
+                    "was used, and the coordinates above are those of the "
+                    "patch actually archived."
                 ),
             ))
 

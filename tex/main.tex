@@ -50,26 +50,26 @@ CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
 Corresponding author: jean.marc.delouis@ifremer.fr.}%
 \thanks{\textsuperscript{2}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Corresponding author: Tina.Odaka@ifremer.fr.}%
+Email: Tina.Odaka@ifremer.fr.}%
 \thanks{\textsuperscript{3}GEORODE, Liège, Belgium.
 Email: bbovy@georode.com.}%
 \thanks{\textsuperscript{4}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Corresponding author: Etienne.Cap@ifremer.fr.}%
+Email: Etienne.Cap@ifremer.fr.}%
 \thanks{\textsuperscript{5}European Space Agency (ESA)---ESRIN, Frascati, Italy.
 Email: Thomas.Davison@esa.int.}%
 \thanks{\textsuperscript{6}LifeWatch ERIC, Seville, Spain.
 Email: anne.fouilloux@lifewatch.eu.}%
 \thanks{\textsuperscript{7}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Corresponding author: camille.gueguen@ifremer.fr.}%
+Email: camille.gueguen@ifremer.fr.}%
 \thanks{\textsuperscript{8}University of Tartu,
 Institute of Ecology and Earth Sciences,
 Landscape Geoinformatics Lab, Tartu, Estonia.
 Email: alexander.kmoch@ut.ee.}%
 \thanks{\textsuperscript{9}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Corresponding author: Justus.Magin@ifremer.fr.}%
+Email: Justus.Magin@ifremer.fr.}%
 \thanks{\textsuperscript{10}Pablo Richard EI, Paris, France.
 Email: pablorichard@hotmail.fr.}%
 \thanks{\textsuperscript{11}European Space Agency (ESA)---ESRIN, Frascati, Italy.
@@ -116,9 +116,9 @@ consistency with the input rather than independent recovery of the instrumental
 independent of the imposed 20~m degradation, the matched method has the lowest
 RMSE in all 40 real Sentinel-2 regions tested, against each of four
 competitors (exact sign test $p=1.8\times10^{-12}$; mean paired margins
-$11.0$--$17.9\%$ over the strongest of them). A four-scene version of the same
-test ranks it first under an estimator-independent geometric control and under
-an anisotropic $24\times45$~m degradation, and its ranking survives a
+$11.0$--$17.9\%$ over the strongest of them). The same ranking holds over all 40 regions under an
+estimator-independent geometric reference, and over four scenes under an
+anisotropic $24\times45$~m degradation; it survives a
 $\pm20\%$ error in the assumed response width -- the level the spectral
 calibration leaves unresolved. Spectral
 diagnostics support stable partial restoration, while noise experiments show
@@ -217,8 +217,9 @@ The main contributions of this work are:
     \item a real-data downscaling experiment that evaluates
     reconstruction quality on real Sentinel-2 imagery against a reference
     independent of the imposed degradation, over 40 geographically
-    distributed regions, complemented by an estimator-independent geometric
-    control and an anisotropic response-shape mismatch control;
+    distributed regions, replicated over the same 40 regions under an
+    estimator-independent geometric reference and complemented by an
+    anisotropic response-shape mismatch control;
 
     \item an open-source implementation designed for
     \healpix/DGGS-based EO data-cube workflows
@@ -876,12 +877,16 @@ sites and the region remains the independent statistical unit.
 These patches are real Sentinel-2 acquisitions, not the Esri textures of the
 synthetic experiment, with which they share only the site list. They are read
 as Cloud-Optimized GeoTIFFs from the Element~84 \texttt{earth-search}
-catalogue \cite{earthsearch}, which holds the complete Sentinel-2 L2A archive;
-the EOPF Zarr Sample Service catalogue used for the four scenes of
+catalogue \cite{earthsearch}, which holds the complete Sentinel-2 L2A archive.
+The EOPF Zarr Sample Service catalogue used for the four scenes of
 Section~\ref{sec:exp_config} (\texttt{stac.core.eopf.eodc.eu}) is a regional
-demonstration service and returns no product at most of these anchors. Products are selected deterministically
-by lowest cloud cover, and the resulting product identifier is recorded with
-each patch.
+demonstration service covering Europe and North America, and returns no
+product at most of these anchors; it nonetheless supplied four of the forty
+patches, all European, which are served from it directly as Zarr. Both routes
+deliver the same Level-2A surface reflectance and are treated identically
+downstream, and the originating catalogue and product identifier are recorded
+in each archived patch. Products are selected deterministically by lowest
+cloud cover.
 
 Two screens then decide which regions enter the analysis, both reading only
 the observation. The first rejects a patch whose window is clipped at a
@@ -1470,12 +1475,15 @@ degradation. It is not independent of the estimator family, because
 it uses the same \psf-aware operator at a different level. We
 therefore repeated the comparison with an estimator-independent
 control obtained by assigning native pixels to level-19 cells and
-averaging them without a spatial-response model. Although this
-control targets the observed rather than latent field, it gives the
-same method ordering in all four scenes, including the urban
-bicubic--Richardson--Lucy reversal. The ranking is thus not an
-artefact of constructing the primary reference with the proposed
-operator.
+averaging them without a spatial-response model -- no response model,
+no inversion, and no code path shared with any method under test.
+Although this control targets the observed rather than latent field,
+so that absolute RMSE values are not comparable with the primary
+reference, it gives the same method ordering in all four scenes,
+including the urban bicubic--Richardson--Lucy reversal.
+Section~\ref{sec:real_downscale_multiregion_results} repeats it over
+all 40 regions. The ranking is thus not an artefact of constructing
+the primary reference with the proposed operator.
 
 Reading raster baselines as point samples instead of child-cell
 averages changes their RMSE by $-4.7\%$ to $+10.8\%$ but leaves the
@@ -1508,6 +1516,23 @@ against bilinear, and $0.0024$ [$0.0017$, $0.0032$] against Richardson--Lucy.
 Fig.~\ref{fig:real_multiregion_paired} shows the same result without
 aggregation: every region lies above the identity line, across four decades of
 RMSE.
+
+This result is not an artefact of how the reference was built. The primary
+reference uses the same \psf-aware operator family as one of the methods it
+scores, which leaves open the objection that the comparison rewards shared
+machinery. Repeating all 40 regions against the estimator-independent
+geometric reference of Section~\ref{sec:real_downscale_results} -- native
+pixels assigned to their level-19 cell and averaged, with no response model,
+no inversion and no code path in common with any method under test --
+reproduces the result exactly: \psf-aware has the lowest RMSE in every one of
+the 40 regions against every one of the four competitors, giving the same
+exact sign test of $p=1.8\times10^{-12}$. The paired margins shrink, as they
+must, because this reference targets the observed field and so scores every
+method against a blurrier target: $0.0017$ [$0.0011$, $0.0024$] against
+Richardson--Lucy and $0.0030$ [$0.0021$, $0.0039$] against bicubic, against
+$0.0024$ and $0.0041$ above. Absolute RMSE levels are not comparable between
+the two references for that reason, and only the ordering is claimed to
+transfer -- which is what the objection concerns.
 
 \begin{table}[t]
 \centering
@@ -1846,10 +1871,11 @@ support.
 
 The detailed noise and round-trip diagnostics use one illustrative patch
 per scene class. Their cell-level metrics are case studies, not independent
-population estimates. The two controls on the downscaling experiment are
-likewise four-patch studies: the geometric control removes the shared
-estimator from the reference and preserves the ranking, and the anisotropic
-control probes one additional imposed response shape.
+population estimates. Of the two controls on the downscaling experiment, the
+geometric one now matches the main experiment in scope: it removes the shared
+estimator from the reference over all 40 regions and preserves the ranking in
+every one of them. The anisotropic control remains a four-patch study probing
+one additional imposed response shape.
 
 The downscaling result itself is no longer of that kind. Section
 \ref{sec:real_downscale_multiregion_results} repeats it over 40 independent
@@ -2025,10 +2051,10 @@ competitors (exact two-sided sign test $p=1.8\times10^{-12}$), with mean
 paired margins from $11.0\%$ over water to $17.9\%$ over forest relative
 to Richardson--Lucy, the strongest comparator throughout. Those regions are
 the same sites as the synthetic multi-region validation, so the two
-experiments are comparable in coverage. On the four-scene version of the
-test the ranking also survives an estimator-independent geometric reference
-and an anisotropic $24\times45$~m degradation inverted with an isotropic
-model. The scope is scene and geographic diversity, not instrument
+experiments are comparable in coverage. The same 40 regions rank it first under an
+estimator-independent geometric reference, and the four-scene version of the
+test also survives an anisotropic $24\times45$~m degradation inverted with an
+isotropic model. The scope is scene and geographic diversity, not instrument
 diversity: one sensor, one band, one resolution ratio, and a reconstruction
 that always assumes the response used to degrade the observation. Noise
 experiments show that no
