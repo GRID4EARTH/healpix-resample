@@ -47,14 +47,15 @@ instead of uploading every chunk separately. A practical split is:
 
 1. `healpix-resample-paper-core-data-v2.zip`: the four Sentinel-2 stores, four
    scene-level Esri stores, ERA5 GRIB, README and manifest.
-2. `healpix-resample-paper-esri-multipatch-v1.zip`: the 360 patch stores.
-   Unchanged since v1; carry it over to the new version rather than
-   re-uploading it.
+2. `healpix-resample-paper-esri-multipatch-v2.zip`: the 360 patch stores.
+   Rebuilt by the packing script; the hand-packed v1 file is superseded, not
+   carried over, so that every published archive is reproducible from the
+   documented procedure.
 3. `healpix-resample-paper-sentinel2-regions-v1.zip`: the 40 real Sentinel-2
    region patches under `notebooks/data/multi_patch_sentinel2/`.
 
-Keeping the region patches in their own archive means the 1.1 GB Esri bundle
-does not have to be re-uploaded, and the new inputs stay separately citable.
+Keeping the region patches in their own archive leaves the new inputs
+separately citable and lets a reader fetch them without the ~1 GB Esri bundle.
 Thirty-six patches come from earth-search and four from the EOPF Zarr Sample
 Service; the originating catalogue and product identifier are recorded both in
 each store's attributes and in `data_manifest.csv`.

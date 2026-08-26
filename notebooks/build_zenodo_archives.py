@@ -28,8 +28,12 @@ which looks exactly like corruption.
 *Exclusions.* Derived files (`*.idx`, `__pycache__`, `.DS_Store`) must not
 enter a bundle described as immutable primary input.
 
-The archive split keeps the 1.1 GB Esri bundle byte-identical to v1, so a new
-Zenodo version can carry it over instead of re-uploading it.
+All three archives are built by this script, so every published file can be
+rebuilt and its MD5 re-derived by anyone with the inputs. The v1 Esri archive
+was packed by hand and is *not* byte-identical to the one produced here, which
+is why the new record supersedes it rather than carrying it over: a bundle
+that cannot be reproduced by the documented procedure is a gap in exactly the
+provenance chain this script exists to close.
 """
 
 from __future__ import annotations
@@ -161,8 +165,8 @@ def main() -> int:
     ap.add_argument("--allow-dirty", action="store_true",
                     help="pack even if the working tree has uncommitted changes")
     ap.add_argument("--skip-esri", action="store_true",
-                    help="do not rebuild the 1.1 GB Esri archive (unchanged "
-                         "since v1; carry the published file over instead)")
+                    help="do not rebuild the Esri archive (useful while "
+                         "iterating; the published v2 file is already correct)")
     args = ap.parse_args()
 
     repo = find_repo_root()
@@ -186,7 +190,7 @@ def main() -> int:
             collect(nb / "data" / "multi_patch_sentinel2", repo),
     }
     if not args.skip_esri:
-        archives["healpix-resample-paper-esri-multipatch-v1.zip"] = collect(
+        archives["healpix-resample-paper-esri-multipatch-v2.zip"] = collect(
             nb / "data" / "multi_patch_latitude" / "esri_patch_cache", repo)
 
     results = {}
@@ -206,7 +210,7 @@ def main() -> int:
         print(f'        "md5": "{md5}",')
         print("    },")
     if args.skip_esri:
-        print("    # plus the carried-over Esri archive: keep its v1 entry.")
+        print("    # plus the Esri archive, not rebuilt in this run.")
     print("}")
     print(f"\nArchives written to {outdir}")
     return 0
