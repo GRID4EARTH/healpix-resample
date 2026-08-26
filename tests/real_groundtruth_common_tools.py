@@ -52,6 +52,7 @@ driven by `run_variant()` and compared with `rank_table()`:
 """
 
 from pathlib import Path
+import hashlib
 import shutil
 import time
 import warnings
@@ -578,19 +579,76 @@ def scene_zarr_path(scene):
     return DATA_DIR / f"{scene}_data.zarr"
 
 
+_PATCH_FINGERPRINT_CACHE = {}
+
+
+def patch_fingerprint(scene, refresh=False):
+    """Short hash identifying the patch a derived cache was computed FROM.
+
+    `_cache_suffix()` already bakes every *configuration* parameter into the
+    intermediate filenames, so changing a constant recomputes instead of
+    silently reusing a foreign result. The patch itself was the one input not
+    covered: caches were keyed by scene name alone, so re-acquiring a region
+    -- at a fallback lattice position, or from a different catalogue -- left
+    the previous reference, degraded grid and per-method estimates in place,
+    still keyed by the same name and still perfectly loadable.
+
+    That is not hypothetical. It cost two regions: western_australia was
+    re-fetched at lattice position r1c0 while its cached reference stayed at
+    r1c1, putting the reference cells 4,000 m east of the raster (measured:
+    4,001.6 m, against 4,000.0 m predicted from the two anchors), so the
+    interior mask retained nothing. Nothing raised an error, because a
+    perfectly valid reference for the wrong ground is still a perfectly valid
+    array.
+
+    Hashing the patch identity into the filename makes the failure
+    impossible rather than merely detectable: a re-acquired patch produces a
+    different cache name, so it always recomputes, and the stale files stay
+    on disk for forensics instead of being overwritten.
+    """
+    if not refresh and scene in _PATCH_FINGERPRINT_CACHE:
+        return _PATCH_FINGERPRINT_CACHE[scene]
+    path = scene_zarr_path(scene)
+    if not path.exists():
+        return "nopatch"
+    try:
+        dt = xr.open_datatree(path, engine="zarr", consolidated=False,
+                              chunks={})
+        attrs = dict(dt.attrs) or dict(dt[BAND].attrs)
+        da = dt[BAND]
+        # Product identity AND ground position: a re-acquisition can keep the
+        # product and move the window, or keep the window and change the
+        # product. Both must invalidate.
+        key = "|".join([
+            str(attrs.get("source_item_id", "")),
+            str(attrs.get("source_stac_endpoint", "")),
+            f"{float(da.x.values[0]):.1f},{float(da.y.values[0]):.1f}",
+            f"{da.sizes.get('x', 0)}x{da.sizes.get('y', 0)}",
+        ])
+    except Exception:
+        key = f"unreadable:{path.stat().st_mtime_ns if path.exists() else 0}"
+    fp = hashlib.sha256(key.encode()).hexdigest()[:8]
+    _PATCH_FINGERPRINT_CACHE[scene] = fp
+    return fp
+
+
 def _cache_npz_path(scene, stem):
     """Location of a derived intermediate cache (.npz), not a primary input.
 
     Region intermediates go next to their patch rather than into the top-level
     `data/`, which would otherwise accumulate 40 scenes x 5 methods of derived
     files alongside the four archived paper inputs.
+
+    The name carries both the configuration suffix and the patch fingerprint,
+    so a cache is only ever reused for the same configuration AND the same
+    underlying acquisition. See `patch_fingerprint`.
     """
     if scene in region_coordinates or scene.startswith("region__"):
         base = DATA_DIR / REGION_DATA_SUBDIR
     else:
         base = DATA_DIR
     base.mkdir(parents=True, exist_ok=True)
-    return base / f"{scene}_{stem}_{_cache_suffix()}.npz"
+    return base / f"{scene}_{stem}_{_cache_suffix()}_p{patch_fingerprint(scene)}.npz"
 
 
 def _coords_for(scene):
