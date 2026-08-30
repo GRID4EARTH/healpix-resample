@@ -16,10 +16,10 @@ experiment notebook:
     from publish_paper_assets import publish
     publish()
 
-Figures are discovered from `tex/main.tex` itself: every `\\includegraphics`
-target is resolved against `notebooks/figures/`. The paper is therefore the
-authority on what needs publishing, and a figure that the paper stopped citing
-simply stops being copied.
+Figures are discovered from `tex/main.tex` AND `tex/supplement.tex`: every
+`\\includegraphics` target is resolved against `notebooks/figures/`. The two
+documents are therefore the authority on what needs publishing, and a figure
+that both stopped citing simply stops being copied.
 
 Tables have no such link (the paper hard-codes its numbers rather than
 `\\input`-ing them), so the CSVs that back each table are declared explicitly
@@ -59,6 +59,7 @@ TABLE_SOURCES = [
     "real_groundtruth_downscale_metrics.csv",
     "real_groundtruth_downscale_anisotropic_24x45_table.csv",
     "real_groundtruth_downscale_width_sweep.csv",
+    "real_groundtruth_multiregion_xref_ablation.csv",
     "real_groundtruth_multiregion_table.csv",
     "real_groundtruth_multiregion_products.csv",
     "real_groundtruth_multiregion_quality.csv",
@@ -85,18 +86,24 @@ def _sha256(path: Path, chunk=1 << 20) -> str:
     return h.hexdigest()
 
 
-def figures_cited_by_paper(main_tex: Path) -> list[str]:
-    """Basenames of every figure the paper includes, in citation order."""
-    tex = main_tex.read_text(encoding="utf-8")
-    targets = re.findall(r"\\includegraphics(?:\[[^\]]*\])?\s*\{\s*([^}]+?)\s*\}", tex)
+def figures_cited_by_paper(*tex_files: Path) -> list[str]:
+    """Basenames of every figure the given documents include, in citation
+    order, main paper first. Missing files are skipped (the supplement may
+    not exist in every branch)."""
     seen, out = set(), []
-    for t in targets:
-        name = Path(t.strip()).name
-        if not Path(name).suffix:
-            name += ".pdf"
-        if name not in seen:
-            seen.add(name)
-            out.append(name)
+    for tex_path in tex_files:
+        if not tex_path.exists():
+            continue
+        tex = tex_path.read_text(encoding="utf-8")
+        targets = re.findall(
+            r"\\includegraphics(?:\[[^\]]*\])?\s*\{\s*([^}]+?)\s*\}", tex)
+        for t in targets:
+            name = Path(t.strip()).name
+            if not Path(name).suffix:
+                name += ".pdf"
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
     return out
 
 
@@ -137,13 +144,14 @@ def publish(repo_root=None, check_only: bool = False, verbose: bool = True,
     nb_fig, nb_tab = root / "notebooks" / "figures", root / "notebooks" / "tables"
     tex_fig, tex_tab = root / "tex" / "figures", root / "tex" / "tables"
     main_tex = root / "tex" / "main.tex"
+    supp_tex = root / "tex" / "supplement.tex"
 
     report: dict[str, list[str]] = {}
 
     def record(status, name):
         report.setdefault(status, []).append(name)
 
-    cited = figures_cited_by_paper(main_tex)
+    cited = figures_cited_by_paper(main_tex, supp_tex)
     for name in cited:
         record(_sync(nb_fig / name, tex_fig / name, check_only, force), f"figures/{name}")
 
@@ -151,8 +159,8 @@ def publish(repo_root=None, check_only: bool = False, verbose: bool = True,
         record(_sync(nb_tab / name, tex_tab / name, check_only, force), f"tables/{name}")
 
     if verbose:
-        print(f"publish_paper_assets: {len(cited)} figures cited by main.tex, "
-              f"{len(TABLE_SOURCES)} declared table CSVs")
+        print(f"publish_paper_assets: {len(cited)} figures cited by "
+              f"main.tex+supplement.tex, {len(TABLE_SOURCES)} declared table CSVs")
         for status in ("added", "updated", "would-add", "would-update",
                        "newer-in-tex", "up-to-date", "missing-source"):
             names = report.get(status)

@@ -1199,6 +1199,58 @@ def reconstruct_psf_aware(scene_name, force=True):
     return dict(np.load(out_npz, allow_pickle=True))
 
 
+def reconstruct_xref(scene_name, force=True):
+    """Zero-correction ablation: the normalized Gaussian aggregate
+    x_ref = B y, scored as a method in its own right.
+
+    This is the closest competitor to the full estimator -- everything except
+    the CG correction -- so it isolates what the inversion itself buys over
+    plain dual-normalized Gaussian aggregation. A reviewer asking "does the
+    gain come from the inversion, or just from the smart aggregation?" is
+    answered by exactly this arm.
+
+    Extraction is done through the public API rather than by reimplementing
+    the reference computation: ``resample(..., max_iter=0)`` leaves the CG
+    loop unentered, so delta = 0 and the returned field is exactly
+    x_ref = y_filled @ M, with the SAME operator construction, NaN handling,
+    support threshold and cell ids as the full solve. Nothing about the
+    estimator is duplicated, so the two arms cannot silently diverge.
+
+    The operator is rebuilt here (~0.3 s/patch) instead of piggybacking on
+    reconstruct_psf_aware's cache, because appending a field to that cache
+    would silently invalidate every existing npz. A separate cache stem keeps
+    both arms independently reproducible.
+    """
+    DATA_DIR.mkdir(exist_ok=True)
+    out_npz = _cache_npz_path(scene_name, "real_downscale_xref")
+    if out_npz.exists() and not force:
+        return dict(np.load(out_npz, allow_pickle=True))
+
+    ref = build_reference(scene_name, force=force)
+    g = build_coarse_grid(scene_name)
+
+    scale_m = fwhm_to_scale(RECON_FWHM_M)
+    npt = recommend_npt(scale_m, REF_LEVEL)["npt"]
+
+    resampler = PSFResampler(
+        lon_deg=g["lon_coarse"].reshape(-1), lat_deg=g["lat_coarse"].reshape(-1),
+        level=REF_LEVEL, sigma_m=scale_m, Npt=npt,
+        out_cell_ids=ref["cell_ids_ref"],
+        threshold=THRESHOLD, device=DEVICE, verbose=False,
+    )
+    # max_iter=0: the CG loop body never runs, delta stays at the zero
+    # initial vector, and the public API returns x_ref + 0 = B y. `lam` is
+    # then irrelevant but kept identical to the full arm for the cache tag.
+    res = resampler.resample(g["img_coarse"].reshape(-1),
+                             lam=LAMBDA_COARSE, max_iter=0)
+
+    np.savez_compressed(
+        out_npz, scene=scene_name,
+        cell_ids=np.asarray(res.cell_ids), cell_data=np.asarray(res.cell_data),
+    )
+    return dict(np.load(out_npz, allow_pickle=True))
+
+
 # =============================================================================
 # Baselines, evaluated at the same reference cell centres
 # =============================================================================
@@ -1397,6 +1449,13 @@ def run_all(force=False, csv_name=None, scenes=None):
             rows.append(compute_metrics(e, t, scene, "psf_aware"))
         except Exception as exc:
             print(f"[WARN] PSF-aware failed for {scene}: {exc}")
+
+        try:
+            d = reconstruct_xref(scene, force=force)
+            e, t, _ = align_and_mask(d["cell_ids"], d["cell_data"], ref, g)
+            rows.append(compute_metrics(e, t, scene, "xref"))
+        except Exception as exc:
+            print(f"[WARN] x_ref ablation failed for {scene}: {exc}")
 
         for method in CLASSICAL_METHODS:
             try:
@@ -2168,7 +2227,8 @@ def plot_paired_summary(metrics, pooled=None, fname="real_groundtruth_multiregio
                                 columns="method", values="rmse")
     competitors = [c for c in wide.columns if c != "psf_aware"]
     labels = {"classical_nearest": "Nearest", "classical_linear": "Bilinear",
-              "classical_cubic": "Bicubic", "richardson_lucy": "Richardson-Lucy"}
+              "classical_cubic": "Bicubic", "richardson_lucy": "Richardson-Lucy",
+              "xref": "Aggregate By"}
     classes = sorted(metrics.scene_class.unique())
     markers = dict(zip(classes, ["o", "s", "^", "D", "v", "P"]))
     colours = dict(zip(competitors, plt.rcParams["axes.prop_cycle"].by_key()["color"]))
@@ -2584,7 +2644,7 @@ def format_multiregion_table(summary, comparisons,
     fraction."""
     labels = {"psf_aware": "PSF-aware", "classical_nearest": "Nearest-neighbor",
               "classical_linear": "Bilinear", "classical_cubic": "Bicubic",
-              "richardson_lucy": "Richardson-Lucy"}
+              "richardson_lucy": "Richardson-Lucy", "xref": "Aggregate By"}
     records = []
     for cls in sorted(summary.scene_class.unique()):
         row = {"Scene class": cls}
