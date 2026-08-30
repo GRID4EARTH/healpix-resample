@@ -1,10 +1,10 @@
 healpix-resample frozen input bundle
-commit:      34c34419400c2fd7dfd786d57488db2111bae206
-short:       34c3441
+commit:      981456147b996aa5348e30c3f00658bec8e57280
+short:       9814561
 branch:      PaperPlots
-describe:    v2026.07.0-80-g34c3441
-commit_date: 2026-08-26T07:29:05+00:00
+describe:    v2026.07.0-82-g9814561
+commit_date: 2026-08-26T07:52:53+00:00
 remote:      git@github.com:GRID4EARTH/healpix-resample.git
 dataset_doi: 10.5281/zenodo.22107490
-packed_utc:  2026-08-26T07:29:51+00:00
-clean_tree:  no
+packed_utc:  2026-08-26T07:58:18+00:00
+clean_tree:  yes
