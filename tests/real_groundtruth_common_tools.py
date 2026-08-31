@@ -524,6 +524,12 @@ def check_eopf_engine(raise_on_missing=False):
     Both surface as ``ValueError: unrecognized engine 'eopf-zarr'`` only once
     a download is attempted, i.e. after a STAC query per scene. Call this
     first instead.
+
+    Since the frozen bundle moved to Zarr format 3, the default `notebooks`
+    environment deliberately does NOT ship xarray-eopf: every released
+    version of it requires zarr < 3, which cannot read the bundle. EOPF
+    re-acquisition must therefore run in the dedicated `eopf-acquire` pixi
+    environment (`pixi run -e eopf-acquire ...`), and nothing else should.
     """
     try:
         from xarray.backends import list_engines
@@ -737,7 +743,7 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
     is_region = scene in region_coordinates or scene.startswith("region__")
     if is_region and REGION_STAC_SOURCE == "earth-search":
         ds_patch = _fetch_patch_earth_search(scene, coords, patch_size, band)
-        ds_patch.to_zarr(path, mode="w")
+        ds_patch.to_zarr(path, mode="w", **_zarr_v2_kwargs())
         return
 
     catalog = pystac_client.Client.open("https://stac.core.eopf.eodc.eu")
@@ -750,7 +756,7 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
             _ds = xr.open_zarr(
                 fsspec.get_mapper(f"{MIRROR_BASE}/{pinned}.zarr"), consolidated=True
             )
-            _ds.to_zarr(path, mode="w")
+            _ds.to_zarr(path, mode="w", **_zarr_v2_kwargs())
             print(f"[{scene}] mirror  <- {pinned}"
                   f"  (cloud {_ds.attrs.get('source_cloud_cover', '?')}%)")
             return
@@ -824,7 +830,7 @@ def extract_bench_data(scene, patch_size=None, force=False, coords=None, band=No
     ds_patch.attrs["source_stac_endpoint"] = "https://stac.core.eopf.eodc.eu"
     ds_patch.attrs["source_datetime"] = str(_props.get("datetime", ""))
     ds_patch.attrs["source_cloud_cover"] = str(_props.get("eo:cloud_cover", ""))
-    ds_patch.to_zarr(path, mode="w")
+    ds_patch.to_zarr(path, mode="w", **_zarr_v2_kwargs())
 
 
 # =============================================================================
@@ -1720,6 +1726,25 @@ def check_region_sites(scenes=None):
     return df
 
 
+def _zarr_v2_kwargs():
+    """Keyword arguments forcing `to_zarr` to write Zarr FORMAT 2.
+
+    The frozen bundle is uniformly format 2 (readable by zarr-python 2.x and
+    3.x alike). The 40 region patches were once acquired on a machine whose
+    zarr-python 3 silently wrote format 3, which zarr 2 cannot read -- the
+    mix cost a reproduction attempt and an environment split before being
+    converted back (notebooks/convert_zarr_stores_to_v2.py). This helper
+    makes the invariant hold at the WRITER, not just in the environment
+    pins: under zarr-python >= 3 it passes zarr_format=2 explicitly; under
+    zarr-python 2 (which can only write format 2) it passes nothing, since
+    the kwarg does not exist there.
+    """
+    import zarr
+    if int(str(zarr.__version__).split(".")[0]) >= 3:
+        return {"zarr_format": 2}
+    return {}
+
+
 def region_provenance(scenes=None, verbose=True):
     """Report where each region patch actually came from, store by store.
 
@@ -1744,8 +1769,20 @@ def region_provenance(scenes=None, verbose=True):
         path = scene_zarr_path(scene)
         row = {"scene": scene, "present": path.exists(), "endpoint": "",
                "product_id": "", "baseline": "", "boa_offset_dn": "",
-               "homogeneous": False}
+               "zarr_format": "", "homogeneous": False}
         if path.exists():
+            # Filesystem-level format detection, valid under any zarr version:
+            # a format-3 store under zarr-python 2 fails to OPEN, which would
+            # otherwise be indistinguishable from corruption and earn a
+            # catastrophic "re-download it" recommendation. Wrong format has
+            # a cheaper, lossless remedy: the converter.
+            row["zarr_format"] = ("3" if (path / "zarr.json").exists() else
+                                  "2" if (path / ".zgroup").exists() else "?")
+            if row["zarr_format"] == "3":
+                row["endpoint"] = ("<format-3 store: run notebooks/"
+                                   "convert_zarr_stores_to_v2.py, do NOT refetch>")
+                rows.append(row)
+                continue
             try:
                 dt = xr.open_datatree(path, engine="zarr",
                                       consolidated=False, chunks={})
@@ -1767,7 +1804,10 @@ def region_provenance(scenes=None, verbose=True):
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    needs = df.loc[~df.homogeneous, "scene"].tolist()
+    # Format-3 stores are healthy data in the wrong container: they need the
+    # converter, never a refetch (a refetch would replace pinned products).
+    needs = df.loc[~df.homogeneous & (df.zarr_format != "3"), "scene"].tolist()
+    needs_convert = df.loc[df.zarr_format == "3", "scene"].tolist()
     if verbose:
         n_ok = int(df.homogeneous.sum())
         print(f"Provenance: {n_ok}/{len(df)} stores come from "
@@ -1783,6 +1823,11 @@ def region_provenance(scenes=None, verbose=True):
                   "product ids change, so the paper's numbers must be "
                   "re-derived rather than patched.")
     df.attrs["needs_refetch"] = needs
+    df.attrs["needs_convert"] = needs_convert
+    if needs_convert and verbose:
+        print(f"\n{len(needs_convert)} store(s) are Zarr format 3 -- healthy "
+              "data, wrong container. Run "
+              "notebooks/convert_zarr_stores_to_v2.py; do not refetch them.")
     return df
 
 

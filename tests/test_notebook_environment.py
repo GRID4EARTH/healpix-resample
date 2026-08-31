@@ -132,7 +132,9 @@ def _engine_cases():
 def test_notebook_xarray_engines_are_registered(notebook, engine):
     """A wrong engine name raises only when that line is reached, needs network
     to reach, and is invisible to an import scan because the providing package
-    is never imported directly. Hence checking the registry instead."""
+    is never imported directly. Hence checking the registry instead.
+
+    """
     xarray = pytest.importorskip("xarray")
     available = sorted(xarray.backends.list_engines())
     assert engine in available, (

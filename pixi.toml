@@ -83,8 +83,13 @@ xarray = "*"
 # provides the engine="eopf-zarr" backend used to read Sentinel-2 from the
 # EOPF STAC. Nothing imports it by name, so an import scan will not see it.
 xarray-eopf = "*"
-# xarray-eopf does not support Zarr v3 yet; the notebook only round-trips its
-# own cache, so v2 is sufficient.
+# The frozen bundle is uniformly Zarr FORMAT 2 (enforced by
+# notebooks/convert_zarr_stores_to_v2.py and guarded in the fetchers, which
+# refuse to write anything else). Format 2 is readable by every zarr-python
+# since 2.11 AND by 3.x; xarray-eopf (every released version) requires
+# zarr < 3, which fixes the pin here. If the bundle ever contains a
+# format-3 store again, zarr 2 cannot read it and the failure looks like
+# data corruption -- run the converter, do not relax this pin.
 zarr = ">=2.11,<3"
 
 [environments]
