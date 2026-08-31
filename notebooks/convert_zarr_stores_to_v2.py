@@ -3,48 +3,52 @@
 
 Why
 ---
-The bundle drifted into MIXED Zarr formats: the four benchmark scenes and
-the Esri stores were written under zarr-python 2.x (format 2), while the 40
-region patches were acquired later under zarr-python 3.x, which writes
-format 3 by default. Format 3 is unreadable by zarr-python 2.x, so the mix
-forced an awkward environment split and, worse, made "unsupported format"
-errors indistinguishable from data corruption. Uniform format 2 is readable
-by every zarr-python since 2.11 *and* by 3.x, and removes the whole class
-of reviewer questions.
+The bundle drifted into MIXED Zarr formats: most stores are format 2, but
+the four ``esri_latent`` stores were (re)written on a machine whose
+zarr-python 3 silently produced format 3, which zarr-python 2.x cannot
+read. Uniform format 2 is readable by every zarr-python since 2.11 *and*
+by 3.x, and removes the whole class of reviewer questions.
 
-What it does
-------------
+How
+---
+The copy uses the RAW zarr API, not xarray. This is deliberate: the
+format-3 stores in this bundle were written with ``zarr.open_group`` (see
+``_write_esri_latent_zarr`` in the notebooks) and carry no xarray dimension
+metadata, so ``xr.open_datatree`` refuses them outright
+(``KeyError: dimension_names``). A raw group-and-array copy has no such
+requirement and is strictly more general. One semantic translation is
+handled: if a format-3 array does carry ``dimension_names`` (the
+xarray-written case), it is stored as the ``_ARRAY_DIMENSIONS`` attribute
+in the format-2 copy, which is the v2 convention for the same information.
+
 For every ``*.zarr`` directory under the bundle paths:
 
 1. Detect the format from the filesystem (``zarr.json`` => 3,
-   ``.zgroup`` => 2) -- no zarr import needed for detection, so the report
-   mode works in any environment.
+   ``.zgroup``/``.zarray`` => 2) -- works in any environment, so
+   ``--report`` needs nothing installed.
 2. Format-2 stores are left untouched (idempotent).
-3. Format-3 stores are read with xarray, rewritten next to the original
-   with ``zarr_format=2``, then VERIFIED: every group, variable, coordinate,
-   dtype, value (bitwise, NaN-aware) and attribute of the copy is compared
-   against the original. Only on a perfect match is the original replaced
-   (atomically: original moved aside, copy moved in, backup deleted).
-4. Any mismatch aborts with the original left in place.
+3. Format-3 stores are copied next to the original as format 2, then
+   VERIFIED: every group, array, dtype, shape, value (bitwise, NaN-aware)
+   and attribute is compared. Only on a perfect match is the original
+   replaced atomically. Any mismatch aborts with the original untouched.
 
-Requirements: run it ONCE in an environment with zarr-python >= 3 (the only
-zarr that reads both formats), e.g.::
+Chunk sizes and fill values are preserved; the compressor is the format-2
+default (byte-level layout is allowed to differ -- the manifest is
+re-hashed afterwards anyway).
 
-    pixi exec --spec "python=3.12" --spec "zarr>=3" --spec "xarray" \\
-        --spec "dask" python notebooks/convert_zarr_stores_to_v2.py
+Requirements: zarr >= 3 and numpy, nothing else (zarr 3 is the only
+zarr-python that READS both formats)::
 
-or any throwaway conda/pip env with ``zarr>=3 xarray dask``. The regular
-``notebooks`` environment (zarr < 3, for xarray-eopf) cannot read the
-format-3 inputs and is deliberately not suitable.
+    pixi exec --spec "python=3.12" --spec "zarr>=3" --spec numpy \\
+        python notebooks/convert_zarr_stores_to_v2.py
 
-After converting, rebuild the manifest and the archives -- every converted
-store changes bytes, so SHA-256 and MD5 values change, and a new Zenodo
-version must be published:
+After converting, re-hash and re-publish -- the converted stores' bytes
+changed::
 
     python notebooks/build_data_manifest.py --doi <new version DOI>
     python notebooks/build_zenodo_archives.py --doi <new version DOI>
 
-Report only (no writes, works everywhere)::
+Report only (no writes)::
 
     python notebooks/convert_zarr_stores_to_v2.py --report
 """
@@ -80,51 +84,85 @@ def find_stores() -> list[Path]:
     return [p for p in out if p.is_dir()]
 
 
-def _compare_trees(a, b, where: str, errors: list[str]) -> None:
+def _array_dims(arr):
+    """dimension_names of a format-3 array, if any (else None)."""
+    meta = getattr(arr, "metadata", None)
+    return getattr(meta, "dimension_names", None)
+
+
+def _copy_group(src, dst) -> None:
     import numpy as np
 
-    if dict(a.attrs) != dict(b.attrs):
-        errors.append(f"{where}: root/group attrs differ")
-    a_vars = set(a.ds.variables) if hasattr(a, "ds") else set(a.variables)
-    b_vars = set(b.ds.variables) if hasattr(b, "ds") else set(b.variables)
-    if a_vars != b_vars:
-        errors.append(f"{where}: variable sets differ ({a_vars ^ b_vars})")
+    dst.attrs.update(dict(src.attrs))
+    for name, arr in sorted(src.arrays()):
+        data = arr[...]
+        create = getattr(dst, "create_array", None) or dst.create_dataset
+        out = create(
+            name, shape=arr.shape, dtype=arr.dtype,
+            chunks=arr.chunks, fill_value=arr.fill_value,
+        )
+        out[...] = data
+        attrs = dict(arr.attrs)
+        dims = _array_dims(arr)
+        if dims is not None and "_ARRAY_DIMENSIONS" not in attrs:
+            # v3 keeps dimensions in array metadata; v2 keeps them in this
+            # attribute. Translate so xarray-written stores stay readable.
+            attrs["_ARRAY_DIMENSIONS"] = list(dims)
+        out.attrs.update(attrs)
+    for name, sub in sorted(src.groups()):
+        _copy_group(sub, dst.create_group(name))
+
+
+def _compare_groups(a, b, where: str, errors: list[str]) -> None:
+    import numpy as np
+
+    a_attrs, b_attrs = dict(a.attrs), dict(b.attrs)
+    if a_attrs != b_attrs:
+        errors.append(f"{where}: group attrs differ")
+    a_arrays = dict(a.arrays())
+    b_arrays = dict(b.arrays())
+    if set(a_arrays) != set(b_arrays):
+        errors.append(f"{where}: array sets differ "
+                      f"({set(a_arrays) ^ set(b_arrays)})")
         return
-    a_ds = a.ds if hasattr(a, "ds") else a
-    b_ds = b.ds if hasattr(b, "ds") else b
-    for name in a_vars:
-        va, vb = a_ds[name], b_ds[name]
+    for name, va in a_arrays.items():
+        vb = b_arrays[name]
         if va.dtype != vb.dtype:
             errors.append(f"{where}/{name}: dtype {va.dtype} != {vb.dtype}")
             continue
-        if dict(va.attrs) != dict(vb.attrs):
-            errors.append(f"{where}/{name}: attrs differ")
-        xa, xb = np.asarray(va.values), np.asarray(vb.values)
-        if xa.shape != xb.shape:
-            errors.append(f"{where}/{name}: shape {xa.shape} != {xb.shape}")
-        elif xa.dtype.kind in "fc":
-            if not np.array_equal(xa, xb, equal_nan=True):
-                errors.append(f"{where}/{name}: values differ")
-        elif not np.array_equal(xa, xb):
+        if va.shape != vb.shape:
+            errors.append(f"{where}/{name}: shape {va.shape} != {vb.shape}")
+            continue
+        xa, xb = np.asarray(va[...]), np.asarray(vb[...])
+        equal = (np.array_equal(xa, xb, equal_nan=True)
+                 if xa.dtype.kind in "fc" else np.array_equal(xa, xb))
+        if not equal:
             errors.append(f"{where}/{name}: values differ")
-    if hasattr(a, "children"):
-        for key in set(a.children) | set(b.children):
-            if key not in a.children or key not in b.children:
-                errors.append(f"{where}: child group {key!r} missing on one side")
-                continue
-            _compare_trees(a.children[key], b.children[key],
-                           f"{where}/{key}", errors)
+        ea = dict(va.attrs)
+        eb = dict(vb.attrs)
+        # The copy may legitimately ADD _ARRAY_DIMENSIONS (translated from
+        # v3 metadata); everything else must match exactly.
+        dims = _array_dims(va)
+        if dims is not None and "_ARRAY_DIMENSIONS" not in ea:
+            ea["_ARRAY_DIMENSIONS"] = list(dims)
+        if ea != eb:
+            errors.append(f"{where}/{name}: attrs differ")
+    a_groups = dict(a.groups())
+    b_groups = dict(b.groups())
+    for key in set(a_groups) | set(b_groups):
+        if key not in a_groups or key not in b_groups:
+            errors.append(f"{where}: child group {key!r} missing on one side")
+            continue
+        _compare_groups(a_groups[key], b_groups[key], f"{where}/{key}", errors)
 
 
 def convert(path: Path) -> bool:
-    import xarray as xr
     import zarr
 
     if int(str(zarr.__version__).split(".")[0]) < 3:
         raise SystemExit(
             f"zarr-python {zarr.__version__} cannot READ the format-3 stores "
-            "to be converted. Run this script in a throwaway env with "
-            "zarr>=3 (see module docstring)."
+            "to be converted. Run this script with zarr>=3 (see docstring)."
         )
 
     tmp = path.with_name(path.name + ".v2tmp")
@@ -133,14 +171,14 @@ def convert(path: Path) -> bool:
         if stale.exists():
             shutil.rmtree(stale)
 
-    dt = xr.open_datatree(path, engine="zarr", consolidated=False, chunks={})
-    dt.to_zarr(tmp, mode="w", zarr_format=2, consolidated=False)
+    src = zarr.open_group(str(path), mode="r")
+    dst = zarr.open_group(str(tmp), mode="w", zarr_format=2)
+    _copy_group(src, dst)
 
-    src = xr.open_datatree(path, engine="zarr", consolidated=False, chunks={})
-    dst = xr.open_datatree(tmp, engine="zarr", consolidated=False, chunks={})
+    src = zarr.open_group(str(path), mode="r")
+    dst = zarr.open_group(str(tmp), mode="r")
     errors: list[str] = []
-    _compare_trees(src, dst, path.name, errors)
-    src.close(); dst.close(); dt.close()
+    _compare_groups(src, dst, path.name, errors)
     if errors:
         shutil.rmtree(tmp)
         print(f"  VERIFICATION FAILED for {path.name}; original untouched:")
