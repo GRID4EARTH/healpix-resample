@@ -116,20 +116,7 @@ Traditional resampling techniques---such as nearest-neighbor, bilinear, and cubi
 
 When the target grid has a finer resolution than the original sampling, PSF-aware resampling becomes closely connected to image restoration and model-based super-resolution. The goal is not to fabricate independent sub-pixel details, but to infer a latent field whose spatial response is still compatible with the acquired image. This inverse problem is only partially constrained---especially at higher spatial frequencies---and thus demands explicit regulation of the poorly observed components \cite{richardson1972bayesian,lucy1974iterative,elad1997restoration,park2003superresolution,farsiu2004advances}.
 
-We present \texttt{healpix-resample}, a \psf-aware framework
-for transferring projected EO images onto \healpix
-(Fig.~\ref{fig:workflow}). Pixels on
-the source grid are interpreted as sparse, spatially weighted
-samples of an underlying \healpix field. Two dual-normalized
-transfer operators connect the source and target grids, forming
-an exact adjoint pair with respect to grid-dependent weighted
-inner products. The latent field is estimated via a matrix-free,
-weighted inverse problem that simultaneously accounts for the
-assumed spatial response and the combined projected-grid--\healpix
-geometry. The mathematical construction depends only on sample
-geolocations and a local spatial-response model; the released interface and
-the validation reported here are narrower, using a scalar isotropic Gaussian
-and Sentinel-2 B04 imagery.
+We introduce \texttt{healpix-resample}, a \psf-aware framework for mapping projected EO imagery onto \healpix (Fig.~\ref{fig:workflow}). Rather than interpolating pixel values onto HEALPix cells, we ask the reverse question: what HEALPix field, once observed through the sensor's spatial response at the pixels' actual locations, would reproduce the recorded image? Answering it requires two sparse operators — a forward model and its weighted adjoint — and a matrix-free least-squares solve on GPU (Section III). Only sample geolocations and a local response model are needed; the released interface and the validation here use a scalar isotropic Gaussian and Sentinel-2 B04.
 
 The validation is organized around two recovery benchmarks and one
 auxiliary consistency check. First, a controlled synthetic-detector
@@ -269,7 +256,7 @@ g_{ij}
 \end{equation}
 
 where $s_{\psf}$ controls the width of the effective spatial
-response. With this convention, the corresponding full width at
+response\footnote{The isotropic Gaussian of Eq.~\eqref{eq:raw_weight} is a choice, not a structural requirement: every subsequent step uses only the numeric weights $g_{ij}$, so a more complex response — anisotropic, spatially varying, or different for each measurement, detector, or acquisition — can be substituted for $g$ without changing the normalizations, the weighted-adjoint relation of Eq.~\eqref{eq:dxdy}, or the solver. The released interface currently exposes only the scalar width $s_{PSF}$ (Section \ref{sec:auxiliary_controls}).}. With this convention, the corresponding full width at
 half maximum is
 
 \begin{equation}
@@ -493,7 +480,7 @@ problem
 \label{eq:weighted_variational}
 \end{equation}
 
-with $\mathbf r_{\mathrm{ref}}$ defined in Eq.~\eqref{eq:initial_residual}. Setting the gradient of Eq.~\eqref{eq:weighted_variational} to zero yields $\mathbf A^{\mathsf T}\mathbf D_y(\mathbf A\boldsymbol\delta-\mathbf r_{\mathrm{ref}}) +\lambda\mathbf D_x\boldsymbol\delta=\mathbf 0$. Left-multiplying by $\mathbf D_x^{-1}$ and inserting Eq.~\eqref{eq:weighted_adjoint} leads exactly back to Eq.~\eqref{eq:correction_system}. For $\lambda=0$, the system becomes positive semi-definite, and the solution may no longer be unique if the target field includes more degrees of freedom than there are observations. In the numerical experiments, CG is started from the zero vector and terminated after at most 14 iterations, which selects a particular Krylov-subspace solution and yields an implicit iterative regularization.
+with $\mathbf r_{\mathrm{ref}}$ defined in Eq.~\eqref{eq:initial_residual}. Setting the gradient of Eq.~\eqref{eq:weighted_variational} to zero yields $\mathbf A^{\mathsf T}\mathbf D_y(\mathbf A\boldsymbol\delta-\mathbf r_{\mathrm{ref}}) +\lambda\mathbf D_x\boldsymbol\delta=\mathbf 0$. Left-multiplying by $\mathbf D_x^{-1}$ and inserting Eq.~\eqref{eq:weighted_adjoint} leads exactly back to Eq.~\eqref{eq:correction_system}. For $\lambda=0$, the system becomes positive semi-definite, and the solution may no longer be unique if the target field includes more degrees of freedom than there are observations. In the numerical experiments, conjugate-gradient iteration~\cite{hestenes1952cg} (CG) is started from the zero vector and terminated after at most 14 iterations, which selects a particular Krylov-subspace solution and yields an implicit iterative regularization.
 
 \paragraph{Zero-correction reference.}
 The initial estimator $\mathbf x_{\mathrm{ref}}=\mathbf B\mathbf y$ is the
@@ -514,27 +501,21 @@ the cell-aligned numerical export needed for that additional check.
 
 \subsection{Matrix-Free Iterative Solution}
 \label{sec:matrix_free_solution}
-
 The current implementation solves
-Eq.~\eqref{eq:correction_system} using a matrix-free
-conjugate-gradient iteration~\cite{hestenes1952cg}; a matrix-free LSQR
-iteration~\cite{paige1982lsqr} would apply equally to the same weighted
-normal equations and is not explored here. The composite matrix
-$\mathbf{B}\mathbf{A}$ is never assembled explicitly. For a trial
-correction $\mathbf{v}$, the required operator application is
-evaluated as
-
-\begin{equation}
-\mathbf{v}
-\mapsto
-\mathbf{B}
-\left(
-\mathbf{A}\mathbf{v}
-\right)
-+
-\lambda\mathbf{v}.
-\label{eq:matrix_free_operator}
-\end{equation}
+Eq.~\eqref{eq:correction_system} using a matrix-free CG. CG is the natural
+match for this system: the operator is self-adjoint and positive-definite
+in the $\mathbf D_x$ metric (shown below), so CG applies to
+Eq.~\eqref{eq:correction_system} exactly as posed, with one fused
+application $\mathbf v\mapsto\mathbf B(\mathbf A\mathbf v)+\lambda\mathbf v$
+per iteration, and, started from zero, it minimizes the weighted objective
+of Eq.~\eqref{eq:weighted_variational} over a growing Krylov subspace --
+the property behind the zero-correction bound of
+Eq.~\eqref{eq:zero_correction_bound}. A matrix-free LSQR
+iteration~\cite{paige1982lsqr} is mathematically equivalent on this
+system at the same per-iteration cost; its better numerical behaviour on
+ill-conditioned normal equations matters when iterating to tight
+tolerances, not in the present damped ($\lambda>0$), 14-iteration
+regime, and is not explored here.
 
 Each iteration therefore requires one sparse application of
 $\mathbf{A}$ and one sparse application of $\mathbf{B}$. If each
@@ -1035,7 +1016,8 @@ Section~\ref{sec:real_downscale_multiregion}, with the region as the
 independent unit.
 
 The matched \psf-aware reconstruction has the lowest RMSE in
-\emph{every one of the 40 regions, against every one of the four competitors}.
+\emph{every one of the 40 regions, against every one of the four competitors}
+(and against its own zero-correction arm, below).
 Pooling regions and pairing each competitor against \psf-aware within the same
 region -- so that between-site scene variability cancels -- gives an exact
 two-sided sign test of $p=1.8\times10^{-12}$ for each competitor, and a mean
@@ -1059,6 +1041,23 @@ blurrier field: $0.0017$ [$0.0011$, $0.0024$] against Richardson--Lucy and
 $0.0030$ [$0.0021$, $0.0039$] against bicubic, versus $0.0024$ and $0.0041$
 for the primary reference. Absolute RMSE values are not comparable between
 the two references; only the ordering is compared.
+
+The same 40 regions also answer where the gain comes from. The
+zero-correction arm $\mathbf x_{\mathrm{ref}}=\mathbf B\mathbf y$ -- the
+full estimator minus only the CG correction, extracted through the
+estimator's own code path by solving with zero iterations
+(Section~\ref{sec:matrix_free_solution}) -- is scored on the same cells and
+mask as every other method. Alone, it is the \emph{weakest} method tested:
+its mean RMSE exceeds even nearest-neighbor interpolation in every scene
+class, as expected for a normalized Gaussian aggregation that adds smoothing
+to an already blurred observation. The correction reverses this completely,
+reducing RMSE relative to $\mathbf B\mathbf y$ in all 40 regions
+($p=1.8\times10^{-12}$; paired difference $0.0061$ [$0.0044$, $0.0080$]),
+by $21.6\%$ over water, $31.5\%$ over forest, $32.3\%$ over urban and
+$33.5\%$ over agriculture on average, with per-region gains from $8.8\%$
+to $50.3\%$. The advantage of the method is therefore attributable to the
+inverse correction itself, not to the dual-normalized aggregation it starts
+from.
 
 \begin{table}[t]
 \centering
@@ -1087,9 +1086,10 @@ Water       & 10 & \textbf{0.0022} & 0.0025 & 0.0003 [0.0001, 0.0005] \\
 \centering
 \includegraphics[width=\textwidth]{real_groundtruth_multiregion_paired.pdf}
 \caption{Multi-region controlled reduced-resolution validation over 40 Sentinel-2 regions.
-\emph{Left:} one point per region and competitor, competitor RMSE against
-\psf-aware RMSE; every point lies above the identity line, so \psf-aware wins
-in every region. Marker shape denotes scene class. \emph{Right:} mean paired
+\emph{Left:} one point per region and competitor -- the four baselines and
+the zero-correction aggregate $\mathbf B\mathbf y$ -- against \psf-aware
+RMSE; every point lies above the identity line, so the full method wins in
+every region. Marker shape denotes scene class. \emph{Right:} mean paired
 RMSE difference per competitor with its $95\%$ region-bootstrap interval,
 annotated with the win count and the exact two-sided sign test.}
 \label{fig:real_multiregion_paired}
