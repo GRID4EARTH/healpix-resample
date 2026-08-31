@@ -16,6 +16,45 @@ ZENODO_RECORD_URL = f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
 SCENES = ("urban", "water", "forest", "agriculture")
 
 
+# --- Zarr format-2 invariant --------------------------------------------------
+#
+# The frozen bundle is uniformly Zarr FORMAT 2, readable by zarr-python 2.x
+# and 3.x alike. That invariant once broke silently: region patches acquired
+# on a machine with zarr-python 3 were written as format 3, which zarr 2
+# cannot read, and the failure surfaced weeks later on a reproducer's machine
+# looking exactly like data corruption. Environment pins cannot prevent a
+# recurrence, because the acquisition machine is not always the pixi
+# environment -- so the invariant is enforced HERE, at every writer. Any
+# notebook or helper that creates a store must go through one of these two
+# functions instead of calling zarr/xarray directly.
+
+def zarr_v2_kwargs() -> dict:
+    """Kwargs forcing ``Dataset.to_zarr``/``DataTree.to_zarr`` to format 2.
+
+    Under zarr-python >= 3 this passes ``zarr_format=2`` explicitly; under
+    zarr-python 2 (which can only write format 2, and does not know the
+    kwarg) it passes nothing.
+    """
+    import zarr
+
+    if int(str(zarr.__version__).split(".")[0]) >= 3:
+        return {"zarr_format": 2}
+    return {}
+
+
+def open_zarr_group_w_v2(path):
+    """``zarr.open_group(path, mode="w")`` pinned to format 2.
+
+    For the raw zarr-python API (used by the Esri patch-cache writers),
+    which has its own default format independent of xarray's.
+    """
+    import zarr
+
+    if int(str(zarr.__version__).split(".")[0]) >= 3:
+        return zarr.open_group(str(path), mode="w", zarr_format=2)
+    return zarr.open_group(str(path), mode="w")
+
+
 def find_repo_root(start: Path | None = None) -> Path:
     """Locate the checkout independently of the Jupyter working directory."""
     current = Path(start or Path.cwd()).resolve()
