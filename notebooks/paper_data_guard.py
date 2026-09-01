@@ -182,13 +182,11 @@ NOTEBOOK_REQUIREMENTS = {
     "multi_patch_latitude_validation.ipynb": {
         "regen_globs": [("notebooks/data/multi_patch_latitude/esri_patch_cache/*.zarr", 360)],
     },
-    "throughput_scaling_benchmark.ipynb": {
-        "prereq_globs": [(
-            "notebooks/data/multi_patch_latitude/esri_patch_cache/*.zarr", 360,
-            "run multi_patch_latitude_validation.ipynb first: it regenerates "
-            "the Esri patch cache from the pinned Wayback release",
-        )],
-    },
+    # No hard requirement: the benchmark prefers the 40 archived Sentinel-2
+    # region patches (Zenodo bundle, redistributable), then the Esri cache,
+    # then the git-versioned site manifest with deterministic synthetic
+    # textures -- construction timings depend on geometry only.
+    "throughput_scaling_benchmark.ipynb": {},
     "conservative_flux_ERA5.ipynb": {
         "files": ["notebooks/outputFLUX.grib"],
     },

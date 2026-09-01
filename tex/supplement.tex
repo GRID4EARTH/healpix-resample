@@ -856,8 +856,12 @@ Water       & $+17\%$ & $+69\%$  & $+202\%$ \\
 Section~\ref{sec:hpx_datacube_implications} times one patch at a time.
 A dedicated notebook benchmark on the same NVIDIA A100 80GB PCIe
 system as
-Section~\ref{sec:hpx_datacube_implications} reuses patches cached
-by the multi-region validation and times batch sizes from 1 to 2048
+Section~\ref{sec:hpx_datacube_implications} draws its patch pool
+from the 40 archived real Sentinel-2 region patches of the Zenodo bundle
+(falling back, when those are absent, to the Esri cache or to the
+site-manifest geometries with deterministic synthetic textures;
+construction cost depends on geometry only) and times
+batch sizes from 1 to 2048
 under three
 regimes: one operator shared across a batch of repeated acquisitions
 of the same footprint (independent per-item radiometric noise only);
