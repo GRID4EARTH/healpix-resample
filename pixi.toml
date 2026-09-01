@@ -63,8 +63,11 @@ isort = "*"
 # checkout. All conda-forge: mixing a PyPI pyproj wheel with conda's libproj
 # breaks PROJ's database lookup and silently unregisters the eopf-zarr backend.
 cfgrib = "*"
-foscat = "*"
-healpy = "*"
+# healpy and foscat are deliberately ABSENT: no paper notebook uses healpy
+# any more (healpix-geo shims in paper_data_guard replace ang2pix/pix2ang,
+# bit-identically), and foscat -- the only remaining consumer, via the
+# exploratory Test_regrid_to_healpix.ipynb -- depends on healpy and would
+# reintroduce it transitively.
 matplotlib-base = ">=3.7,<4"
 pandas = "*"
 pillow = "*"

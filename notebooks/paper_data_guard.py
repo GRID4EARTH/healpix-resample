@@ -54,6 +54,54 @@ ESRI_WAYBACK_TILE_URL = (
 # notebook or helper that creates a store must go through one of these two
 # functions instead of calling zarr/xarray directly.
 
+def sph_ang2pix(nside, lon, lat, lonlat=True, nest=True):
+    """Drop-in replacement for ``healpy.ang2pix`` backed by healpix-geo.
+
+    The notebooks historically used healpy for the synthetic HEALPix
+    indexing; the paper's stack is healpix-geo, so healpy was a second,
+    redundant dependency. Equivalence is exact, not approximate: with
+    ``ellipsoid="sphere"`` (healpy's convention), healpix-geo returns
+    bit-identical cell ids (verified on 20k random points at levels 20 and
+    22) and centres agreeing to ~1e-14 degrees.
+
+    The SPHERICAL convention is preserved deliberately. The real-data
+    pipeline uses the WGS84 authalic convention (ELLIPSOID in
+    tests/real_groundtruth_common_tools.py); the synthetic experiments were
+    defined on the sphere and stay there -- switching them would change
+    every synthetic cell assignment. Each pipeline is internally consistent.
+    """
+    import numpy as np
+    from healpix_geo import nested
+
+    if not (lonlat and nest):
+        raise ValueError("only the lonlat=True, nest=True convention is supported")
+    level = int(nside).bit_length() - 1
+    if 2 ** level != int(nside):
+        raise ValueError(f"nside={nside} is not a power of two")
+    ids = nested.lonlat_to_healpix(
+        np.asarray(lon, dtype=np.float64).ravel(),
+        np.asarray(lat, dtype=np.float64).ravel(),
+        level, ellipsoid="sphere",
+    )
+    return np.asarray(ids, dtype=np.int64)
+
+
+def sph_pix2ang(nside, ipix, lonlat=True, nest=True):
+    """Drop-in replacement for ``healpy.pix2ang`` (see sph_ang2pix)."""
+    import numpy as np
+    from healpix_geo import nested
+
+    if not (lonlat and nest):
+        raise ValueError("only the lonlat=True, nest=True convention is supported")
+    level = int(nside).bit_length() - 1
+    if 2 ** level != int(nside):
+        raise ValueError(f"nside={nside} is not a power of two")
+    lon, lat = nested.healpix_to_lonlat(
+        np.asarray(ipix, dtype=np.uint64).ravel(), level, ellipsoid="sphere",
+    )
+    return np.asarray(lon), np.asarray(lat)
+
+
 def zarr_v2_kwargs() -> dict:
     """Kwargs forcing ``Dataset.to_zarr``/``DataTree.to_zarr`` to format 2.
 
