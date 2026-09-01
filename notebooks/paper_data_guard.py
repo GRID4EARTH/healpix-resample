@@ -16,6 +16,32 @@ ZENODO_RECORD_URL = f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
 SCENES = ("urban", "water", "forest", "agriculture")
 
 
+# --- Esri World Imagery: pinned Wayback release ------------------------------
+#
+# The Esri-derived latent textures are NOT redistributed (Esri's terms grant
+# redistribution for static map images, not for machine-readable derived
+# datasets, and the underlying pixels belong to third-party providers).
+# Instead, every user regenerates them locally. Determinism across users and
+# years is provided by Esri World Imagery WAYBACK: dated, versioned snapshots
+# of the basemap whose tiles do not change after publication, unlike the live
+# World_Imagery service. The release below is therefore part of the
+# experiment definition, exactly like a Sentinel-2 product identifier, and
+# the SHA-256 values in data_manifest.csv pin the expected regeneration.
+#
+# Do not bump this number casually: a different release can contain updated
+# imagery for some patches, which changes the synthetic experiments' inputs
+# and requires re-deriving every synthetic result in the paper.
+#
+# Release catalogue: https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json
+WAYBACK_RELEASE = 26334
+WAYBACK_RELEASE_DATE = "2026-08-05"
+ESRI_WAYBACK_TILE_URL = (
+    "https://wayback.maptiles.arcgis.com/arcgis/rest/services/"
+    "World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/"
+    f"{WAYBACK_RELEASE}/{{z}}/{{y}}/{{x}}"
+)
+
+
 # --- Zarr format-2 invariant --------------------------------------------------
 #
 # The frozen bundle is uniformly Zarr FORMAT 2, readable by zarr-python 2.x

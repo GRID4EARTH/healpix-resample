@@ -25,9 +25,11 @@ Licence: CC BY 4.0.
 
 ## Esri World Imagery derivatives
 
-Derived from Esri World Imagery, zoom level 17.
+Derived from Esri World Imagery (Wayback release 26334, 2026-08-05),
+zoom level 17.
 
-Redistribution is permitted only if compatible with the applicable Esri
-and third-party imagery-provider terms. Provider-specific attribution and
-written permission references must be listed in ATTRIBUTION.md.
+These derivatives are NOT distributed with this dataset. They are
+regenerated locally by each user from the pinned Wayback release, under
+Esri's own terms of use, with the attribution listed in ATTRIBUTION.md.
+The Zenodo archive contains no Esri-derived pixels.
 

@@ -16,7 +16,11 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from paper_data_guard import WAYBACK_RELEASE, WAYBACK_RELEASE_DATE  # noqa: E402
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -84,12 +88,16 @@ def expected_assets(doi: str):
         ))
         rows.append(asset(
             f"notebooks/data/esri_latent/{scene}__z17_n256_os4.zarr",
-            asset_id=f"esri_latent_{scene}", category="primary_input",
-            source="Esri World Imagery", source_identifier=f"zoom=17;scene={scene}",
+            asset_id=f"esri_latent_{scene}", category="regenerated_input",
+            source=(f"Esri World Imagery Wayback release {WAYBACK_RELEASE} "
+                    f"({WAYBACK_RELEASE_DATE})"),
+            source_identifier=f"zoom=17;scene={scene};wayback={WAYBACK_RELEASE}",
             kind="zarr", required_by="test-resample-paper.ipynb;noise_sensitivity.ipynb",
             expected_shape="latent_hr:1024x1024 float32;x_hr:1024;y_hr:1024",
-            archive_doi=doi,
-            notes="PSF-independent luminance texture sampled on the frozen Sentinel grid.",
+            archive_doi="",
+            notes=("NOT redistributed (Esri terms). Regenerated locally by the "
+                   "notebook's acquisition cells from the pinned Wayback "
+                   "release; the SHA-256 here pins the expected regeneration."),
         ))
 
     sites_path = NOTEBOOKS / "tables" / "multi_patch_sites.csv"
@@ -99,17 +107,22 @@ def expected_assets(doi: str):
             rows.append(asset(
                 "notebooks/data/multi_patch_latitude/esri_patch_cache/"
                 f"{patch_id}__z17_n256_os4_gsd10.zarr",
-                asset_id=f"esri_multipatch_{patch_id}", category="primary_input",
-                source="Esri World Imagery",
+                asset_id=f"esri_multipatch_{patch_id}",
+                category="regenerated_input",
+                source=(f"Esri World Imagery Wayback release {WAYBACK_RELEASE} "
+                        f"({WAYBACK_RELEASE_DATE})"),
                 source_identifier=(
-                    f"zoom=17;lat={site['patch_lat']};lon={site['patch_lon']}"
+                    f"zoom=17;lat={site['patch_lat']};lon={site['patch_lon']};"
+                    f"wayback={WAYBACK_RELEASE}"
                 ), kind="zarr",
                 required_by=(
                     "multi_patch_latitude_validation.ipynb;"
                     "throughput_scaling_benchmark.ipynb"
                 ), expected_shape="latent_hr:1024x1024 float32",
-                archive_doi=doi,
-                notes="One of 360 selected patches; retain even when the reference degradation is degenerate.",
+                archive_doi="",
+                notes=("NOT redistributed (Esri terms). One of 360 patches "
+                       "regenerated locally from the pinned Wayback release; "
+                       "the SHA-256 here pins the expected regeneration."),
             ))
 
     # Real Sentinel-2 patches at the 40 region anchors, used by the
@@ -221,15 +234,28 @@ def main():
         writer.writeheader()
         writer.writerows(rows)
 
-    available = sum(row["status"] == "available" for row in rows)
-    missing = [row for row in rows if row["status"] != "available"]
-    print(f"Wrote {args.output}: {available}/{len(rows)} assets available")
+    archived = [r for r in rows if r["category"] != "regenerated_input"]
+    regen = [r for r in rows if r["category"] == "regenerated_input"]
+    a_ok = sum(r["status"] == "available" for r in archived)
+    r_ok = sum(r["status"] == "available" for r in regen)
+    print(f"Wrote {args.output}: {a_ok}/{len(archived)} archived assets, "
+          f"{r_ok}/{len(regen)} regenerable Esri assets available")
+    missing = [r for r in archived if r["status"] != "available"]
     if missing:
-        print(f"Missing: {len(missing)}")
+        print(f"Missing ARCHIVED assets: {len(missing)}")
         for row in missing[:20]:
             print(f"  {row['relative_path']}")
         if len(missing) > 20:
             print(f"  ... and {len(missing) - 20} more")
+    if r_ok < len(regen):
+        print(f"NOTE: {len(regen) - r_ok} Esri-derived asset(s) not present. "
+              "They are NOT in the Zenodo archive (Esri terms); regenerate "
+              "them by running the acquisition cells of "
+              "test-resample-paper.ipynb, noise_sensitivity.ipynb and "
+              "multi_patch_latitude_validation.ipynb against the pinned "
+              "Wayback release, then re-run this check.")
+    # --check fails on missing archived assets only: regenerables are
+    # expected to be absent on a fresh install, by design.
     if args.check and missing:
         raise SystemExit(1)
 

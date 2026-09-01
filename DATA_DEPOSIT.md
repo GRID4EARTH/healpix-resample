@@ -28,16 +28,15 @@ healpix-resample-paper-data-v1/
         |-- water_data.zarr/
         |-- forest_data.zarr/
         |-- agriculture_data.zarr/
-        |-- esri_latent/
-        |   |-- urban__z17_n256_os4.zarr/
-        |   |-- water__z17_n256_os4.zarr/
-        |   |-- forest__z17_n256_os4.zarr/
-        |   `-- agriculture__z17_n256_os4.zarr/
-        |-- multi_patch_latitude/esri_patch_cache/
-        |   `-- 360 stores <patch_id>__z17_n256_os4_gsd10.zarr/
         `-- multi_patch_sentinel2/
             `-- 40 stores region__<class>__<region_id>_data.zarr/
 ```
+
+The Esri-derived stores (`esri_latent/`, `esri_patch_cache/`) are
+DELIBERATELY EXCLUDED from the deposit: Esri's terms do not cover
+redistribution of machine-readable derived datasets. Users regenerate them
+from the pinned World Imagery Wayback release (paper_data_guard); the
+manifest pins their expected SHA-256.
 
 Do not include `*.idx`, `*.tmp`, generated figures, tables, notebook outputs,
 or result caches. They are derived products, not immutable primary inputs.
@@ -45,17 +44,13 @@ or result caches. They are derived products, not immutable primary inputs.
 Because Zarr stores contain many small files, package the tree in ZIP archives
 instead of uploading every chunk separately. A practical split is:
 
-1. `healpix-resample-paper-core-data-v2.zip`: the four Sentinel-2 stores, four
-   scene-level Esri stores, ERA5 GRIB, README and manifest.
-2. `healpix-resample-paper-esri-multipatch-v2.zip`: the 360 patch stores.
-   Rebuilt by the packing script; the hand-packed v1 file is superseded, not
-   carried over, so that every published archive is reproducible from the
-   documented procedure.
-3. `healpix-resample-paper-sentinel2-regions-v1.zip`: the 40 real Sentinel-2
+1. `healpix-resample-paper-core-data-v3.zip`: the four Sentinel-2 stores,
+   ERA5 GRIB, README and manifest. No Esri content.
+2. `healpix-resample-paper-sentinel2-regions-v1.zip`: the 40 real Sentinel-2
    region patches under `notebooks/data/multi_patch_sentinel2/`.
-
-Keeping the region patches in their own archive leaves the new inputs
-separately citable and lets a reader fetch them without the ~1 GB Esri bundle.
+   Thirty-six come from earth-search and four from the EOPF Zarr Sample
+   Service; catalogue and product identifier are recorded in each store's
+   attributes and in `data_manifest.csv`.
 Thirty-six patches come from earth-search and four from the EOPF Zarr Sample
 Service; the originating catalogue and product identifier are recorded both in
 each store's attributes and in `data_manifest.csv`.
@@ -73,8 +68,10 @@ Both ZIP files must preserve the paths beginning with `notebooks/`.
    python notebooks/build_data_manifest.py --check --doi 10.5281/zenodo.22107490
    ```
 
-   The second command must exit successfully and report `409/409 assets
-   available`.
+   The second command must exit successfully and report all 45 ARCHIVED
+   assets available (4 Sentinel-2 scenes + 40 region patches + 1 GRIB).
+   The 364 Esri-derived assets are listed as `regenerated_input` and are
+   allowed to be absent from the deposit by design.
 4. Build the ZIP archive(s) only after that check, and include the final
    `data_manifest.csv` and `git_commit.txt` in the core archive.
    `notebooks/load_data_in_zenodo.ipynb` verifies that the set of published

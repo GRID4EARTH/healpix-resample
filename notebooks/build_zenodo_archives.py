@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Build the three ZIP archives of the frozen input bundle for Zenodo.
+"""Build the two ZIP archives of the frozen input bundle for Zenodo.
+
+LEGAL: the Esri-derived stores (esri_latent and esri_patch_cache) are
+deliberately NOT packed. Esri's terms grant redistribution for static map
+images, not machine-readable derived datasets, and the underlying pixels
+belong to third-party providers. Every user regenerates those stores locally
+from the pinned World Imagery Wayback release (see paper_data_guard), and
+data_manifest.csv pins the expected SHA-256 of the regeneration.
 
 Run from anywhere inside the checkout, after the manifest check passes::
 
@@ -164,9 +171,6 @@ def main() -> int:
                     help="where to write the ZIPs (default: <repo>/dist)")
     ap.add_argument("--allow-dirty", action="store_true",
                     help="pack even if the working tree has uncommitted changes")
-    ap.add_argument("--skip-esri", action="store_true",
-                    help="do not rebuild the Esri archive (useful while "
-                         "iterating; the published v2 file is already correct)")
     args = ap.parse_args()
 
     repo = find_repo_root()
@@ -180,18 +184,14 @@ def main() -> int:
     core += collect(nb / "outputFLUX.grib", repo)
     for scene in ("urban", "water", "forest", "agriculture"):
         core += collect(nb / "data" / f"{scene}_data.zarr", repo)
-        core += collect(nb / "data" / "esri_latent" /
-                        f"{scene}__z17_n256_os4.zarr", repo)
+        # esri_latent is intentionally NOT collected: not redistributable.
     core += collect(nb / "data" / "README.md", repo)
 
     archives = {
-        "healpix-resample-paper-core-data-v2.zip": core,
+        "healpix-resample-paper-core-data-v3.zip": core,
         "healpix-resample-paper-sentinel2-regions-v1.zip":
             collect(nb / "data" / "multi_patch_sentinel2", repo),
     }
-    if not args.skip_esri:
-        archives["healpix-resample-paper-esri-multipatch-v2.zip"] = collect(
-            nb / "data" / "multi_patch_latitude" / "esri_patch_cache", repo)
 
     results = {}
     for name, members in archives.items():
@@ -209,8 +209,6 @@ def main() -> int:
         print(f'        "size": {size:_},')
         print(f'        "md5": "{md5}",')
         print("    },")
-    if args.skip_esri:
-        print("    # plus the Esri archive, not rebuilt in this run.")
     print("}")
     print(f"\nArchives written to {outdir}")
     return 0

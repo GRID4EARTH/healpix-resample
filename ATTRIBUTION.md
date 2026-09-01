@@ -34,45 +34,19 @@ steps of 3 and 6 hours.
 
 ## Esri World Imagery
 
-The scene-level high-resolution textures and the 360 multi-region patches were
-derived from Esri World Imagery at zoom level 17.
+The scene-level high-resolution textures and the 360 multi-region patches
+are derived from Esri World Imagery at zoom level 17, read from the pinned
+Wayback release 26334 (2026-08-05).
 
-Source service:
+These derivatives are NOT redistributed: Esri's terms grant redistribution
+for static map images, not for machine-readable derived datasets, and the
+underlying imagery belongs to third-party providers. Each user regenerates
+the derivatives locally by running the notebooks' acquisition cells; the
+Wayback release pin makes the regeneration deterministic and
+`data_manifest.csv` records the expected SHA-256 of every store.
 
-Esri World Imagery  
-https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9
+Required attribution for any display of the imagery or derivatives:
+"Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community."
 
-Imagery attribution:
-
-Copyright Esri and the applicable World Imagery data providers.
-
-Acquisition dates: [TO COMPLETE]
-
-Provider-specific attribution notices: [TO COMPLETE]
-
-Redistribution permission or licence reference: [TO COMPLETE]
-
-Patch locations, tile coordinates, acquisition provenance, and checksums are
-provided in:
-
-- `notebooks/tables/multi_patch_sites.csv`
-- `notebooks/tables/multi_patch_tile_provenance.csv`
-- `data_manifest.csv`
-
-Esri World Imagery can contain imagery supplied by third-party providers.
-Inclusion of the derived Zarr stores in the public archive is subject to the
-applicable Esri and provider-specific redistribution terms.
-
-Esri terms of use:
-https://www.esri.com/en-us/legal/terms/web-site-service
-
-## Software
-
-The processing and resampling software is available from:
-
-- Repository: https://github.com/GRID4EARTH/healpix-resample
-- Software concept DOI: https://doi.org/10.5281/zenodo.21723671
-- Software version DOI: https://doi.org/10.5281/zenodo.21723672
-
-The exact Git commit used for this dataset is recorded in `git_commit.txt`.
-
+Source service (versioned snapshots):
+https://livingatlas.arcgis.com/wayback/

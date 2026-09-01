@@ -100,7 +100,9 @@ and ERA5 evaluation of two optional conservative resamplers.
 
 For each of the four illustrative scene classes, Esri World Imagery is used
 as a high-resolution spatial texture rather than as a Sentinel-2 radiometric
-reference \cite{esri_world_imagery}. Imagery is sampled at Web Mercator zoom
+reference \cite{esri_world_imagery}, read from the pinned Wayback release
+26334 (2026-08-05) so that the texture inputs are versioned and
+reproducible. Imagery is sampled at Web Mercator zoom
 17, converted to grayscale luminance, and evaluated on a grid oversampled by
 a factor four relative to the 10~m detector grid. The texture is convolved
 with an isotropic Gaussian using reflective boundary conditions and then
