@@ -9,8 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 
-ZENODO_RECORD_ID = "22107490"
-ZENODO_DOI = "10.5281/zenodo.22107490"
+ZENODO_RECORD_ID = "FILL-NEW-RECORD-ID"  # previous records withdrawn (Esri remediation)
+ZENODO_DOI = "10.5281/zenodo.FILL-NEW-RECORD-ID"
 ZENODO_RECORD_URL = f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
 
 SCENES = ("urban", "water", "forest", "agriculture")
@@ -98,30 +98,48 @@ def _valid_zarr(path: Path) -> bool:
     )
 
 
-def _core_scene_paths() -> list[str]:
-    sentinel = [f"notebooks/data/{scene}_data.zarr" for scene in SCENES]
-    esri = [
+def _sentinel_scene_paths() -> list[str]:
+    return [f"notebooks/data/{scene}_data.zarr" for scene in SCENES]
+
+
+def _esri_latent_paths() -> list[str]:
+    return [
         f"notebooks/data/esri_latent/{scene}__z17_n256_os4.zarr"
         for scene in SCENES
     ]
-    return sentinel + esri
 
 
+# Requirement categories:
+#   paths/files/globs  -- archived inputs from the Zenodo bundle. Missing =>
+#                         hard failure pointing at load_data_in_zenodo.ipynb.
+#   regen_paths/regen_globs -- Esri-derived stores that are NOT redistributed
+#                         (Esri terms) and that THIS notebook regenerates
+#                         itself from the pinned Wayback release. Missing =>
+#                         a notice, and the notebook proceeds to regenerate.
+#   prereq_globs       -- Esri-derived stores this notebook READS but cannot
+#                         produce. Missing => hard failure naming the
+#                         notebook that regenerates them.
 NOTEBOOK_REQUIREMENTS = {
     "test-resample-paper.ipynb": {
-        "paths": _core_scene_paths(),
+        "paths": _sentinel_scene_paths(),
+        "regen_paths": _esri_latent_paths(),
     },
     "noise_sensitivity.ipynb": {
-        "paths": _core_scene_paths(),
+        "paths": _sentinel_scene_paths(),
+        "regen_paths": _esri_latent_paths(),
     },
     "real_groundtruth_downscale.ipynb": {
         "paths": [f"notebooks/data/{scene}_data.zarr" for scene in SCENES],
     },
     "multi_patch_latitude_validation.ipynb": {
-        "globs": [("notebooks/data/multi_patch_latitude/esri_patch_cache/*.zarr", 360)],
+        "regen_globs": [("notebooks/data/multi_patch_latitude/esri_patch_cache/*.zarr", 360)],
     },
     "throughput_scaling_benchmark.ipynb": {
-        "globs": [("notebooks/data/multi_patch_latitude/esri_patch_cache/*.zarr", 360)],
+        "prereq_globs": [(
+            "notebooks/data/multi_patch_latitude/esri_patch_cache/*.zarr", 360,
+            "run multi_patch_latitude_validation.ipynb first: it regenerates "
+            "the Esri patch cache from the pinned Wayback release",
+        )],
     },
     "conservative_flux_ERA5.ipynb": {
         "files": ["notebooks/outputFLUX.grib"],
@@ -154,6 +172,43 @@ def require_paper_data(notebook_name: str) -> Path:
         stores = [path for path in root.glob(pattern) if _valid_zarr(path)]
         if len(stores) < expected_count:
             missing.append(f"{pattern} ({len(stores)}/{expected_count} valid stores)")
+
+    # Esri-derived stores this notebook reads but cannot produce: hard
+    # failure, but pointing at the regenerating notebook, not at Zenodo.
+    for pattern, expected_count, hint in requirements.get("prereq_globs", []):
+        stores = [path for path in root.glob(pattern) if _valid_zarr(path)]
+        if len(stores) < expected_count:
+            raise FileNotFoundError(
+                f"{notebook_name} needs {expected_count} Esri-derived stores "
+                f"({pattern}; {len(stores)} present). These are NOT in the "
+                f"Zenodo archive -- {hint}."
+            )
+
+    # Esri-derived stores THIS notebook regenerates itself: absence is the
+    # normal fresh-install state, not an error. Announce and proceed.
+    regen_missing: list[str] = []
+    for relative in requirements.get("regen_paths", []):
+        if not _valid_zarr(root / relative):
+            regen_missing.append(relative)
+    for pattern, expected_count in requirements.get("regen_globs", []):
+        stores = [path for path in root.glob(pattern) if _valid_zarr(path)]
+        if len(stores) < expected_count:
+            regen_missing.append(
+                f"{pattern} ({len(stores)}/{expected_count} valid stores)")
+    if regen_missing:
+        preview = "\n".join(f"  - {item}" for item in regen_missing[:6])
+        if len(regen_missing) > 6:
+            preview += f"\n  - ... and {len(regen_missing) - 6} more"
+        print(
+            f"[offline data] {notebook_name}: {len(regen_missing)} "
+            "Esri-derived input(s) absent -- expected on a fresh install, "
+            "since they are not redistributed (Esri terms). This notebook's "
+            "acquisition cells will regenerate them from the pinned World "
+            "Imagery Wayback release "
+            f"{WAYBACK_RELEASE} ({WAYBACK_RELEASE_DATE}). Set OFFLINE = False "
+            "in the setup cell for that one run (network required), then "
+            "restore OFFLINE = True.\n" + preview
+        )
 
     if missing:
         preview = "\n".join(f"  - {item}" for item in missing[:12])
