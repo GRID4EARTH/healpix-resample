@@ -9,8 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 
 
-ZENODO_RECORD_ID = "FILL-NEW-RECORD-ID"  # previous records withdrawn (Esri remediation)
-ZENODO_DOI = "10.5281/zenodo.FILL-NEW-RECORD-ID"
+ZENODO_RECORD_ID = "22210945"  # fresh record; previous records withdrawn (Esri remediation)
+ZENODO_DOI = "10.5281/zenodo.22210945"
 ZENODO_RECORD_URL = f"https://zenodo.org/records/{ZENODO_RECORD_ID}"
 
 SCENES = ("urban", "water", "forest", "agriculture")

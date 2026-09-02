@@ -41,33 +41,33 @@ Pablo Richard\textsuperscript{10},
 and Vincent Dumoulin\textsuperscript{11}%
 \thanks{\textsuperscript{1}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Corresponding author: jean.marc.delouis@ifremer.fr.}%
+Corresponding author: jean.marc.delouis@ifremer.fr. ORCID: 0000-0002-0713-1658.}%
 \thanks{\textsuperscript{2}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Email: Tina.Odaka@ifremer.fr.}%
+Email: Tina.Odaka@ifremer.fr. ORCID: 0000-0002-1500-0156.}%
 \thanks{\textsuperscript{3}GEORODE, Liège, Belgium.
-Email: bbovy@georode.com.}%
+Email: bbovy@georode.com. ORCID: 0009-0001-4011-3574.}%
 \thanks{\textsuperscript{4}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Email: Etienne.Cap@ifremer.fr.}%
+Email: Etienne.Cap@ifremer.fr. ORCID: 0009-0007-0360-0692.}%
 \thanks{\textsuperscript{5}European Space Agency (ESA)---ESRIN, Frascati, Italy.
-Email: Thomas.Davison@esa.int.}%
+Email: Thomas.Davison@esa.int. ORCID: 0000-0002-0917-4256.}%
 \thanks{\textsuperscript{6}LifeWatch ERIC, Seville, Spain.
-Email: anne.fouilloux@lifewatch.eu.}%
+Email: anne.fouilloux@lifewatch.eu. ORCID: 0000-0002-1784-2920.}%
 \thanks{\textsuperscript{7}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Email: camille.gueguen@ifremer.fr.}%
+Email: camille.gueguen@ifremer.fr. ORCID: 0000-0000-0000-0000.}%
 \thanks{\textsuperscript{8}University of Tartu,
 Institute of Ecology and Earth Sciences,
 Landscape Geoinformatics Lab, Tartu, Estonia.
-Email: alexander.kmoch@ut.ee.}%
+Email: alexander.kmoch@ut.ee. ORCID: 0000-0003-4386-4450.}%
 \thanks{\textsuperscript{9}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Email: Justus.Magin@ifremer.fr.}%
+Email: Justus.Magin@ifremer.fr. ORCID: 0000-0002-4254-8002.}%
 \thanks{\textsuperscript{10}Pablo Richard EI, Paris, France.
-Email: pablorichard@hotmail.fr.}%
+Email: pablorichard@hotmail.fr. ORCID: 0000-0002-5441-8213.}%
 \thanks{\textsuperscript{11}European Space Agency (ESA)---ESRIN, Frascati, Italy.
-Email: vincent.dumoulin@esa.int.}%
+Email: vincent.dumoulin@esa.int. ORCID: 0000-0001-5049-3817.}%
 }
 
 \markboth{IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing}%
@@ -94,7 +94,7 @@ with gains of 11.0--17.9\% over Richardson--Lucy, the strongest comparator.
 The ordering was unchanged with an estimator-independent geometric
 reference. It was largely preserved for 20\% response-width errors, with one
 smooth-scene exception for a 20\% overestimate. Median operator construction
-plus solution time was 0.37~s for a $256\times256$ patch on an NVIDIA A100.
+plus solution time was 0.37~s for a $256\times256$ patch on an NVIDIA L4.
 The method provides model-consistent transfer to \healpix when spatial
 response and geolocation are sufficiently accurate, and supplies a basis for
 future multi-observation map-making.
@@ -1141,7 +1141,10 @@ Across the four controlled scenes, the matched reconstruction shifts the
 power spectrum toward the pre-degradation texture at low and intermediate
 frequencies, whereas geometric methods preserve the imposed blur. The
 $+50\%$ width produces high-frequency amplification and the $-50\%$ width
-under-restores. Full image and spectral panels are supplied in the supplement.
+under-restores; for the latter, whose kernel is narrow relative to the cell
+lattice ($\sigma\approx0.43$ cell widths), part of the behaviour may reflect
+lattice sampling rather than width error alone (see the supplement).
+Full image and spectral panels are supplied in the supplement.
 The separate four-patch UTM--\healpix--UTM calculation is reported there as an
 implementation sanity check only, not as recovery evidence.
 
@@ -1322,14 +1325,14 @@ resolution then becomes a property of the combined normal operator, and
 fused products should carry cell- or region-dependent uncertainty and
 resolution diagnostics.
 
-On an NVIDIA A100 80~GB PCIe system, over 357 $256\times256$ patches the
+On an NVIDIA L4 (22~GiB) system, over 357 $256\times256$ patches the
 median operator construction time is 0.302~s (interquartile range
 0.296--0.309~s) and the median solve time 0.072~s, a combined
 $\sim$0.37~s of which construction accounts for roughly 81\%.
 The matched operator contains a median 1,441,792 nonzero coefficients and
 uses a median 1021~MiB peak GPU memory. Because operators depend on geometry,
 they can be reused for repeated acquisitions of one footprint; a descriptive
-batch sweep in the supplement observed a 10.3$\times$ amortized
+batch sweep in the supplement observed an 11.4--11.5$\times$ amortized
 speedup. Regional production still requires parallel construction, chunk
 scheduling, preconditioning, storage, and compression design.
 

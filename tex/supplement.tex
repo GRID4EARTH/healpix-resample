@@ -54,33 +54,33 @@ Pablo Richard\textsuperscript{10},
 and Vincent Dumoulin\textsuperscript{11}%
 \thanks{\textsuperscript{1}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Corresponding author: jean.marc.delouis@ifremer.fr.}%
+Corresponding author: jean.marc.delouis@ifremer.fr. ORCID: 0000-0002-0713-1658.}%
 \thanks{\textsuperscript{2}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Email: Tina.Odaka@ifremer.fr.}%
+Email: Tina.Odaka@ifremer.fr. ORCID: 0000-0002-1500-0156.}%
 \thanks{\textsuperscript{3}GEORODE, Liège, Belgium.
-Email: bbovy@georode.com.}%
+Email: bbovy@georode.com. ORCID: 0009-0001-4011-3574.}%
 \thanks{\textsuperscript{4}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Email: Etienne.Cap@ifremer.fr.}%
+Email: Etienne.Cap@ifremer.fr. ORCID: 0009-0007-0360-0692.}%
 \thanks{\textsuperscript{5}European Space Agency (ESA)---ESRIN, Frascati, Italy.
-Email: Thomas.Davison@esa.int.}%
+Email: Thomas.Davison@esa.int. ORCID: 0000-0002-0917-4256.}%
 \thanks{\textsuperscript{6}LifeWatch ERIC, Seville, Spain.
-Email: anne.fouilloux@lifewatch.eu.}%
+Email: anne.fouilloux@lifewatch.eu. ORCID: 0000-0002-1784-2920.}%
 \thanks{\textsuperscript{7}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Email: camille.gueguen@ifremer.fr.}%
+Email: camille.gueguen@ifremer.fr. ORCID: 0000-0000-0000-0000.}%
 \thanks{\textsuperscript{8}University of Tartu,
 Institute of Ecology and Earth Sciences,
 Landscape Geoinformatics Lab, Tartu, Estonia.
-Email: alexander.kmoch@ut.ee.}%
+Email: alexander.kmoch@ut.ee. ORCID: 0000-0003-4386-4450.}%
 \thanks{\textsuperscript{9}LOPS UMR 6523,
 CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
-Email: Justus.Magin@ifremer.fr.}%
+Email: Justus.Magin@ifremer.fr. ORCID: 0000-0002-4254-8002.}%
 \thanks{\textsuperscript{10}Pablo Richard EI, Paris, France.
-Email: pablorichard@hotmail.fr.}%
+Email: pablorichard@hotmail.fr. ORCID: 0000-0002-5441-8213.}%
 \thanks{\textsuperscript{11}European Space Agency (ESA)---ESRIN, Frascati, Italy.
-Email: vincent.dumoulin@esa.int.}%
+Email: vincent.dumoulin@esa.int. ORCID: 0000-0001-5049-3817.}%
 }
 
 \markboth{Supplementary Material}{Delouis \MakeLowercase{\textit{et al.}}: Supplementary Material}
@@ -265,6 +265,15 @@ RMSE exceeds both the matched result and the original degradation.
 The common damping limits but does not remove this amplification,
 which the spectral diagnostics of
 Section~\ref{sec:spectral_behaviour} show directly.
+One caveat applies to the $-50\%$ arm specifically: its kernel is
+narrow relative to the target lattice ($\sigma\approx0.43$
+level-20 cell widths, $q=9$ support), a regime in which the discrete
+cell lattice no longer samples the Gaussian cleanly and the
+delivered response acquires a phase-dependent effective width and a
+mild anisotropy even for an isotropic specification, so part of the
+$-50\%$ behaviour may reflect lattice sampling of the narrow kernel
+rather than width error alone; the $+50\%$ conclusions are
+unaffected.
 
 Under the fixed configurations reported here, Richardson--Lucy uses the
 nominal generation Gaussian but deconvolves on the \utm grid before a
@@ -854,14 +863,14 @@ Water       & $+18\%$ & $+71\%$  & $+204\%$ \\
 \label{app:throughput_scaling}
 
 Section~\ref{sec:hpx_datacube_implications} times one patch at a time.
-A dedicated notebook benchmark on the same NVIDIA A100 80GB PCIe
+A dedicated notebook benchmark on the same NVIDIA L4 (22~GiB)
 system as
 Section~\ref{sec:hpx_datacube_implications} draws its patch pool
 from the 40 archived real Sentinel-2 region patches of the Zenodo bundle
 (falling back, when those are absent, to the Esri cache or to the
 site-manifest geometries with deterministic synthetic textures;
 construction cost depends on geometry only) and times
-batch sizes from 1 to 256
+batch sizes from 1 to 2048
 under three
 regimes: one operator shared across a batch of repeated acquisitions
 of the same footprint (independent per-item radiometric noise only);
@@ -882,21 +891,30 @@ the three regimes described in the text.}
 \end{figure}
 
 Figure~\ref{fig:throughput_scaling} shows the observed scaling curve.
-Over the 1022 timed builds, per-item operator construction
-has a median of $0.723$~s with a tight central spread
-(interquartile range $0.707$--$0.743$~s) that is stable across
-batch sizes (per-batch-size medians $0.717$--$0.736$~s; the
-slowest single build took $0.91$~s). The solve is highly
-reproducible at a median of $0.073$~s regardless of batch size.
+Over the 8190 timed builds, per-item operator construction
+has a median of $0.766$~s (interquartile range $0.740$--$0.795$~s).
+This is deliberately not comparable with the per-patch construction
+figure of Section~\ref{sec:hpx_datacube_implications}: the benchmark
+runs in a separate process on a different patch pool (the archived
+Sentinel-2 regions, whose per-store curvilinear coordinate grids
+differ from the synthetic-geometry patches timed there, and
+construction cost depends on geometry), so only comparisons within
+this sweep are meaningful. Within it,
+the per-batch-size medians span $0.37$--$1.10$~s with the
+smallest batches slowest, and 436 builds exceed 1~s (the slowest
+reaching $4.7$~s) --- consistent with warm-up and with contention
+on a shared accelerator, so the per-batch figures should be read
+accordingly. The solve is highly reproducible at a
+median of $0.073$~s regardless of batch size.
 Sharing one operator across a batch amortizes construction away:
-at batch size 256, the shared-operator regime reaches
-$0.079$~s/patch ($45{,}306$~patches/h), against $0.818$~s/patch
-($4{,}404$/h) for the same footprint rebuilt every time and
-$0.821$~s/patch ($4{,}386$/h) for 256 draws over the 40-patch
+at batch size 2048, the shared-operator regime reaches
+$0.075$~s/patch ($47{,}709$~patches/h), against $0.861$~s/patch
+($4{,}182$/h) for the same footprint rebuilt every time and
+$0.868$~s/patch ($4{,}148$/h) for 2048 draws over the 40-patch
 Sentinel-2 pool (with replacement beyond 40; all 40 patches were
 drawn at least once).
-This single sweep gives an observed $10.3\times$ speedup from
-operator reuse against both rebuild baselines, quantifying the argument of
+This single sweep gives an observed $11.4\times$--$11.5\times$ speedup from
+operator reuse, quantifying the argument of
 Section~\ref{sec:hpx_datacube_implications}: repeated acquisitions of
 the same footprint benefit substantially from reuse, while batches of
 distinct geographic patches do not.

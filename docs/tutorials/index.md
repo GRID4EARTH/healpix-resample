@@ -26,6 +26,18 @@ Compact synthetic examples for every continuous, conservative, categorical, and 
 :link-type: doc
 Process one coarse HEALPix cell at a time and verify the reassembled result matches a global run.
 :::
+
+:::{grid-item-card} Reproduce the paper
+:link: reproduce_paper
+:link-type: doc
+Rebuild every figure and table of the healpix-resample paper from the frozen Zenodo bundle.
+:::
+
+:::{grid-item-card} Throughput benchmark
+:link: throughput_benchmark
+:link-type: doc
+Run only the batch-scaling throughput benchmark — with the archived Sentinel-2 pool or a zero-download synthetic fallback.
+:::
 ::::
 
 ```{toctree}
@@ -36,4 +48,6 @@ zenodo_resamplers
 quickstart
 4resamplers
 5parent_cell_subsetting
+reproduce_paper
+throughput_benchmark
 ```
