@@ -94,8 +94,20 @@ xarray-eopf = "*"
 # format-3 store again, zarr 2 cannot read it and the failure looks like
 # data corruption -- run the converter, do not relax this pin.
 zarr = ">=2.11,<3"
+# cartopy and numpy_groupies back healpix-plot (pypi-dependencies below).
+# cartopy MUST come from conda-forge for the same PROJ reason as pyproj
+# above: its PyPI wheel chain would pull a PyPI pyproj/shapely.
+cartopy = "*"
+numpy_groupies = "*"
+
+[feature.notebooks.pypi-dependencies]
+# PyPI-only, like healpix-geo. Used by real_groundtruth_downscale.ipynb
+# (import healpix_plot). Its geo dependencies are satisfied by the
+# conda-forge packages above, so uv installs only the pure-Python parts.
+healpix-plot = "*"
 
 [environments]
 default = ["test", "dev", "affine"]
 docs = ["docs"]
-notebooks = ["notebooks", "test"]
+# "affine" included for healpix-plot (declared dependency).
+notebooks = ["notebooks", "test", "affine"]
