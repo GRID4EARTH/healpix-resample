@@ -51,7 +51,7 @@ Then verify the installation:
 
 ```bash
 pixi run -e notebooks python notebooks/build_data_manifest.py --check \
-    --doi <the DOI pinned in load_data_in_zenodo.ipynb>
+    --doi 10.5281/zenodo.22210945
 ```
 
 This must report all **45 archived assets available** (each checked by
@@ -95,8 +95,8 @@ Run each notebook top to bottom with a fresh kernel, in this order (the
 order only matters where noted). Once step 2b has populated the Esri
 caches, no notebook fetches anything: the acquisition cells are
 cache-first and find every store present, so all runs are effectively
-network-free (set `OFFLINE = True` in the setup cells of notebooks 1
-and 2 to enforce it).
+network-free (set `OFFLINE = True` in the setup cells of notebooks 1, 2
+and 5 to enforce it).
 
 | # | Notebook | Reproduces | Notes |
 |---|----------|------------|-------|
