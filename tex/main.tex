@@ -94,7 +94,7 @@ with gains of 11.0--17.9\% over Richardson--Lucy, the strongest comparator.
 The ordering was unchanged with an estimator-independent geometric
 reference. It was largely preserved for 20\% response-width errors, with one
 smooth-scene exception for a 20\% overestimate. Median operator construction
-plus solution time was 0.315~s for a $256\times256$ patch on an NVIDIA A100.
+plus solution time was 0.37~s for a $256\times256$ patch on an NVIDIA A100.
 The method provides model-consistent transfer to \healpix when spatial
 response and geolocation are sufficiently accurate, and supplies a basis for
 future multi-observation map-making.
@@ -1322,13 +1322,14 @@ resolution then becomes a property of the combined normal operator, and
 fused products should carry cell- or region-dependent uncertainty and
 resolution diagnostics.
 
-On an NVIDIA A100 80~GB PCIe system, median operator construction plus solve
-time over 357 $256\times256$ patches is 0.315~s (interquartile range
-0.312--0.320~s); construction accounts for 87\% and the solve for 13\%.
+On an NVIDIA A100 80~GB PCIe system, over 357 $256\times256$ patches the
+median operator construction time is 0.302~s (interquartile range
+0.296--0.309~s) and the median solve time 0.072~s, a combined
+$\sim$0.37~s of which construction accounts for roughly 81\%.
 The matched operator contains a median 1,441,792 nonzero coefficients and
 uses a median 1021~MiB peak GPU memory. Because operators depend on geometry,
 they can be reused for repeated acquisitions of one footprint; a descriptive
-batch sweep in the supplement observed an 8.6--10.0$\times$ amortized
+batch sweep in the supplement observed a 10.3$\times$ amortized
 speedup. Regional production still requires parallel construction, chunk
 scheduling, preconditioning, storage, and compression design.
 

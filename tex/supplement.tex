@@ -785,8 +785,8 @@ Forest      & 5   & 0.0628 & 0.0407 & \textbf{0.0395} \\
 Forest      & 100 & \textbf{0.0246} & 0.0333 & 0.0295 \\
 Urban       & 5   & 0.0962 & 0.1014 & \textbf{0.0907} \\
 Urban       & 100 & \textbf{0.0693} & 0.0977 & 0.0855 \\
-Water       & 5   & 0.0646 & 0.0399 & \textbf{0.0385} \\
-Water       & 100 & \textbf{0.0218} & 0.0314 & 0.0267 \\
+Water       & 5   & 0.0620 & 0.0392 & \textbf{0.0375} \\
+Water       & 100 & \textbf{0.0216} & 0.0314 & 0.0265 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -844,8 +844,8 @@ Scene & $0.1$~px & $0.2$~px & $0.4$~px \\
 \midrule
 Agriculture & $+27\%$ & $+101\%$ & $+283\%$ \\
 Forest      & $+15\%$ & $+61\%$  & $+184\%$ \\
-Urban       & $+14\%$ & $+56\%$  & $+172\%$ \\
-Water       & $+17\%$ & $+69\%$  & $+202\%$ \\
+Urban       & $+14\%$ & $+57\%$  & $+172\%$ \\
+Water       & $+18\%$ & $+71\%$  & $+204\%$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -861,7 +861,7 @@ from the 40 archived real Sentinel-2 region patches of the Zenodo bundle
 (falling back, when those are absent, to the Esri cache or to the
 site-manifest geometries with deterministic synthetic textures;
 construction cost depends on geometry only) and times
-batch sizes from 1 to 2048
+batch sizes from 1 to 256
 under three
 regimes: one operator shared across a batch of repeated acquisitions
 of the same footprint (independent per-item radiometric noise only);
@@ -882,25 +882,21 @@ the three regimes described in the text.}
 \end{figure}
 
 Figure~\ref{fig:throughput_scaling} shows the observed scaling curve.
-Over the 8190 timed builds, per-item operator construction
-has a median of $0.326$~s with a tight central spread
-(interquartile range $0.323$--$0.330$~s), but that figure is
-dominated by the large batches: the per-batch-size medians fall
-from $0.69$--$1.20$~s at batch sizes 1--256 to a stable
-$0.325$~s at 512 and above, and 500 of the 8190 builds exceed 1~s
-(the slowest reaching $3.7$~s). The early, smaller batches are
-therefore measurably slower, consistent with warm-up and with
-contention on a shared accelerator, and the per-batch figures
-should be read accordingly. The solve is highly reproducible at a
-median of $0.041$~s regardless of batch size. Sharing one operator
-across a batch amortizes construction away: at batch size 2048,
-the shared-operator regime reaches $0.043$~s/patch
-($83{,}347$~patches/h), against $0.372$~s/patch ($9{,}679$/h) for
-the same footprint rebuilt every time and $0.430$~s/patch
-($8{,}370$/h) for 2048 draws over the 360-patch cache pool (with
-replacement beyond 360; all 360 patches were drawn at least once).
-This single sweep gives an observed $8.6\times$--$10.0\times$ speedup from
-operator reuse, quantifying the argument of
+Over the 1022 timed builds, per-item operator construction
+has a median of $0.723$~s with a tight central spread
+(interquartile range $0.707$--$0.743$~s) that is stable across
+batch sizes (per-batch-size medians $0.717$--$0.736$~s; the
+slowest single build took $0.91$~s). The solve is highly
+reproducible at a median of $0.073$~s regardless of batch size.
+Sharing one operator across a batch amortizes construction away:
+at batch size 256, the shared-operator regime reaches
+$0.079$~s/patch ($45{,}306$~patches/h), against $0.818$~s/patch
+($4{,}404$/h) for the same footprint rebuilt every time and
+$0.821$~s/patch ($4{,}386$/h) for 256 draws over the 40-patch
+Sentinel-2 pool (with replacement beyond 40; all 40 patches were
+drawn at least once).
+This single sweep gives an observed $10.3\times$ speedup from
+operator reuse against both rebuild baselines, quantifying the argument of
 Section~\ref{sec:hpx_datacube_implications}: repeated acquisitions of
 the same footprint benefit substantially from reuse, while batches of
 distinct geographic patches do not.
