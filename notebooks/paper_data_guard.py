@@ -251,9 +251,11 @@ def require_paper_data(notebook_name: str) -> Path:
             "since they are not redistributed (Esri terms). This notebook's "
             "acquisition cells will regenerate them from the pinned World "
             "Imagery Wayback release "
-            f"{WAYBACK_RELEASE} ({WAYBACK_RELEASE_DATE}). Set OFFLINE = False "
-            "in the setup cell for that one run (network required), then "
-            "restore OFFLINE = True.\n" + preview
+            f"{WAYBACK_RELEASE} ({WAYBACK_RELEASE_DATE}): with the default "
+            "OFFLINE = False, simply run the notebook top to bottom (network "
+            "required once; the fetch is cache-first and touches only missing "
+            "stores). Set OFFLINE = True afterwards to enforce strictly "
+            "network-free reruns.\n" + preview
         )
 
     if missing:

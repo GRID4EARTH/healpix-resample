@@ -53,16 +53,18 @@ regenerate locally and deterministically from the pinned World Imagery
 **Wayback release 26334 (2026-08-05)**, an immutable dated snapshot, so
 every user fetches identical tiles whenever this step runs.
 
-In `test-resample-paper.ipynb` (scene textures) and
-`multi_patch_latitude_validation.ipynb` (the 360 patches), set
-`OFFLINE = False` in the setup cell, run up to and including the
-Esri-acquisition cells, then restore `OFFLINE = True`. Re-run the manifest
+`test-resample-paper.ipynb` (scene textures) and
+`multi_patch_latitude_validation.ipynb` (the 360 patches) handle this
+themselves: they default to `OFFLINE = False` and their acquisition cells
+are cache-first, so the first top-to-bottom run downloads the textures once
+and later runs touch nothing. After both have run, re-run the manifest
 check: it must now also report all **364 regenerated assets** available with
-matching SHA-256.
+matching SHA-256. (Set `OFFLINE = True` in the setup cells to *enforce*
+network-free reruns afterwards.)
 
 ## 4. Run the experiment notebooks
 
-Each notebook runs top to bottom with a fresh kernel, offline:
+Each notebook runs top to bottom with a fresh kernel; after step 3, the acquisition caches are complete and no notebook fetches anything:
 
 | # | Notebook | Reproduces |
 |---|----------|------------|
