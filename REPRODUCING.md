@@ -80,6 +80,11 @@ strictly network-free reruns. Then re-run the manifest
 check: it must now also report all 364 regenerated assets available with
 matching SHA-256 — the manifest pins the expected regeneration, so a
 mismatch means the fetch differed and must be investigated, not accepted.
+One subtlety: the pinned hashes cover the stores' *compressed bytes*, which
+depend on the exact compression-codec versions — they are reproducible
+under the locked `notebooks` environment (which is why regeneration must
+run inside `pixi run -e notebooks ...`), not under an arbitrary zarr
+install.
 
 **Zarr format note.** Every store in the bundle is **Zarr format 2**,
 readable by any zarr-python ≥ 2.11 (including 3.x). This is deliberate and

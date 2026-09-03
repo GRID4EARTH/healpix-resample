@@ -76,28 +76,7 @@ Email: vincent.dumoulin@esa.int. ORCID: 0000-0001-5049-3817.}%
 \maketitle
 
 \begin{abstract}
-Earth-observation products are commonly distributed on projected grids,
-whereas global analyses increasingly use hierarchical spherical grids such
-as \healpix. Standard interpolation ignores the sensor point-spread
-function (\psf) and can distort spatial structure when the target support is
-finer than the source sampling. We present \texttt{healpix-resample}, a
-sparse framework that models projected-grid pixels as spatially weighted
-observations of a latent \healpix cell-average field. Two dual-normalized
-transfer operators form an exact adjoint pair under grid-dependent weighted
-inner products, and a damped correction is obtained with a matrix-free,
-weighted conjugate-gradient solve on GPU. In a controlled synthetic
-benchmark over 40 regions, the nominal Gaussian-width reconstruction reduced
-blur-induced RMSE by 15.4--19.6\% across four scene classes. In a
-reduced-resolution validation using real Sentinel-2 B04 imagery, the method
-achieved the lowest RMSE in all 40 regions against each of four competitors,
-with gains of 11.0--17.9\% over Richardson--Lucy, the strongest comparator.
-The ordering was unchanged with an estimator-independent geometric
-reference. It was largely preserved for 20\% response-width errors, with one
-smooth-scene exception for a 20\% overestimate. Median operator construction
-plus solution time was 0.37~s for a $256\times256$ patch on an NVIDIA L4.
-The method provides model-consistent transfer to \healpix when spatial
-response and geolocation are sufficiently accurate, and supplies a basis for
-future multi-observation map-making.
+Earth-observation datasets are often provided on projected grids, while global studies increasingly rely on hierarchical spherical grids such as \healpix. Conventional interpolation typically neglects the sensor point-spread function (\psf) and may warp spatial patterns when the target support is finer than the original sampling. We introduce \texttt{healpix-resample}, a sparse approach that treats projected-grid pixels as spatially weighted measurements of an underlying \healpix field of cell averages. A pair of dual-normalized transfer operators constitutes an exact adjoint pair under grid-specific weighted inner products, and a damped refinement is computed via a matrix-free, weighted conjugate-gradient solve on GPU. In a controlled synthetic experiment spanning 40 regions, reconstruction with the nominal Gaussian width lowered blur-driven RMSE by 15.4--19.6\% across four scene categories. In reduced-resolution tests with real Sentinel-2 B04 imagery, the method produced the smallest RMSE in all 40 regions relative to four competing methods, improving by 11.0--17.9\% over Richardson--Lucy, the best-performing baseline. The same ranking held when using an estimator-independent geometric reference. It was mostly maintained under 20\% errors in response width, except for one smooth-scene case with a 20\% overestimate. The median time to build the operators and solve was 0.37~s for a $256\times256$ patch on an NVIDIA L4. Overall, the method enables model-consistent transfer to \healpix when spatial response and geolocation are sufficiently accurate, and it offers a foundation for future multi-observation map-making.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -107,56 +86,24 @@ Discrete Global Grid Systems, DGGS, HEALPix, Sentinel-2, point spread function, 
 \section{Introduction}
 \label{sec:introduction}
 
-Earth-observation (EO) products are made available in a broad range of local map projections, tiling schemes, and sensor-dependent sampling geometries. Sentinel-2 Level-2A data, for instance, are delivered as ortho-images on the \utm/WGS84 grid, with ground sampling distances of 10, 20, or 60~m, depending on the spectral band
-\cite{esa_sentinel2_handbook,copernicus_sentinel2_l2a}. While such projected products are convenient for regional-scale processing, they make global, multi-resolution, and multi-sensor analyses more difficult.
+Earth-observation (EO) products are distributed using a wide variety of local map projections, tiling systems, and sensor-specific sampling geometries. Sentinel-2 Level-2A data, for example, are provided as ortho-imagery on the \utm/WGS84 grid, with ground sampling distances of 10, 20, or 60~m depending on the spectral band \cite{esa_sentinel2_handbook,copernicus_sentinel2_l2a}. Although these projected products are practical for processing at regional scales, they complicate global analyses across multiple resolutions and sensors.
 
-Discrete Global Grid Systems (DGGS) offer an alternative representation by dividing the Earth into hierarchically organized, globally indexed cells \cite{ogc_dggs_2021,Kmoch2022}. Within this family, \healpix provides equal-area cells, hierarchical indexing, and iso-latitude sampling, which makes it well suited for global EO data cube applications \cite{gorski2005healpix}. Nevertheless, the discrete resolution levels of a DGGS typically do not match the native sampling of a given sensor. In the experiments discussed here, a Sentinel-2 band with a 10~m sampling interval is mapped onto a level-20 \healpix grid whose cell widths are about 6.22~m. Inferring values on this finer grid is thus more than a simple coordinate transformation: it entails identifying which spatial details are genuinely supported by the available observations.
+Discrete Global Grid Systems (DGGS) provide an alternative way to represent the Earth by partitioning it into hierarchically structured, globally indexed cells \cite{ogc_dggs_2021,Kmoch2022}. In this class of systems, \healpix offers equal-area cells, hierarchical indexing, and iso-latitude sampling, making it a strong fit for global EO data cube use cases \cite{gorski2005healpix}. However, the discrete set of DGGS resolution levels often does not align with a sensor’s native sampling. In the experiments described here, a Sentinel-2 band sampled at 10~m is mapped to a level-20 \healpix grid with cell widths of roughly 6.22~m. Estimating values on this finer grid therefore goes beyond a straightforward coordinate conversion: it requires determining which spatial detail is actually supported by the observations.
 
-Traditional resampling techniques---such as nearest-neighbor, bilinear, and cubic interpolation---tackle this issue from a purely geometric perspective. They estimate target pixel values from neighboring source samples based on their spatial coordinates, without explicitly accounting for how the measurements themselves were generated \cite{esa_snap_resampling,gdal_resampling,schowengerdt_resampling}. In reality, each recorded pixel corresponds to the underlying continuous field convolved with a finite spatial response that encompasses optical blur, detector integration, platform motion, atmospheric influences, and prior processing. This spatial response is typically characterized by a point spread function (\psf) or a modulation transfer function. Neglecting it during resampling can lead to extra smoothing and alter the spatial power spectrum of the resulting data \cite{inamdar2023sr2,schowengerdt2007remote,kaur2024spatial}.
+Conventional resampling methods—such as nearest-neighbor, bilinear, and cubic interpolation—address this problem in a strictly geometric manner. They infer destination pixel values from nearby source samples using only their spatial positions, without explicitly modeling how the observations were formed \cite{esa_snap_resampling,gdal_resampling,schowengerdt_resampling}. In practice, however, each measured pixel represents the underlying continuous field blurred by convolution with a finite spatial response that includes optical blur, detector integration, platform motion, atmospheric effects, and any previous processing steps. This response is commonly described by a point spread function (\psf) or a modulation transfer function. Ignoring it during resampling may introduce additional smoothing and modify the spatial power spectrum of the produced data \cite{inamdar2023sr2,schowengerdt2007remote,kaur2024spatial}.
 
-When the target grid has a finer resolution than the original sampling, PSF-aware resampling becomes closely connected to image restoration and model-based super-resolution. The goal is not to fabricate independent sub-pixel details, but to infer a latent field whose spatial response is still compatible with the acquired image. This inverse problem is only partially constrained---especially at higher spatial frequencies---and thus demands explicit regulation of the poorly observed components \cite{richardson1972bayesian,lucy1974iterative,elad1997restoration,park2003superresolution,farsiu2004advances}.
+When the desired output grid is sampled more finely than the original data, PSF-aware resampling is tightly related to image deconvolution and model-driven super-resolution. The objective is not to invent new, independent sub-pixel structure, but to estimate an underlying field whose spatial response remains consistent with the measured image. This inverse problem is only weakly constrained—particularly at higher spatial frequencies—and therefore requires explicit regularization of components that are poorly supported by the observations \cite{richardson1972bayesian,lucy1974iterative,elad1997restoration,park2003superresolution,farsiu2004advances}.
 
-We introduce \texttt{healpix-resample}, a \psf-aware framework for mapping projected EO imagery onto \healpix (Fig.~\ref{fig:workflow}). Rather than interpolating pixel values onto HEALPix cells, we ask the reverse question: what HEALPix field, once observed through the sensor's spatial response at the pixels' actual locations, would reproduce the recorded image? Answering it requires two sparse operators — a forward model and its weighted adjoint — and a matrix-free least-squares solve on GPU (Section III). Only sample geolocations and a local response model are needed; the released interface and the validation here use a scalar isotropic Gaussian and Sentinel-2 B04.
+We present \texttt{healpix-resample}, a \psf-aware approach for transferring projected EO imagery to \healpix (Fig.~\ref{fig:workflow}). Instead of interpolating pixel intensities into HEALPix cells, we pose the inverse problem: which underlying HEALPix field, when seen through the sensor’s spatial response at the pixels’ true positions, would yield the measured image? Solving this uses two sparse operators—a forward model and its weighted adjoint—and a matrix-free GPU least-squares solver (Section III). The method requires only the sample geolocations and a local response model; in the released API and in our validation we use a scalar isotropic Gaussian and Sentinel-2 B04.
 
-The validation is organized around two recovery benchmarks and one
-auxiliary consistency check. First, a controlled synthetic-detector
-experiment uses Esri World Imagery as a high-resolution spatial texture,
-convolves it with a prescribed Gaussian response, and compares the
-reconstructed field with the pre-degradation texture
-\cite{esri_world_imagery}. Second, a controlled reduced-resolution experiment
-using real Sentinel-2 imagery
-(Section~\ref{sec:real_downscale_experiment}) applies a known degradation to
-native B04 pixels and evaluates all methods against a reference constructed
-before that degradation. This tests reconstruction on real radiometry under a
-known forward model; it is not an external higher-resolution reference or an
-independent calibration of the instrumental \psf. Both recovery experiments
-are extended to 40 geographically distributed regions. Separately, a
-four-patch \utm--\healpix--\utm round trip is retained only as an
-implementation and observation-consistency sanity check, because the same
-operator enters the fit and the prediction.
+The validation is structured around two recovery benchmarks plus an additional consistency check. First, a controlled synthetic detector study takes Esri World Imagery as a high-resolution spatial texture, blurs it with a specified Gaussian response, and then compares the recovered field to the original pre-degradation texture \cite{esri_world_imagery}. Second, a controlled real-image reduced-resolution experiment with Sentinel-2 data (Section~\ref{sec:real_downscale_experiment}) imposes a known degradation on native B04 pixels and scores each method against a reference generated prior to that degradation. This evaluates reconstruction on real radiometry under a known forward model; it is neither an external higher-resolution reference nor an independent calibration of the instrument \psf. Both recovery experiments are repeated over 40 geographically distributed regions. Separately, a four-patch \utm--\healpix--\utm round trip is kept solely as an implementation and observation-consistency sanity check, since the same operator is used in both fitting and prediction.
 
-The use of a \healpix support finer than the native sensor grid
-may increase the number of stored values. This cost must
-ultimately be compared with the overlap and duplicated coverage
-already present in projected tiling systems such as Sentinel-2
-UTM/MGRS \cite{bauer2023wasting}. Storage, compression,
-chunking, and multi-resolution encoding are not addressed here
-and will be examined in a dedicated study.
+Using a \healpix grid at a resolution finer than the sensor’s native sampling can raise the number of values that need to be stored. This overhead should ultimately be weighed against the overlap and repeated coverage that already occur in projected tiling schemes such as Sentinel-2 UTM/MGRS \cite{bauer2023wasting}. Issues of storage, compression, chunking, and multi-resolution encoding are not considered here and will be explored in a separate, dedicated study.
 
-The contribution is threefold. First, projected-grid pixels are posed as
-sparse observations of a \healpix cell-average field through an explicit
-spatial-response model, rather than treated by geometry alone. Second, two
-dual-normalized operators form an exact weighted adjoint pair and permit a
-matrix-free GPU solve with linear per-iteration cost for fixed neighborhood
-size. Third, the formulation is validated on controlled synthetic imagery
-and real Sentinel-2 data over 40 geographically distributed regions, with
-geometric and deconvolution baselines, response-mismatch tests, and an
-estimator-independent reference. The open-source implementation is designed
-for \healpix/DGGS data-cube workflows \cite{healpix_resample_repo}.
+The contribution has three parts. First, projected-grid pixels are modeled as sparse measurements of a \healpix cell-averaged field via an explicit spatial response model, instead of being handled purely through geometry. Second, a pair of dual-normalized operators constitutes an exact weighted adjoint pair, enabling a matrix-free GPU solver with linear per-iteration complexity for a fixed neighborhood size. Third, the approach is validated using controlled synthetic images and real Sentinel-2 observations across 40 geographically distributed regions, including comparisons to geometric and deconvolution baselines, response-mismatch experiments, and an estimator-agnostic reference. The open-source code is intended for \healpix/DGGS data-cube workflows \cite{healpix_resample_repo}.
 
-Detailed robustness, throughput, and area-integral-conservation results are
-provided in the supplementary material.
-
+Comprehensive results on robustness, throughput, and area-integral conservation are included in the supplementary material.
+%----------- END OF WRITEFULL REVIEW -----------------
 \section{Background and Related Work}
 
 \subsection{HEALPix as a Latent Spherical Support}
