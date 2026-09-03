@@ -35,6 +35,7 @@ Needs the ``notebooks`` environment, so it is marked and deselected by default::
 """
 from __future__ import annotations
 
+import importlib
 import json
 import re
 from pathlib import Path
@@ -44,6 +45,7 @@ import pytest
 pytestmark = pytest.mark.notebooks
 
 NOTEBOOK_DIR = Path(__file__).resolve().parent.parent / "notebooks"
+REPO_ROOT = NOTEBOOK_DIR.parent
 PAPER_NOTEBOOK = "test-resample-paper.ipynb"
 
 
@@ -74,6 +76,16 @@ def test_paper_notebook_setup_executes(tmp_path, monkeypatch):
     """
     # The setup cells mkdir data/, figures/ and tables/ relative to the CWD.
     # Run them somewhere disposable so the suite does not litter the repo.
+    # Make the notebook-local helper importable after chdir(), then stub only
+    # its data-presence check: this test validates imports and device setup,
+    # while the frozen Zenodo archive is deliberately not downloaded in CI.
+    monkeypatch.syspath_prepend(str(NOTEBOOK_DIR))
+    paper_data_guard = importlib.import_module("paper_data_guard")
+    monkeypatch.setattr(
+        paper_data_guard,
+        "require_paper_data",
+        lambda _notebook_name: REPO_ROOT,
+    )
     monkeypatch.chdir(tmp_path)
 
     cells = _code_cells(NOTEBOOK_DIR / PAPER_NOTEBOOK)
@@ -120,7 +132,9 @@ def _engine_cases():
 def test_notebook_xarray_engines_are_registered(notebook, engine):
     """A wrong engine name raises only when that line is reached, needs network
     to reach, and is invisible to an import scan because the providing package
-    is never imported directly. Hence checking the registry instead."""
+    is never imported directly. Hence checking the registry instead.
+
+    """
     xarray = pytest.importorskip("xarray")
     available = sorted(xarray.backends.list_engines())
     assert engine in available, (

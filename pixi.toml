@@ -63,13 +63,22 @@ isort = "*"
 # checkout. All conda-forge: mixing a PyPI pyproj wheel with conda's libproj
 # breaks PROJ's database lookup and silently unregisters the eopf-zarr backend.
 cfgrib = "*"
-foscat = "*"
-healpy = "*"
+# healpy and foscat are deliberately ABSENT: no paper notebook uses healpy
+# any more (healpix-geo shims in paper_data_guard replace ang2pix/pix2ang,
+# bit-identically), and foscat -- the only remaining consumer, via the
+# exploratory Test_regrid_to_healpix.ipynb -- depends on healpy and would
+# reintroduce it transitively.
 matplotlib-base = ">=3.7,<4"
 pandas = "*"
 pillow = "*"
 pyproj = "*"
 pystac-client = "*"
+# reads the Sentinel-2 L2A Cloud-Optimized GeoTIFFs served by Element 84's
+# earth-search catalogue. The EOPF STAC used for the four paper scenes is a
+# European demonstration catalogue with partial global coverage, so the
+# multi-region experiment reads COGs instead (see REGION_STAC_SOURCE in
+# tests/real_groundtruth_common_tools.py).
+rasterio = "*"
 scikit-image = "*"
 scikit-learn = "*"
 scipy = "*"
@@ -77,11 +86,28 @@ xarray = "*"
 # provides the engine="eopf-zarr" backend used to read Sentinel-2 from the
 # EOPF STAC. Nothing imports it by name, so an import scan will not see it.
 xarray-eopf = "*"
-# xarray-eopf does not support Zarr v3 yet; the notebook only round-trips its
-# own cache, so v2 is sufficient.
+# The frozen bundle is uniformly Zarr FORMAT 2 (enforced by
+# notebooks/convert_zarr_stores_to_v2.py and guarded in the fetchers, which
+# refuse to write anything else). Format 2 is readable by every zarr-python
+# since 2.11 AND by 3.x; xarray-eopf (every released version) requires
+# zarr < 3, which fixes the pin here. If the bundle ever contains a
+# format-3 store again, zarr 2 cannot read it and the failure looks like
+# data corruption -- run the converter, do not relax this pin.
 zarr = ">=2.11,<3"
+# cartopy and numpy_groupies back healpix-plot (pypi-dependencies below).
+# cartopy MUST come from conda-forge for the same PROJ reason as pyproj
+# above: its PyPI wheel chain would pull a PyPI pyproj/shapely.
+cartopy = "*"
+numpy_groupies = "*"
+
+[feature.notebooks.pypi-dependencies]
+# PyPI-only, like healpix-geo. Used by real_groundtruth_downscale.ipynb
+# (import healpix_plot). Its geo dependencies are satisfied by the
+# conda-forge packages above, so uv installs only the pure-Python parts.
+healpix-plot = "*"
 
 [environments]
 default = ["test", "dev", "affine"]
 docs = ["docs"]
-notebooks = ["notebooks", "test"]
+# "affine" included for healpix-plot (declared dependency).
+notebooks = ["notebooks", "test", "affine"]

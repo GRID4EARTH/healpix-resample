@@ -93,7 +93,11 @@ for scene, (lat, lon, window, place) in SCENES.items():
         extracted_by="healpix-resample paper preparation",
     )
     dest = f"{DEST}/{item.id}.zarr"
-    out.to_zarr(fs.get_mapper(dest), mode="w", consolidated=True)
+    # Format 2 pinned: the mirror is read back by environments running
+    # zarr-python 2.x (see paper_data_guard.zarr_v2_kwargs).
+    from paper_data_guard import zarr_v2_kwargs
+    out.to_zarr(fs.get_mapper(dest), mode="w", consolidated=True,
+                **zarr_v2_kwargs())
     pinned[scene] = item.id
     print(f"{scene:12s} {item.properties['eo:cloud_cover']:5.2f}%  -> {dest}")
 

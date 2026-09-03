@@ -114,5 +114,5 @@ convention as `ConservativeResampler`) and is otherwise ignored when `conservati
   interpolation. On sparse or highly irregular sampling, prefer `PSFResampler`.
 - Near the poles or across the dateline, the geodesic-distance weighting handles wrap-around
   correctly (no special-casing needed, unlike planar bilinear on a lon/lat array).
-- See `docs/tutorials/4resamplers.md` for a runnable side-by-side comparison against the other
+- See `docs/tutorials/zenodo_resamplers.ipynb` for a runnable real-data comparison against the other
   resamplers on the same dataset.

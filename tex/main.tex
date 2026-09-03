@@ -1,0 +1,1355 @@
+\documentclass[journal]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{cite}
+\usepackage{balance}
+\usepackage{xspace}
+\usepackage{microtype}
+
+\graphicspath{{figures/}}
+
+\newcommand{\healpix}{HEALPix\xspace}
+\newcommand{\dggs}{DGGS\xspace}
+\newcommand{\utm}{UTM\xspace}
+\newcommand{\psf}{PSF\xspace}
+\newcommand{\R}{\mathbb{R}\,}
+\newcommand{\Nside}{N_{\mathrm{side}}\,}
+\newcommand{\mgrs}{\textsc{mgrs}}
+\newcommand{\argmin}{\mathop{\mathrm{arg\,min}}\,}
+
+\begin{document}
+
+\title{\texttt{healpix-resample}: PSF-Aware Resampling of Earth-Observation Imagery onto HEALPix}
+
+\author{
+Jean-Marc Delouis\textsuperscript{1},
+Tina Odaka\textsuperscript{2},
+Benoit Bovy\textsuperscript{3},
+Etienne Cap\textsuperscript{4},
+Thomas Davison\textsuperscript{5},
+Anne Fouilloux\textsuperscript{6},
+Camille Gueguen\textsuperscript{7},
+Alexander Kmoch\textsuperscript{8},
+Justus Magin\textsuperscript{9},
+Pablo Richard\textsuperscript{10},
+and Vincent Dumoulin\textsuperscript{11}%
+\thanks{\textsuperscript{1}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Corresponding author: jean.marc.delouis@ifremer.fr. ORCID: 0000-0002-0713-1658.}%
+\thanks{\textsuperscript{2}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Email: Tina.Odaka@ifremer.fr. ORCID: 0000-0002-1500-0156.}%
+\thanks{\textsuperscript{3}GEORODE, Liège, Belgium.
+Email: bbovy@georode.com. ORCID: 0009-0001-4011-3574.}%
+\thanks{\textsuperscript{4}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Email: Etienne.Cap@ifremer.fr. ORCID: 0009-0007-0360-0692.}%
+\thanks{\textsuperscript{5}European Space Agency (ESA)---ESRIN, Frascati, Italy.
+Email: Thomas.Davison@esa.int. ORCID: 0000-0002-0917-4256.}%
+\thanks{\textsuperscript{6}LifeWatch ERIC, Seville, Spain.
+Email: anne.fouilloux@lifewatch.eu. ORCID: 0000-0002-1784-2920.}%
+\thanks{\textsuperscript{7}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Email: camille.gueguen@ifremer.fr. ORCID: 0009-0008-3748-9395.}%
+\thanks{\textsuperscript{8}University of Tartu,
+Institute of Ecology and Earth Sciences,
+Landscape Geoinformatics Lab, Tartu, Estonia.
+Email: alexander.kmoch@ut.ee. ORCID: 0000-0003-4386-4450.}%
+\thanks{\textsuperscript{9}LOPS UMR 6523,
+CNRS--IFREMER--IRD--Univ. Brest--IUEM, Plouzané, France.
+Email: Justus.Magin@ifremer.fr. ORCID: 0000-0002-4254-8002.}%
+\thanks{\textsuperscript{10}Pablo Richard EI, Paris, France.
+Email: pablorichard@hotmail.fr. ORCID: 0000-0002-5441-8213.}%
+\thanks{\textsuperscript{11}European Space Agency (ESA)---ESRIN, Frascati, Italy.
+Email: vincent.dumoulin@esa.int. ORCID: 0000-0001-5049-3817.}%
+}
+
+\markboth{IEEE Journal of Selected Topics in Applied Earth Observations and Remote Sensing}%
+{Delouis \MakeLowercase{\textit{et al.}}: PSF-Aware HEALPix Resampling for Earth Observation}
+
+\maketitle
+
+\begin{abstract}
+Earth-observation datasets are often provided on projected grids, while global studies increasingly rely on hierarchical spherical grids such as \healpix. Conventional interpolation typically neglects the sensor point-spread function (\psf) and may warp spatial patterns when the target support is finer than the original sampling. We introduce \texttt{healpix-resample}, a sparse approach that treats projected-grid pixels as spatially weighted measurements of an underlying \healpix field of cell averages. A pair of dual-normalized transfer operators constitutes an exact adjoint pair under grid-specific weighted inner products, and a damped refinement is computed via a matrix-free, weighted conjugate-gradient solve on GPU. In a controlled synthetic experiment spanning 40 regions, reconstruction with the nominal Gaussian width lowered blur-driven RMSE by 15.4--19.6\% across four scene categories. In reduced-resolution tests with real Sentinel-2 B04 imagery, the method produced the smallest RMSE in all 40 regions relative to four competing methods, improving by 11.0--17.9\% over Richardson--Lucy, the best-performing baseline. The same ranking held when using an estimator-independent geometric reference. It was mostly maintained under 20\% errors in response width, except for one smooth-scene case with a 20\% overestimate. The median time to build the operators and solve was 0.37~s for a $256\times256$ patch on an NVIDIA L4. Overall, the method enables model-consistent transfer to \healpix when spatial response and geolocation are sufficiently accurate, and it offers a foundation for future multi-observation map-making.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Discrete Global Grid Systems, DGGS, HEALPix, Sentinel-2, point spread function, resampling, regridding, inverse problems, Earth observation, UTM.
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:introduction}
+
+Earth-observation (EO) products are distributed using a wide variety of local map projections, tiling systems, and sensor-specific sampling geometries. Sentinel-2 Level-2A data, for example, are provided as ortho-imagery on the \utm/WGS84 grid, with ground sampling distances of 10, 20, or 60~m depending on the spectral band \cite{esa_sentinel2_handbook,copernicus_sentinel2_l2a}. Although these projected products are practical for processing at regional scales, they complicate global analyses across multiple resolutions and sensors.
+
+Discrete Global Grid Systems (DGGS) provide an alternative way to represent the Earth by partitioning it into hierarchically structured, globally indexed cells \cite{ogc_dggs_2021,Kmoch2022}. In this class of systems, \healpix offers equal-area cells, hierarchical indexing, and iso-latitude sampling, making it a strong fit for global EO data cube use cases \cite{gorski2005healpix}. However, the discrete set of DGGS resolution levels often does not align with a sensor’s native sampling. In the experiments described here, a Sentinel-2 band sampled at 10~m is mapped to a level-20 \healpix grid with cell widths of roughly 6.22~m. Estimating values on this finer grid therefore goes beyond a straightforward coordinate conversion: it requires determining which spatial detail is actually supported by the observations.
+
+Conventional resampling methods—such as nearest-neighbor, bilinear, and cubic interpolation—address this problem in a strictly geometric manner. They infer destination pixel values from nearby source samples using only their spatial positions, without explicitly modeling how the observations were formed \cite{esa_snap_resampling,gdal_resampling,schowengerdt_resampling}. In practice, however, each measured pixel represents the underlying continuous field blurred by convolution with a finite spatial response that includes optical blur, detector integration, platform motion, atmospheric effects, and any previous processing steps. This response is commonly described by a point spread function (\psf) or a modulation transfer function. Ignoring it during resampling may introduce additional smoothing and modify the spatial power spectrum of the produced data \cite{inamdar2023sr2,schowengerdt2007remote,kaur2024spatial}.
+
+When the desired output grid is sampled more finely than the original data, PSF-aware resampling is tightly related to image deconvolution and model-driven super-resolution. The objective is not to invent new, independent sub-pixel structure, but to estimate an underlying field whose spatial response remains consistent with the measured image. This inverse problem is only weakly constrained—particularly at higher spatial frequencies—and therefore requires explicit regularization of components that are poorly supported by the observations \cite{richardson1972bayesian,lucy1974iterative,elad1997restoration,park2003superresolution,farsiu2004advances}.
+
+We present \texttt{healpix-resample}, a \psf-aware approach for transferring projected EO imagery to \healpix (Fig.~\ref{fig:workflow}). Instead of interpolating pixel intensities into HEALPix cells, we pose the inverse problem: which underlying HEALPix field, when seen through the sensor’s spatial response at the pixels’ true positions, would yield the measured image? Solving this uses two sparse operators—a forward model and its weighted adjoint—and a matrix-free GPU least-squares solver (Section III). The method requires only the sample geolocations and a local response model; in the released API and in our validation we use a scalar isotropic Gaussian and Sentinel-2 B04.
+
+The validation is structured around two recovery benchmarks plus an additional consistency check. First, a controlled synthetic detector study takes Esri World Imagery as a high-resolution spatial texture, blurs it with a specified Gaussian response, and then compares the recovered field to the original pre-degradation texture \cite{esri_world_imagery}. Second, a controlled real-image reduced-resolution experiment with Sentinel-2 data (Section~\ref{sec:real_downscale_experiment}) imposes a known degradation on native B04 pixels and scores each method against a reference generated prior to that degradation. This evaluates reconstruction on real radiometry under a known forward model; it is neither an external higher-resolution reference nor an independent calibration of the instrument \psf. Both recovery experiments are repeated over 40 geographically distributed regions. Separately, a four-patch \utm--\healpix--\utm round trip is kept solely as an implementation and observation-consistency sanity check, since the same operator is used in both fitting and prediction.
+
+Using a \healpix grid at a resolution finer than the sensor’s native sampling can raise the number of values that need to be stored. This overhead should ultimately be weighed against the overlap and repeated coverage that already occur in projected tiling schemes such as Sentinel-2 UTM/MGRS \cite{bauer2023wasting}. Issues of storage, compression, chunking, and multi-resolution encoding are not considered here and will be explored in a separate, dedicated study.
+
+The contribution has three parts. First, projected-grid pixels are modeled as sparse measurements of a \healpix cell-averaged field via an explicit spatial response model, instead of being handled purely through geometry. Second, a pair of dual-normalized operators constitutes an exact weighted adjoint pair, enabling a matrix-free GPU solver with linear per-iteration complexity for a fixed neighborhood size. Third, the approach is validated using controlled synthetic images and real Sentinel-2 observations across 40 geographically distributed regions, including comparisons to geometric and deconvolution baselines, response-mismatch experiments, and an estimator-agnostic reference. The open-source code is intended for \healpix/DGGS data-cube workflows \cite{healpix_resample_repo}.
+
+Comprehensive results on robustness, throughput, and area-integral conservation are included in the supplementary material.
+%----------- END OF WRITEFULL REVIEW -----------------
+\section{Background and Related Work}
+
+\subsection{HEALPix as a Latent Spherical Support}
+
+The \healpix tessellation divides the sphere into $12\Nside^2$ equal-area cells, with $\Nside=2^L$ at hierarchy level $L$ \cite{gorski2005healpix,calabretta2007healpix}. Its equal-area, hierarchical, and iso-latitude properties make it useful for area-consistent statistics, multi-resolution indexing, and efficient spherical data access.
+
+Here \healpix serves as a latent spherical support rather than a sensor-specific sampling grid; the method depends on neither a particular sensor resolution nor a fixed level. Sentinel-2 imagery is only a representative high-resolution optical test case, for which we take $L=20$ ($\Nside=1{,}048{,}576$, cell size $\approx6.22$~m). This makes the target support finer than the native 10~m sampling, but the same formulation applies to coarser or finer sensors and other DGGS resolutions.
+
+When the target grid is finer than the native sampling, the problem has more degrees of freedom than observations, so the finer grid does not by construction carry independent information at the target-cell scale. Those extra degrees of freedom must instead be constrained by the forward observation model, the effective spatial response, and regularization, as in image restoration and super-resolution.
+
+\healpix is supported by a mature software ecosystem:
+\texttt{healpy} provides pixelization and spherical-harmonic
+transforms \cite{zonca2019healpy}, and \texttt{cdshealpix-python}
+efficient indexing and geometry \cite{cdshealpix2021}. The present
+implementation belongs to the GRID4EARTH stack
+(\texttt{healpix-geo}, \texttt{healpix-resample},
+\texttt{healpix-analyse}, \texttt{healpix-plot}, distributed
+through the \texttt{grid4earth} meta-package
+\cite{grid4earth_tools}) and uses \texttt{healpix-geo} for
+indexing, coordinate conversion, cell geometry, and neighbourhoods
+\cite{healpix_geo_repo,healpix_resample_repo}. \texttt{healpix-geo}
+(Apache-2.0) supports both spherical and ellipsoidal conventions --
+geodetic WGS84 coordinates mapped onto an authalic sphere before
+indexing, preserving equal area on the ellipsoidal Earth -- so the
+sparse transfer operators can be built consistently under either.
+
+General-purpose EO resampling toolkits such as
+\texttt{pyresample} already offer nearest-neighbour and
+Gaussian-weighted regridding onto \healpix and other target grids
+\cite{hoese2020pyresample}, but do not pose the target-grid values
+as the solution of an inverse observation problem with an explicit
+sensor \psf. The proposed method is thus complementary to the
+existing \healpix and EO ecosystems, while relying on the
+GRID4EARTH geometry layer for ellipsoid-aware coordinates.
+
+\psf-aware resampling has also been addressed outside the DGGS
+context: the SR2 workflow \cite{inamdar2023sr2} incorporates the
+sensor spatial response when resampling hyperspectral imagery, but
+in the forward direction, \emph{degrading} a high-resolution
+raster to emulate a coarser target sensor. The problem addressed
+here is the inverse one -- recovering a latent field at a finer,
+DGGS-indexed resolution from a coarser, \psf-blurred observation,
+posed as a regularized inverse problem with an explicit adjoint
+pair. Both approaches share the premise that ignoring the spatial
+response during resampling is a methodological error.
+
+\subsection{Resampling as an Observation Model}
+
+In this work, resampling is formulated as an observation model rather than as a purely geometric interpolation. The projected image is treated as a set of spatially weighted measurements of a latent \healpix field, with weights determined by geolocation and by an assumed effective \psf. This connects the method to classical inverse formulations used in deconvolution, super-resolution, and model-based image reconstruction \cite{bertero1998inverse,starck1998deconvolution,richardson1972bayesian,lucy1974iterative,park2003superresolution}.
+
+The scientific motivation for this change is to preserve the relationship between the reconstructed field and the measurement process; GPU execution is an enabling technology rather than the justification for the model. Sparse operators and matrix-free iterations make an inverse formulation affordable at the scale of routine patch processing, as quantified in Section~\ref{sec:hpx_datacube_implications}. This viewpoint also connects resampling to map-making methods in which redundant observations constrain a common map and, when the model is sufficiently identifiable, instrumental nuisance parameters. For example, SRoll2 fits higher-order instrumental-response parameters from Planck data redundancy while constructing frequency maps~\cite{delouis2019sroll2}. The present work makes no equivalent calibration claim: geolocation and the effective \psf are held fixed, and only the latent spatial field is estimated.
+
+The objective is not blind super-resolution from a single image, but controlled inverse resampling: the recovered \healpix field is explicitly tied to the assumed observation operator and constrained by regularization.
+
+Framed this way, the observation model makes very few structural assumptions about its input: each source sample contributes a value, a geolocation, and an assumed local spatial response, with no requirement that the samples originate from a single regular raster or a single acquisition. Section~\ref{sec:outlook_fusion} returns to this point and outlines how the mathematical formulation extends by stacking observation blocks for multiple overlapping acquisitions and for sensors whose measurements are not grid-aligned. The released implementation does not yet expose all of this generality.
+
+\section{Method}
+
+\subsection{Dual-Normalized Transfer Operators}
+\label{sec:dual_normalized_operators}
+
+Let $\mathbf{y}\in\mathbb{R}^{N}$ denote the vectorized image
+patch on the projected source grid, where $N$ is the number of
+valid source pixels. Let $\mathbf{x}\in\mathbb{R}^{M}$ denote a
+field defined on the $M$ retained \healpix cells covering the
+image patch.
+
+The target quantity is interpreted as a footprint average rather than a point
+sample at the cell centre. For a retained cell $C_j$ and a continuous latent
+field $f$,
+\begin{equation}
+ x_j = \frac{1}{|C_j|}\int_{C_j} f(\boldsymbol{s})\,\mathrm d\Omega.
+\label{eq:cell_average}
+\end{equation}
+The finer target support therefore increases the number of represented
+values, not the number of independent measurements.
+
+The implementation uses two sparse transfer operators with
+complementary normalization conventions. The first operator maps
+a \healpix field to the source observation grid, whereas the
+second maps source-grid values to an initial \healpix estimate.
+The two operators use the same spatial neighbourhoods and the
+same unnormalized Gaussian weights, but they are not exact
+transposes of one another.
+
+For source pixel $i$ and retained \healpix cell $j$, let
+$d_{ij}$ denote their local geodesic distance. The unnormalized
+spatial weight is
+
+\begin{equation}
+g_{ij}
+=
+\exp\left(
+-\frac{2d_{ij}^{2}}{s_{\psf}^{2}}
+\right),
+\label{eq:raw_weight}
+\end{equation}
+
+where $s_{\psf}$ controls the width of the effective spatial
+response\footnote{The isotropic Gaussian of Eq.~\eqref{eq:raw_weight} is a choice, not a structural requirement: every subsequent step uses only the numeric weights $g_{ij}$, so a more complex response — anisotropic, spatially varying, or different for each measurement, detector, or acquisition — can be substituted for $g$ without changing the normalizations, the weighted-adjoint relation of Eq.~\eqref{eq:dxdy}, or the solver. The released interface currently exposes only the scalar width $s_{PSF}$ (Section \ref{sec:auxiliary_controls}).}. With this convention, the corresponding full width at
+half maximum is
+
+\begin{equation}
+\mathrm{FWHM}
+=
+\sqrt{2\ln 2}\,s_{\psf}.
+\label{eq:fwhm_code}
+\end{equation}
+
+To maintain sparsity, each source pixel is connected only to a
+fixed number $q$ of nearby retained \healpix cells. In addition,
+candidate cells whose accumulated Gaussian influence remains
+below a prescribed threshold are excluded from the reconstructed
+support.
+
+We define the forward observation operator
+$\mathbf{A}\in\mathbb{R}^{N\times M}$ by normalizing the weights
+independently for each source pixel:
+
+\begin{equation}
+A_{ij}
+=
+\frac{g_{ij}}
+{\displaystyle
+ \sum_{k\in\mathcal{N}(i)}g_{ik}},
+\qquad
+j\in\mathcal{N}(i),
+\label{eq:forward_operator}
+\end{equation}
+
+where $\mathcal{N}(i)$ is the set of retained \healpix neighbours
+associated with source pixel $i$. This normalization gives
+
+\begin{equation}
+\sum_{j\in\mathcal{N}(i)} A_{ij}=1,
+\end{equation}
+
+so that the source-grid prediction
+
+\begin{equation}
+\widehat{\mathbf{y}}
+=
+\mathbf{A}\mathbf{x}
+\label{eq:forward_prediction}
+\end{equation}
+
+preserves a spatially constant \healpix field.
+
+A second operator
+$\mathbf{B}\in\mathbb{R}^{M\times N}$ is constructed by
+normalizing the same raw weights independently for each retained
+\healpix cell, optionally scaled by a per-source-pixel area (or
+more generally, weight) $a_i\geq0$:
+
+\begin{equation}
+B_{ji}
+=
+\frac{g_{ij}\,a_i}
+{\displaystyle
+ \sum_{\ell:\,j\in\mathcal{N}(\ell)}g_{\ell j}\,a_\ell},
+\qquad
+j\in\mathcal{N}(i).
+\label{eq:back_operator}
+\end{equation}
+
+For every retained cell -- i.e.\ every cell whose accumulated influence passed the support threshold above, so that at least one source sample contributes to it --
+
+\begin{equation}
+\sum_{i:\,j\in\mathcal{N}(i)}B_{ji}=1.
+\end{equation}
+
+$\mathbf B$ thus performs a normalized, area-weighted local averaging of source-grid values onto the \healpix lattice: a source pixel spanning a larger physical area contributes proportionally more to a given cell, rather than every pixel contributing equally regardless of size. This mitigates biases from varying source-pixel area but does not by itself conserve a globally area-integrated quantity. Setting $a_i\equiv1$ recovers the area-agnostic normalization. The forward operator $\mathbf A$ is left unweighted: \healpix cells are equal-area by design, and---as shown below---$a_i$ cancels analytically from $\mathbf A$'s per-source-pixel normalization anyway.
+
+If $a_i$ is not supplied, the implementation estimates exact
+spherical-zone areas for regular latitude rings, including reduced
+Gaussian grids. Projected or scattered grids fall back to
+$a_i\equiv1$; users requiring area weighting for such grids must
+supply it explicitly.
+
+Because the source pixels and \healpix cells have different
+sampling geometries and different normalization requirements,
+the two operators generally satisfy
+
+\begin{equation}
+\mathbf{B}\neq\mathbf{A}^{\mathsf T}.
+\label{eq:not_adjoint}
+\end{equation}
+
+Both operators derive from the same area-weighted raw weight
+$g'_{ij}:=g_{ij}a_i$. The factor $a_i$ cancels from each row of
+$\mathbf A$ but remains in the column normalization of $\mathbf B$.
+Introduce the corresponding diagonal normalizers
+
+\begin{equation}
+\begin{split}
+\mathbf{D}_y&=\operatorname{diag}\!\left(d^{A}_i\right),\;\;
+d^{A}_i=\sum_{k\in\mathcal N(i)}g_{ik}\,a_i,\\
+\mathbf{D}_x&=\operatorname{diag}\!\left(d^{B}_j\right),\;\;
+d^{B}_j=\!\!\sum_{\ell:\,j\in\mathcal N(\ell)}\!\!g_{\ell j}\,a_\ell,
+\end{split}
+\label{eq:dxdy}
+\end{equation}
+
+where $\mathbf D_y$ acts on source samples and $\mathbf D_x$ on
+retained \healpix cells. Direct substitution gives
+
+\begin{equation}
+\mathbf{B}=\mathbf{D}_x^{-1}\mathbf{A}^{\mathsf T}\mathbf{D}_y.
+\label{eq:weighted_adjoint}
+\end{equation}
+
+Thus $\mathbf B$ is the exact adjoint of $\mathbf A$ under the
+weighted inner products
+$\langle\mathbf u,\mathbf v\rangle_{\mathbf D_x}
+=\mathbf u^{\mathsf T}\mathbf D_x\mathbf v$ on the \healpix support
+and
+$\langle\mathbf p,\mathbf q\rangle_{\mathbf D_y}
+=\mathbf p^{\mathsf T}\mathbf D_y\mathbf q$ on the source grid. The
+method is therefore a weighted least-squares formulation with an
+exact non-Euclidean operator--adjoint pair.
+
+\subsection{Reference Estimate and Damped Residual Correction}
+
+The source-to-\healpix operator is first used to construct a
+reference estimate
+
+\begin{equation}
+\mathbf{x}_{\mathrm{ref}}
+=
+\mathbf{B}\mathbf{y}.
+\label{eq:xref}
+\end{equation}
+
+This field is a locally normalized weighted average of the source
+observations on the retained \healpix cells. Applying the forward
+operator gives the source-grid prediction associated with this
+initial estimate,
+
+\begin{equation}
+\mathbf{y}_{\mathrm{ref}}
+=
+\mathbf{A}\mathbf{x}_{\mathrm{ref}}.
+\end{equation}
+
+The method then estimates a correction
+$\boldsymbol{\delta}\in\mathbb{R}^{M}$ from the source-grid
+residual
+
+\begin{equation}
+\mathbf{r}_{\mathrm{ref}}
+=
+\mathbf{y}
+-
+\mathbf{A}\mathbf{x}_{\mathrm{ref}}.
+\label{eq:initial_residual}
+\end{equation}
+
+The correction is defined by the damped linear system
+
+\begin{equation}
+\left(
+\mathbf{B}\mathbf{A}
++
+\lambda\mathbf{I}
+\right)
+\boldsymbol{\delta}
+=
+\mathbf{B}
+\left(
+\mathbf{y}
+-
+\mathbf{A}\mathbf{x}_{\mathrm{ref}}
+\right),
+\label{eq:correction_system}
+\end{equation}
+
+where $\lambda\geq0$ controls the magnitude of the correction.
+The final reconstructed field is
+
+\begin{equation}
+\widehat{\mathbf{x}}
+=
+\mathbf{x}_{\mathrm{ref}}
++
+\boldsymbol{\delta}.
+\label{eq:final_estimate}
+\end{equation}
+
+The damping term plays the role of a Tikhonov-style
+regularizer~\cite{tikhonov1977solutions}, but acts on the
+correction relative to the initial normalized estimate, rather
+than directly penalizing the norm of the final field. Increasing $\lambda$ keeps the solution closer
+to $\mathbf{x}_{\mathrm{ref}}$, whereas a smaller value allows a
+larger correction of the residual spatial response. Consequently,
+$\lambda$ controls both the amplification of measurement
+perturbations and the bias retained from the initial estimate; its
+useful range depends on the noise covariance and on how strongly
+the requested target-grid modes are constrained by the
+observations.
+
+Since $\mathbf{B}$ is not the Euclidean transpose of
+$\mathbf{A}$, Eq.~\eqref{eq:correction_system} is not the normal
+equation of the Euclidean Tikhonov problem
+$\|\mathbf{A}\mathbf{x}-\mathbf{y}\|_2^2+\lambda\|\mathbf{x}\|_2^2$.
+Using the weighted-adjoint relation of
+Eq.~\eqref{eq:weighted_adjoint}, it is instead exactly the
+stationarity condition of the weighted damped least-squares
+problem
+
+\begin{equation}
+\begin{split}
+\widehat{\boldsymbol\delta}
+=
+\arg\min_{\boldsymbol\delta}\;
+\left\|\mathbf A\boldsymbol\delta-\mathbf r_{\mathrm{ref}}\right\|^2_{\mathbf D_y}
++
+\lambda\left\|\boldsymbol\delta\right\|^2_{\mathbf D_x},
+\\
+\|\mathbf z\|^2_{\mathbf D}:=\mathbf z^{\mathsf T}\mathbf D\mathbf z,
+\end{split}
+\label{eq:weighted_variational}
+\end{equation}
+
+with $\mathbf r_{\mathrm{ref}}$ defined in Eq.~\eqref{eq:initial_residual}. Setting the gradient of Eq.~\eqref{eq:weighted_variational} to zero yields $\mathbf A^{\mathsf T}\mathbf D_y(\mathbf A\boldsymbol\delta-\mathbf r_{\mathrm{ref}}) +\lambda\mathbf D_x\boldsymbol\delta=\mathbf 0$. Left-multiplying by $\mathbf D_x^{-1}$ and inserting Eq.~\eqref{eq:weighted_adjoint} leads exactly back to Eq.~\eqref{eq:correction_system}. For $\lambda=0$, the system becomes positive semi-definite, and the solution may no longer be unique if the target field includes more degrees of freedom than there are observations. In the numerical experiments, conjugate-gradient iteration~\cite{hestenes1952cg} (CG) is started from the zero vector and terminated after at most 14 iterations, which selects a particular Krylov-subspace solution and yields an implicit iterative regularization.
+
+\paragraph{Zero-correction reference.}
+The initial estimator $\mathbf x_{\mathrm{ref}}=\mathbf B\mathbf y$ is the
+zero-correction case $\boldsymbol\delta=\mathbf 0$. Because this is a feasible
+point of Eq.~\eqref{eq:weighted_variational}, the converged correction obeys
+\begin{equation}
+J(\widehat{\boldsymbol\delta})\leq J(\mathbf 0)
+=\|\mathbf r_{\mathrm{ref}}\|_{\mathbf D_y}^{2},
+\label{eq:zero_correction_bound}
+\end{equation}
+where $J$ denotes the regularized weighted observation-space objective. This
+is an exact ablation in the criterion actually optimized: the correction
+cannot worsen that criterion relative to $\mathbf x_{\mathrm{ref}}$. It does
+not guarantee a lower RMSE to a latent cell-average reference, so an
+image-domain $\mathbf x_{\mathrm{ref}}$ comparison must be computed directly
+rather than inferred from the full-solution tables. The supplement specifies
+the cell-aligned numerical export needed for that additional check.
+
+\subsection{Matrix-Free Iterative Solution}
+\label{sec:matrix_free_solution}
+The current implementation solves
+Eq.~\eqref{eq:correction_system} using a matrix-free CG. CG is the natural
+match for this system: the operator is self-adjoint and positive-definite
+in the $\mathbf D_x$ metric (shown below), so CG applies to
+Eq.~\eqref{eq:correction_system} exactly as posed, with one fused
+application $\mathbf v\mapsto\mathbf B(\mathbf A\mathbf v)+\lambda\mathbf v$
+per iteration, and, started from zero, it minimizes the weighted objective
+of Eq.~\eqref{eq:weighted_variational} over a growing Krylov subspace --
+the property behind the zero-correction bound of
+Eq.~\eqref{eq:zero_correction_bound}. A matrix-free LSQR
+iteration~\cite{paige1982lsqr} is mathematically equivalent on this
+system at the same per-iteration cost; its better numerical behaviour on
+ill-conditioned normal equations matters when iterating to tight
+tolerances, not in the present damped ($\lambda>0$), 14-iteration
+regime, and is not explored here.
+
+Each iteration therefore requires one sparse application of
+$\mathbf{A}$ and one sparse application of $\mathbf{B}$. If each
+source pixel is connected to at most $q$ retained \healpix cells,
+then both operators contain at most approximately $qN$ non-zero
+coefficients. The resulting per-iteration computational cost is
+
+\begin{equation}
+\mathcal{O}
+\left(
+\operatorname{nnz}(\mathbf{A})
++
+\operatorname{nnz}(\mathbf{B})
+\right)
+=
+\mathcal{O}(qN).
+\end{equation}
+
+For a fixed neighbourhood size $q$, the per-iteration cost
+therefore scales linearly with the number of source pixels. The
+total cost is
+
+\begin{equation}
+\mathcal{O}(n_{\mathrm{it}}qN),
+\end{equation}
+
+where $n_{\mathrm{it}}$ is the number of iterations performed.
+
+Because the two transfer operators are independently normalized,
+the composite operator $\mathbf H=\mathbf B\mathbf A+\lambda\mathbf I$
+is not Euclidean-symmetric. It is, however, self-adjoint and
+positive-definite in the $\mathbf D_x$-weighted inner product: by
+Eq.~\eqref{eq:weighted_adjoint},
+$\mathbf D_x\mathbf H=\mathbf A^{\mathsf T}\mathbf D_y\mathbf A+\lambda\mathbf D_x$,
+symmetric positive-definite in the Euclidean sense for
+$\lambda>0$ (semi-definite for $\lambda=0$). Conjugate gradients
+therefore remains justified, provided its own inner products use
+that weighted metric: every dot product
+$\langle\mathbf u,\mathbf v\rangle$ in the standard recursion
+becomes $\langle\mathbf u,\mathbf v\rangle_{\mathbf D_x}
+=\mathbf u^{\mathsf T}\mathbf D_x\mathbf v
+=\sum_j d^{B}_j\,u_jv_j$, with $d^{B}_j$ the per-cell weights of
+Eq.~\eqref{eq:dxdy} (\texttt{cell\_weight} in the released code).
+Standard CG theory therefore applies only when the recursion uses
+the $\mathbf D_x$ metric. A Euclidean-inner-product implementation
+has no such guarantee; on synthetic systems built from the same
+weights it produced slower and less regular residual reduction.
+This observation is empirical, not a monotonicity theorem.
+Convergence is monitored through the $\mathbf D_x$-weighted
+residual norm.
+
+The correction minimizes a weighted residual but does not enforce
+conservation of an area-integrated quantity. The supplementary material
+evaluates two optional conservative extensions on ERA5 flux data;
+neither is used in the Sentinel-2 experiments.
+
+\subsection{Round-Trip Prediction}
+\label{sec:roundtrip_prediction}
+
+After reconstruction, the inferred field may be projected back to the source
+grid,
+\begin{equation}
+ \widehat{\mathbf y}=\mathbf A\widehat{\mathbf x},
+ \qquad
+ \mathbf r=\widehat{\mathbf y}-\mathbf y.
+\label{eq:roundtrip_prediction}
+\end{equation}
+This residual measures compatibility with the original observation under the
+same forward model. Because $\mathbf A$ enters both the fit and the
+prediction, it is an internal consistency test and not an independent
+validation of an unknown unblurred scene. The complete implementation
+sequence and optional conservative variants are documented in the
+supplementary material.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{fig01_psf_healpix_workflow.pdf}
+\caption{Dual-normalized PSF-aware projected-grid--HEALPix transfer. Sparse operators $\mathbf A$ and $\mathbf B$ link the source observation to a retained cell-average field. A damped residual correction is solved without assembling $\mathbf B\mathbf A$; the result may optionally be projected back to the source grid for a consistency test. The formulas shown correspond to $a_i=1$.}
+\label{fig:workflow}
+\end{figure*}
+
+\section{Validation Strategy}
+\label{sec:validation}
+\subsection{Overview}
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{scene_types.pdf}
+\caption{Representative image patches for the four scene types used in the validation experiments: urban, water, forest, and agriculture. The scenes cover contrasting spatial structures, including dense linear features, homogeneous surfaces, irregular natural textures, and piecewise homogeneous fields with sharp boundaries. Each panel uses an independent reflectance scale.}
+\label{fig:validation_scenes}
+\end{figure*}
+The validation uses four contrasting scene types: urban, water,
+forest, and agriculture, shown in Fig.~\ref{fig:validation_scenes}. The two
+recovery benchmarks are (i) a controlled synthetic-detector experiment with
+a known pre-degradation texture and (ii) a controlled reduced-resolution
+experiment using real Sentinel-2 imagery and a reference constructed before
+the imposed degradation. The latter complements the synthetic test by using
+real radiometry, but remains a prescribed-degradation benchmark rather than
+independent instrumental validation. A four-patch round trip is reported only
+as an auxiliary observation-consistency sanity check.
+
+In all recovery experiments, every method is evaluated on the same
+\healpix cell-average estimand. For the geometric baselines, the
+interpolated raster is sampled at the level-22 child-cell centres and
+the 16 samples are averaged within each level-20 parent cell. The
+round-trip readout uses the corresponding interpolation order on the
+source grid. Exact conservation of area-integrated quantities is
+treated separately in the supplementary material.
+
+\subsection{Controlled Synthetic Detector Experiment}
+\label{sec:controlled_synthetic}
+
+For each scene, an Esri World Imagery patch is used as a
+high-resolution spatial texture rather than as a Sentinel-2
+radiometric reference \cite{esri_world_imagery}. The texture is
+blurred using a prescribed Gaussian response and sampled onto a
+synthetic 10~m detector grid. The resulting observation is
+resampled onto \healpix, and the reconstructed field is compared
+with both the original texture and its blurred counterpart.
+
+This experiment separates the latent texture, the detector
+response, and the reconstructed grid representation. It therefore
+evaluates whether the inversion partially restores attenuated
+spatial information when the target \healpix support is finer
+than the simulated detector sampling.
+
+
+\subsection{Real Projected-Grid Round-Trip Experiment}
+\label{sec:roundtrip_experiment}
+
+The second experiment uses Sentinel-2 patches over the same four
+scene types. Because no unblurred reference is available, it does
+not constitute an absolute deconvolution benchmark: it tests
+whether the estimated \healpix field preserves the information
+required to predict the original source-grid observation, through
+the round-trip residual of Eq.~\eqref{eq:roundtrip_prediction}.
+
+
+\subsection{Controlled Reduced-Resolution Validation with Real Imagery}
+\label{sec:real_downscale_experiment}
+
+This controlled reduced-resolution experiment combines real Sentinel-2
+radiometry with a known imposed degradation. A native 10~m B04 patch first
+supplies a level-19 reference: it is transferred with the nominal operator to
+level 20 and then geometrically averaged over the level-20 children of each
+level-19 cell. The reference is constructed before, and independently of, the
+degradation used to test the methods, although it shares the estimator family
+and is not an external higher-resolution reference.
+
+In a separate path, the same native image is blurred to 25~m FWHM and
+point-sampled every other pixel to obtain a 20~m observation. Decimation is
+used rather than a $2\times2$ block average so that no additional boxcar
+component is introduced. The observation is reconstructed on the level-19
+support with the known 25~m response and compared with nearest-neighbor,
+bilinear, bicubic, and Richardson--Lucy followed by bicubic cell-average
+regridding. Evaluation is restricted to cells at least 200~m from the patch
+boundary. A deliberately anisotropic 24~m by 45~m degradation, inverted with
+the same scalar 25~m model, provides a response-shape mismatch control.
+
+\subsubsection{Geographic extension}
+\label{sec:real_downscale_multiregion}
+
+The identical protocol is repeated at the 40 region anchors used by the
+synthetic validation, one real Sentinel-2 acquisition per region and ten
+regions per scene class. Products are selected deterministically by lowest
+cloud cover from the Element~84 Earth Search catalogue \cite{earthsearch},
+with four European patches supplied by the EOPF Zarr Sample Service
+(\texttt{stac.core.eopf.eodc.eu}); both routes deliver the same Level-2A
+reflectance, and the originating catalogue and product identifier are
+recorded in each archived patch.
+Pre-reconstruction screens reject clipped windows, no-data holes, flat
+patches, cloud or snow, and insufficient interior coverage. All 40 regions
+pass. A geometry check reprojects the reference-cell centroid into the local
+UTM frame; the largest displacement is 6.3~m, below one native pixel.
+
+All methods are scored on identical cells within each region, and the region
+is the independent statistical unit. To remove any possible advantage from
+sharing the reference estimator, the full 40-region comparison is also
+repeated against a second reference obtained by assigning native pixels to
+level-19 cells and averaging them, with no spatial-response model, inversion,
+or shared code path.
+
+\subsection{Experimental Configuration}
+\label{sec:exp_config}
+
+All experiments use $256\times256$ patches. The real-data evaluation uses the Sentinel-2 Level-2A red band (B04) on its native 10~m \utm grid, about $2.56\times2.56$~km per patch, selected with a maximum cloud cover of $20\%$; missing pixels are filled with the patch mean of the valid pixels. Throughout, the effective instrumental response is $\mathrm{FWHM}=12.5~\mathrm{m}$, i.e.\ a Gaussian scale $s_{\mathrm{op}}=s_{\mathrm{gen}}=10.62\,\mathrm{m}$ through Eq.~\eqref{eq:fwhm_code}. Section~\ref{sec:psf_calibration} shows the resulting synthetic spectra reproduce the observed B04 slopes in all four scenes, and the value is independently bracketed by the ESA MSI MTF-at-Nyquist specification. It is therefore an empirically supported effective B04 response, not a claimed unique optical-PSF measurement.
+
+The target support is a nested \healpix grid at level $L=20$,
+with $N_{\mathrm{side}}=2^{20}$ and an equivalent cell size of
+approximately $6.22$~m. Each source sample is associated with
+its $q$ nearest retained \healpix cells, where $q$ is chosen so
+that at least $99\%$ of the kernel's weight is retained given
+$s_{\mathrm{op}}$ and the level-20 cell size ($q=22$ for the
+matched configuration), and cells whose accumulated Gaussian
+weight remains below $0.1$ are excluded. The matched
+reconstruction uses conjugate gradients with a light damping of
+$\lambda=10^{-3}$, at most 14 iterations, and a relative residual
+tolerance of $10^{-8}$. This fixed value is used as a controlled
+default for the main comparison and is not presented as a
+noise-adaptive optimum.
+
+For the synthetic experiment, Esri imagery is sampled at Web
+Mercator zoom level 17, converted to grayscale luminance, and evaluated on a
+grid oversampled by a factor of four relative to the 10~m detector grid. The
+high-resolution texture is convolved with an isotropic Gaussian using
+reflective boundaries and then averaged over $4\times4$ blocks. The latter
+operation represents a 10~m square detector aperture that is not included in
+the scalar Gaussian inverse. Under the convention of
+Eq.~\eqref{eq:experimental_gaussian}, the nominal Gaussian has
+$\sigma_G=s_{\mathrm{gen}}/2=5.31$~m and the square aperture has per-axis
+$\sigma_{\mathrm{box}}=10/\sqrt{12}=2.89$~m. Their combined second moment is
+equivalent to a Gaussian FWHM of 14.23~m, 13.9\% broader than 12.5~m, although
+the exact response is the non-Gaussian convolution of the Gaussian and the
+square aperture. The synthetic configuration is therefore
+\emph{Gaussian-width-matched}, not exactly response-matched. A strictly
+matched test would point-sample the convolved texture or include the pixel
+aperture in $\mathbf A$. No additional noise is introduced in the primary
+comparison; Section~\ref{sec:noise_robustness} reports separate noise tests.
+
+Both the synthetic detector and the matched inverse operator use
+the Gaussian width parameter
+
+\begin{equation}
+s_{\mathrm{op}}=s_{\mathrm{gen}}=10.62~\mathrm{m},
+\end{equation}
+
+with weights defined by
+
+\begin{equation}
+w(d)
+=
+\exp\left(
+-\frac{2d^2}{s_{\mathrm{op}}^2}
+\right).
+\label{eq:experimental_gaussian}
+\end{equation}
+
+
+\subsubsection{Response mismatch and two-stage baselines}
+\label{sec:psf_mismatch}
+
+The synthetic reconstruction is repeated with assumed widths $-50\%$ and
+$+50\%$ from the nominal value while keeping the common damping
+$\lambda=10^{-3}$. A more realistic $\pm20\%$ sweep is applied to the
+controlled real-imagery experiment because the spectral calibration below
+does not distinguish those nearby widths. Richardson--Lucy uses the matched
+Gaussian on the UTM grid for 100 fixed iterations, followed by bicubic
+upsampling and the same child-cell average used by the other methods. A
+Fourier Tikhonov baseline uses $\lambda_{\mathrm{Tik}}=10^{-2}$ and the same
+regridding. These settings were not selected on held-out calibration regions;
+they are fixed-configuration controls. Their results do not establish a
+ranking against globally tuned two-stage pipelines or isolate the sequential
+structure as the cause of the gap. The supplement specifies a leakage-free
+global tuning protocol for a definitive comparator run.
+
+\subsection{Empirical Consistency Check of the Effective B04 Spatial Response}
+\label{sec:psf_calibration}
+
+The effective Gaussian $\mathrm{FWHM}=12.5~\mathrm{m}$ used
+throughout this paper (Section~\ref{sec:exp_config}) is selected
+from a direct comparison with real Sentinel-2 B04 spectra rather
+than from any single synthetic scene. The resulting synthetic
+power-spectrum slopes are checked independently against the
+isotropically averaged spectra of all four real B04 patches.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/synthetic_vs_sentinel2.pdf}
+\caption{Power spectra of real Sentinel-2 B04 patches (black)
+compared with the synthetic Esri-latent-texture pipeline of
+Section~\ref{sec:controlled_synthetic} blurred at three candidate
+Gaussian widths, $\mathrm{FWHM}\in\{10.0,12.5,15.0\}~\mathrm{m}$
+($0.8\times$, $1.0\times$, and $1.2\times$ the value used
+elsewhere in this paper), for the urban, water, forest, and
+agriculture scenes. Each synthetic curve is independently
+amplitude-matched to the real spectrum over an intermediate
+  frequency band ($0.0039$--$0.0195~\mathrm{m}^{-1}$; radial bins
+  10--50 on the $256\times256$, 10~m grid) before comparison, so that only the
+spectral \emph{shape} is being compared, not the absolute power
+level. The pre-degradation no-\psf synthetic spectrum is shown for
+reference (blue). The $12.5$~m curve reproduces the observed B04
+spectral slopes across the four scene types over the resolved
+comparison range.}
+\label{fig:psf_calibration}
+\end{figure*}
+
+Figure~\ref{fig:psf_calibration} is an empirical consistency check
+of the adopted response scale. After amplitude matching, the
+$12.5$~m pipeline reproduces the observed B04 spectral slopes in all
+four scenes. The three candidate widths remain close over much of
+the resolved range, however, so the comparison does not uniquely
+distinguish $12.5$~m from its $\pm20\%$ alternatives.
+
+At high frequency, the real urban, forest, and agricultural spectra
+retain more power than any of the noise-free synthetic blurred
+curves. This excess is consistent with a measurement-noise floor or
+with unmodelled processing and scene-spectrum differences; the
+present comparison does not identify these contributions
+separately.
+
+The scale is independently corroborated by the official Sentinel-2
+MSI characterization. The specified system MTF at Nyquist is
+$0.15$--$0.30$ for 10~m and 20~m bands, and the published per-band
+PSFs are approximated from MTF measurements using Gaussian
+modelling~\cite{esa_s2_mtf_technical_guide}. At the 10~m sampling of
+B04, this range corresponds to a Gaussian FWHM of
+$11.6$--$14.6$~m; conversely, $12.5$~m gives an MTF of $0.249$ at
+Nyquist. Together with the spectral slopes, this supports
+$12.5$~m as a plausible effective operating point for the
+experiments, not as a unique measurement of the optical or
+processed Level-2A response. A dedicated slant-edge or point-target
+calibration would be required to separate the natural scene
+spectrum, processing response, and measurement noise.
+
+\subsection{Multi-Region Synthetic Validation}
+\label{sec:multiregion}
+
+The experiment of Sections~\ref{sec:exp_config}--\ref{sec:psf_mismatch} uses a single illustrative patch per scene class and therefore cannot, by itself, support a statistically powered claim about the method's typical behaviour. We complement it with a larger, geographically distributed validation built on the same synthetic Esri pipeline, \psf-aware operator, and geometric baselines.
+
+For each scene class, ten geographically distinct regions were selected, stratified by class rather than sampled at random over the planet. Each region was split into nine non-overlapping $256\times256$ patches on a deterministic $3\times3$ grid with $4$~km spacing, giving 40 regions and 360 selected patches, of which 358 are analysed (Section~\ref{sec:multiregion_results}). All operator parameters match Sections~\ref{sec:exp_config}--\ref{sec:psf_mismatch}: $\mathrm{FWHM}=12.5$~m, level $L=20$, $q=22/48/9$ for the matched/$+50\%$/$-50\%$ arms, and a common damping $\lambda=10^{-3}$. The multi-region experiment is therefore a geographically distributed replication of the nominal four-scene configuration for the matched and width-mismatch arms.
+
+The patches are not treated as independent observations. The nine patches drawn from a given region are spatially correlated sub-samples, so the independent statistical unit is the region: $n=10$ regions per scene class, $n=40$ regions in total. Confidence intervals use 5000 region-cluster bootstrap replicates (seed 20260818), resampling regions with replacement and averaging patches within each resampled region. With ten regions per class, they quantify variation among the selected regions rather than global EO-class uncertainty. We report the recovery fraction
+
+\begin{equation}
+\text{recovery}
+=
+1-\frac{\mathrm{RMSE}(\text{method},\text{latent})}{\mathrm{RMSE}(\text{blurred},\text{latent})},
+\label{eq:recovery_fraction}
+\end{equation}
+
+for which a positive value indicates recovery relative to the blurred observation and a negative value indicates a reconstruction worse than the blurred observation itself, together with paired per-patch RMSE differences against every competing method and the corresponding win fraction.
+
+This site selection is not intended to generalize to conditions outside the four benchmark classes; clouds, snow and ice, open ocean, mountainous terrain, coastal regions, and incomplete observations remain out of scope (Section~\ref{sec:generalization}). A descriptive breakdown by absolute latitude band is available but is unbalanced -- several class--band combinations contain a single region -- and is not used here to claim latitude invariance or a statistically significant latitude effect.
+
+\subsection{Metrics}
+
+Image-domain fidelity is assessed using the root mean square error (RMSE) and the structural similarity index (SSIM) \cite{wang2004ssim}. RMSE measures the overall amplitude of the reconstruction error, whereas SSIM provides a complementary assessment of structural agreement. These global metrics do not, however, identify the spatial scales at which information is preserved, attenuated, or amplified.
+
+We therefore also compute isotropically averaged one-dimensional power spectra. For a reference spectrum $P_{\mathrm{ref}}(k)$ and an estimated spectrum $P_{\mathrm{est}}(k)$, we define the absolute spectral residual as
+\begin{equation}
+D_{\mathrm{PSD}}(k)
+=
+\left|
+P_{\mathrm{est}}(k)-P_{\mathrm{ref}}(k)
+\right|,
+\label{eq:psd_residual}
+\end{equation}
+where $k$ denotes spatial frequency. This quantity provides a scale-dependent measure of the discrepancy between the estimated and reference fields.
+
+In the controlled synthetic-detector experiment, $P_{\mathrm{ref}}(k)$ is the spectrum of the pre-degradation Esri texture, allowing the analysis to quantify recovery of spatial frequencies attenuated by the prescribed response. The spectrum of the \psf-blurred synthetic observation is also shown to distinguish partial restoration from simple reproduction of the blurred input. In the real-data round-trip experiment, fidelity is assessed directly in the image domain by comparing the original projected-grid observation $\mathbf{y}$ with the predicted observation $\widehat{\mathbf{y}}$ using RMSE and SSIM. The distinct metric used for the ERA5 flux-conservation experiment, where fidelity to a spatial reference is not the relevant question, is defined separately in the supplementary material.
+
+\section{Results}
+
+\subsection{Controlled Synthetic Detector Recovery}
+\label{sec:synthetic_results}
+
+On the four illustrative scenes, the nominal-width
+reconstruction has the lowest RMSE to the pre-degradation texture, recovering
+approximately 18--23\% of the imposed blur error. Geometric interpolators
+remain closer to the blurred observation, as expected, while the $-50\%$
+operator under-restores and the $+50\%$ operator amplifies weakly constrained
+high-frequency modes. Under the fixed settings reported here,
+Richardson--Lucy is the strongest conventional comparator but remains less
+accurate after the common cell-average transfer. The complete four-scene
+table, images, and power spectra are provided in the supplement; the
+geographically distributed result below is the principal synthetic evidence.
+
+\subsection{Multi-Region Validation Results}
+\label{sec:multiregion_results}
+
+Table~\ref{tab:multiregion} reports the region-level results of the multi-region validation described in Section~\ref{sec:multiregion} ($\lambda=10^{-3}$ common to all three \psf configurations). In every scene class, the matched \psf-aware reconstruction reduces the RMSE relative to the blurred observation, and the region-cluster bootstrap $95\%$ interval for the recovery fraction is strictly positive: from $15.4\%$ [$13.7$, $17.3$] for forest to $19.6\%$ [$18.2$, $21.0$] for urban scenes. The matched reconstruction also has a lower RMSE than every tested competitor -- nearest, bilinear, bicubic, and both mismatched \psf configurations -- on every patch of every scene class (a $100\%$ pairwise win fraction), and the paired RMSE difference against each competitor has a $95\%$ interval that excludes zero in every class.
+
+Two of the ninety water patches were excluded before analysis. Both fall on homogeneous open water in the Caspian Sea, where the prescribed blur degraded the latent texture by a numerically zero RMSE, leaving the recovery fraction of Eq.~\eqref{eq:recovery_fraction} undefined rather than merely small. The criterion depends only on the reference degradation and is evaluated before any reconstruction, so it cannot select for or against any method; the water class therefore contributes 88 patches, and the totals below are 358 rather than the 360 selected.
+
+Both mismatched \psf configurations and all three geometric baselines have a negative mean recovery fraction in every scene class -- a higher RMSE than the blurred observation itself -- with the $+50\%$ width consistently more damaging than $-50\%$, as in Section~\ref{sec:synthetic_results}. An unweighted average over all 40 regions gives a recovery of $17.6\%$, but the per-class breakdown is retained because RMSE scales differ substantially between water and urban scenes. Under the same common $\lambda=10^{-3}$ configuration as the nominal four-scene experiment, the distributed experiment thus corroborates the four-scene result: recovery is modest but systematic.
+
+\begin{table*}[t]
+\centering
+\caption{Multi-region validation with common damping
+$\lambda=10^{-3}$. Intervals are $95\%$ region-cluster bootstrap
+intervals over ten regions per class. Win fraction is the share of
+patches on which the matched reconstruction has lower RMSE than
+bicubic interpolation; Section~\ref{sec:multiregion_results} reports
+the remaining paired comparisons.}
+\label{tab:multiregion}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrrr}
+\toprule
+Scene & Regions & Patches & RMSE blurred & RMSE matched & Recovery [95\% CI] & Win fraction \\
+\midrule
+Agriculture & 10 & 90 & 0.0276 & 0.0223 & 19.6\% [18.0, 21.1] & 100\% \\
+Forest      & 10 & 90 & 0.0308 & 0.0259 & 15.4\% [13.7, 17.3] & 100\% \\
+Urban       & 10 & 90 & 0.0635 & 0.0511 & 19.6\% [18.2, 21.0] & 100\% \\
+Water       & 10 & 88 & 0.0135 & 0.0114 & 15.8\% [12.1, 19.3] & 100\% \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+The corresponding region-aggregated power spectra show the same partial
+recovery at low and intermediate frequencies, with increasing geographic
+spread toward the weakly constrained high-frequency end
+(Fig.~\ref{fig:multiregion_spectra}).
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.96\textwidth]{multi_patch_spectral_uncertainty.pdf}
+\caption{Multi-region spectral behaviour for the four scene classes at the
+common $\lambda=10^{-3}$ configuration. Curves are medians of ten
+region-mean spectra, each averaged over nine patches; shaded bands are the
+descriptive 2.5th--97.5th percentiles across regions, not pixel-wise
+confidence intervals.}
+\label{fig:multiregion_spectra}
+\end{figure*}
+
+\subsection{Fixed-Configuration Comparison with Two-Stage Baselines}
+\label{sec:rl_ablation}
+
+Richardson--Lucy is a two-stage procedure: deconvolution on the \utm grid,
+followed by a separate transfer to \healpix. We add a second,
+non-iterative two-stage control -- Tikhonov-regularized deconvolution
+\cite{tikhonov1977solutions} followed by the identical bicubic upsampling and
+cell-average \healpix regridding -- and evaluate both against the same
+pre-degradation cell-average reference. This removes an estimand mismatch but
+does not, by itself, isolate the cause of any remaining performance gap.
+
+\begin{table*}[t]
+\centering
+\caption{One-patch-per-region ablation over 40 independent Esri regions
+($n=10$ per scene class). The central valid patch is selected using
+reference validity before method scores are inspected. All methods are
+evaluated against the same pre-degradation, cell-average reference.
+$\Delta$ is the paired RMSE difference competitor minus \psf-aware;
+positive values favour the proposed method, and brackets give the 95\%
+region-bootstrap interval (5000 replicates). The Fourier Tikhonov filter
+uses $\lambda_{\mathrm{Tik}}=10^{-2}$ and Richardson--Lucy uses 100 fixed
+iterations; neither setting was selected on held-out calibration regions.}
+\label{tab:rl_ablation}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lrrrrr}
+\toprule
+Scene & PSF-aware & Tikhonov+bicubic & $\Delta_{\mathrm{Tik}}$ [95\% CI]
+& Richardson--Lucy & $\Delta_{\mathrm{RL}}$ [95\% CI] \\
+\midrule
+Urban       & \textbf{0.0592} & 0.0692 & 0.0100 [0.0091, 0.0108] & 0.0680 & 0.0087 [0.0080, 0.0095] \\
+Water       & \textbf{0.0057} & 0.0066 & 0.0008 [0.0005, 0.0011] & 0.0062 & 0.0005 [0.0002, 0.0008] \\
+Forest      & \textbf{0.0267} & 0.0306 & 0.0039 [0.0028, 0.0053] & 0.0300 & 0.0033 [0.0024, 0.0045] \\
+Agriculture & \textbf{0.0250} & 0.0294 & 0.0044 [0.0031, 0.0062] & 0.0286 & 0.0036 [0.0024, 0.0054] \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+For each region, the central patch is preferred; another lattice
+position is used only when the reference degradation is degenerate.
+Table~\ref{tab:rl_ablation} shows that the proposed fixed configuration has
+lower RMSE than both reported two-stage configurations in all 40 regions, and
+every paired-difference interval excludes zero. The absolute margin is
+largest in urban scenes and smallest over water. Because the comparator
+hyperparameters were not chosen by a held-out global tuning protocol, this
+result is limited to the stated configurations: it neither establishes a
+universal ranking against tuned deconvolution pipelines nor attributes the
+gap solely to their sequential structure.
+
+\subsection{Estimand and Hold-Out Controls}
+\label{sec:auxiliary_controls}
+
+The matched reconstruction agrees 2.3--2.5 times better with a child-sampled
+cell-average reference than with a value sampled only at the cell centre.
+This supports the cell-average definition of Eq.~\eqref{eq:cell_average} and
+is why every method is read out on the same estimand. On real Sentinel-2
+patches, withholding a random 10\% of source pixels before operator
+construction gives NRMSE from 4.3\% in urban to 28.1\% in agriculture. Because
+the held-out pixels are spatially interspersed, this is an interpolation
+control rather than geographic generalization. Tables and protocol details
+are in the supplement.
+
+\subsection{Controlled Reduced-Resolution Results}
+\label{sec:real_downscale_results}
+
+In the four illustrative scenes, the matched PSF-aware reconstruction has the
+lowest RMSE and highest correlation against the level-19 reference constructed before the imposed degradation. Its RMSE is 23.0\% below the best geometric baseline in
+the urban scene and 13.0--14.7\% below Richardson--Lucy over water, forest,
+and agriculture. Under the deliberately anisotropic 24~m by 45~m degradation,
+while the inverse remains isotropic, the method is again first in all four
+scenes, with RMSE 6.1--12.5\% below the strongest comparator. This control
+probes robustness to one severe unmodeled response shape; it does not
+validate native anisotropic-kernel support. The complete table, correlations,
+and figure are in the supplement.
+
+The estimator-independent geometric reference produces the same ordering in
+all four scenes. The multi-region extension below supersedes these
+illustrative patches as the main real-data result.
+
+\subsection{Multi-Region Controlled Reduced-Resolution Results}
+\label{sec:real_downscale_multiregion_results}
+
+Table~\ref{tab:real_multiregion} extends the previous comparison from four
+scenes to the 40 real Sentinel-2 regions of
+Section~\ref{sec:real_downscale_multiregion}, with the region as the
+independent unit.
+
+The matched \psf-aware reconstruction has the lowest RMSE in
+\emph{every one of the 40 regions, against every one of the four competitors}
+(and against its own zero-correction arm, below).
+Pooling regions and pairing each competitor against \psf-aware within the same
+region -- so that between-site scene variability cancels -- gives an exact
+two-sided sign test of $p=1.8\times10^{-12}$ for each competitor, and a mean
+paired RMSE difference whose $95\%$ region-bootstrap interval excludes zero in
+every case: $0.0041$ [$0.0029$, $0.0053$] against bicubic, $0.0050$
+[$0.0036$, $0.0065$] against nearest-neighbor, $0.0055$ [$0.0039$, $0.0072$]
+against bilinear, and $0.0024$ [$0.0017$, $0.0032$] against Richardson--Lucy.
+Fig.~\ref{fig:real_multiregion_paired} shows the same result without
+aggregation: every region lies above the identity line, across four decades of
+RMSE.
+
+The primary reference uses the same \psf-aware operator family as one of the
+methods it scores. We therefore repeat all 40 regions against the
+estimator-independent geometric reference of
+Section~\ref{sec:real_downscale_results}: native pixels are assigned to their
+level-19 cell and averaged, with no response model, inversion, or shared code
+path. The ordering is unchanged in all 40 regions against all four
+competitors, with the same exact sign test of $p=1.8\times10^{-12}$. The paired
+margins are smaller because this second reference targets the observed,
+blurrier field: $0.0017$ [$0.0011$, $0.0024$] against Richardson--Lucy and
+$0.0030$ [$0.0021$, $0.0039$] against bicubic, versus $0.0024$ and $0.0041$
+for the primary reference. Absolute RMSE values are not comparable between
+the two references; only the ordering is compared.
+
+The same 40 regions also answer where the gain comes from. The
+zero-correction arm $\mathbf x_{\mathrm{ref}}=\mathbf B\mathbf y$ -- the
+full estimator minus only the CG correction, extracted through the
+estimator's own code path by solving with zero iterations
+(Section~\ref{sec:matrix_free_solution}) -- is scored on the same cells and
+mask as every other method. Alone, it is the \emph{weakest} method tested:
+its mean RMSE exceeds even nearest-neighbor interpolation in every scene
+class, as expected for a normalized Gaussian aggregation that adds smoothing
+to an already blurred observation. The correction reverses this completely,
+reducing RMSE relative to $\mathbf B\mathbf y$ in all 40 regions
+($p=1.8\times10^{-12}$; paired difference $0.0061$ [$0.0044$, $0.0080$]),
+by $21.6\%$ over water, $31.5\%$ over forest, $32.3\%$ over urban and
+$33.5\%$ over agriculture on average, with per-region gains from $8.8\%$
+to $50.3\%$. The advantage of the method is therefore attributable to the
+inverse correction itself, not to the dual-normalized aggregation it starts
+from.
+
+\begin{table}[t]
+\centering
+\caption{Multi-region controlled reduced-resolution validation: mean RMSE per scene class over
+independent regions. Only the strongest competitor per class is tabulated
+(Richardson--Lucy in every class); $\Delta$ is its paired RMSE difference
+against \psf-aware with the $95\%$ region-bootstrap interval. The pooled
+comparisons against all four competitors, each with a $100\%$ win fraction,
+are given in the text.}
+\label{tab:real_multiregion}
+\setlength{\tabcolsep}{2pt}
+\scriptsize
+\begin{tabular}{lrrrr}
+\toprule
+Scene & $n$ & Ours & R.--L. & $\Delta$ [95\% CI] \\
+\midrule
+Agriculture & 10 & \textbf{0.0123} & 0.0143 & 0.0019 [0.0014, 0.0025] \\
+Forest      & 10 & \textbf{0.0106} & 0.0128 & 0.0023 [0.0008, 0.0042] \\
+Urban       & 10 & \textbf{0.0259} & 0.0311 & 0.0052 [0.0041, 0.0066] \\
+Water       & 10 & \textbf{0.0022} & 0.0025 & 0.0003 [0.0001, 0.0005] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{real_groundtruth_multiregion_paired.pdf}
+\caption{Multi-region controlled reduced-resolution validation over 40 Sentinel-2 regions.
+\emph{Left:} one point per region and competitor -- the four baselines and
+the zero-correction aggregate $\mathbf B\mathbf y$ -- against \psf-aware
+RMSE; every point lies above the identity line, so the full method wins in
+every region. Marker shape denotes scene class. \emph{Right:} mean paired
+RMSE difference per competitor with its $95\%$ region-bootstrap interval,
+annotated with the win count and the exact two-sided sign test.}
+\label{fig:real_multiregion_paired}
+\end{figure*}
+
+Relative to the strongest competitor in each class -- Richardson--Lucy
+everywhere, consistent with it being the only comparator that models the
+spatial response -- the \psf-aware RMSE is lower by $11.0\%$ over water,
+$13.6\%$ over agriculture, $16.7\%$ over urban and $17.9\%$ over forest.
+These margins are smaller than the $23.0\%$ of the four-scene urban case
+(the illustrative four-scene result in the supplement), which is the expected direction: a single
+illustrative patch is not a typical one.
+
+How much of this depends on knowing the response width is worth stating
+directly, and at the level of error that actually matters. The spectral
+consistency check of Section~\ref{sec:psf_calibration} cannot distinguish the
+adopted response from its $\pm20\%$ alternatives, so $\pm20\%$ -- not
+$\pm50\%$ -- is the realistic calibration uncertainty. We therefore repeat
+the four-scene test with the degradation held at $25$~m and the
+\emph{assumed} reconstruction width swept over
+$\{0.5,0.8,1.0,1.2,1.5\}\times25$~m, with the edge margin pinned so that all
+arms score identical cells. The geometric baselines stay unchanged to within
+$3\times10^{-6}\%$ across the sweep, as they must, since they never use the
+assumed width; the two response-modelling methods absorb the whole error.
+
+The ranking is not uniformly invariant over the $\pm20\%$ interval. At
+$-20\%$, \psf-aware remains best in all four scenes, with margins of
+$12$--$14\%$ over the best competitor. At $+20\%$ it remains best in three,
+whereas Richardson--Lucy has 2.4\% lower RMSE in agriculture. Thus the method
+ranks first in seven of the eight scene--mismatch cases at $\pm20\%$, with one
+reversal in the smoothest scene. At $\pm50\%$, several additional reversals
+occur and \psf-aware RMSE rises by $23$--$59\%$. Width robustness is therefore
+scene dependent rather than absolute; the spectral consistency check narrows
+the plausible range but does not replace sensor-specific calibration.
+
+This result supersedes the four-scene study as the paper's main real-data
+evidence. It uses the same site list as the synthetic multi-region validation
+of Section~\ref{sec:multiregion}, so the two are directly comparable in
+coverage, and both retain all 40 regions. Two limitations remain: the
+reconstruction still assumes the response used to degrade the observation --
+reconstruction quality under a known response, not blind recovery -- and a
+single sensor and band are involved, so the geographic spread speaks to scene
+diversity, not sensor generality (Section~\ref{sec:generalization}).
+
+\subsection{Spectral Diagnostics}
+\label{sec:spectral_roundtrip}
+
+Across the four controlled scenes, the matched reconstruction shifts the
+power spectrum toward the pre-degradation texture at low and intermediate
+frequencies, whereas geometric methods preserve the imposed blur. The
+$+50\%$ width produces high-frequency amplification and the $-50\%$ width
+under-restores; for the latter, whose kernel is narrow relative to the cell
+lattice ($\sigma\approx0.43$ cell widths), part of the behaviour may reflect
+lattice sampling rather than width error alone (see the supplement).
+Full image and spectral panels are supplied in the supplement.
+The separate four-patch UTM--\healpix--UTM calculation is reported there as an
+implementation sanity check only, not as recovery evidence.
+
+\section{Discussion}
+
+\subsection{Observation Consistency and Partial Spatial Restoration}
+
+The validation separates two recovery benchmarks from one auxiliary
+consistency check: recovery relative to a known synthetic latent field,
+reconstruction of real Sentinel-2 radiometry after a controlled
+reduced-resolution degradation, and a round-trip sanity check that is not
+used as recovery evidence. Across image and spectral
+metrics, the geometric baselines preserve the input blur whereas
+the proposed method shifts the estimate toward the latent reference.
+It is therefore best interpreted as stable partial deconvolution
+combined with inverse resampling, not as purely geometric regridding.
+
+\paragraph{Round-trip sanity check.}
+\label{sec:roundtrip_interpretation}
+The same operator $\mathbf A$ enters both the fit and the round-trip
+prediction, with roughly $1.7\times10^{5}$ retained cells for $65\,536$
+observations; a small residual is therefore expected by construction. The
+round trip is kept only as an implementation and observation-consistency
+check. Recovery evidence instead comes from the synthetic latent texture and,
+more cautiously, from the controlled reduced-resolution experiment. Even the
+latter is not independent instrumental validation: degradation and inversion
+use a prescribed response, and an external higher-resolution reference or a
+measured calibration target would be required for that stronger claim.
+
+\subsection{Relation to Super-Resolution and Inversion Stability}
+
+Using a \healpix grid finer than the native source sampling places
+the method in a regime related to model-based super-resolution.
+In the present experiments, the $6.22$~m \healpix cells
+introduce more unknowns than the number of measurements provided
+by the 10~m source pixels. These additional values are therefore
+jointly inferred through the overlapping spatial-response weights;
+they should not be interpreted as independent measurements at the
+\healpix-cell scale.
+
+Only spatial components sufficiently coupled to the observations
+through $\mathbf A$ can be constrained. Low and intermediate
+frequencies are relatively well supported, whereas the \psf
+attenuates higher-frequency components and makes their inversion
+increasingly sensitive to noise, geolocation errors, and
+spatial-response mismatch. The method consequently aims at partial
+restoration rather than complete inversion of the response.
+
+For the matched experiment, stability is controlled by the light
+$\lambda=10^{-3}$ damping, the observation model, and the finite
+conjugate-gradient iteration; the reconstructed field is a
+model-consistent \healpix estimate, not blind super-resolution.
+The same bias--variance trade-off arises under measurement noise
+(Section~\ref{sec:noise_robustness}), so no single damping value
+is uniformly optimal.
+
+\subsection{Robustness to Noise and Geolocation Error}
+\label{sec:noise_robustness}
+
+The primary controlled experiment of Section~\ref{sec:controlled_synthetic}
+uses the deterministic forward model $\mathbf y=\mathbf A\mathbf x$ with
+exact source geolocation. The supplementary material reports three
+robustness studies, kept out of the main text for length: a repeated
+$\mathbf y=\mathbf A\mathbf x+\mathbf n$ sweep over five noise levels, two
+noise models (white and spatially correlated), and five damping values at
+the matched \psf; the same sweep
+repeated jointly with the $\pm50\%$ \psf-mismatch configurations of
+Section~\ref{sec:psf_mismatch}; and
+a sweep over independent Gaussian perturbations of each source sample's
+geolocation, at $0.1$, $0.2$, and $0.4$ detector pixels
+($\approx1$--$4$~m) in latitude and longitude.
+
+In summary: the preferred damping depends on the anticipated noise level
+and correlation structure, and no single value is best across all tested
+conditions. At the arm-specific damping values reported there, a mismatched \psf can even reach a
+\emph{lower} noisy-image RMSE than the matched configuration once noise
+dominates -- not because mismatch is beneficial, but because an
+underestimated width and stronger damping both act as implicit extra
+regularization, at the cost of under-restoration; mismatch robustness and
+noise-damping robustness therefore cannot be assessed independently.
+Geolocation error degrades quality monotonically and substantially -- at
+$0.4$~px, RMSE rises by $172$--$283\%$ across the four scenes -- so
+sub-pixel geolocation accuracy is a material requirement, not a
+second-order concern.
+
+\subsection{Model Assumptions and Generalization}
+\label{sec:generalization}
+
+The released interface uses a normalized isotropic Gaussian. The complete
+Sentinel-2 image-formation chain can vary with band, detector, viewing
+geometry, terrain, and upstream processing, so sensor-specific MTF or
+calibration information should guide the effective response. The
+mathematical construction itself accepts any non-negative local weight,
+including asymmetric, band-dependent, detector-dependent, or spatially
+varying kernels; exposing and validating those forms remains future work.
+
+The multi-region controlled reduced-resolution benchmark establishes scene and geographic diversity, not
+instrument diversity: one sensor, one band, and one resolution ratio are used,
+and the primary reconstruction assumes the response used to degrade the
+observation. The four 10~m MSI bands have similar MTF specifications, but the
+important untested axes are other resolution ratios, the 20 and 60~m bands,
+and other instruments. The 40 regions are stratified by scene class rather
+than randomly sampled from the planet. Clouds, snow and ice, open ocean,
+mountains, coasts, incomplete observations, and geolocation-correction terms
+require dedicated validation.
+
+\subsection{Outlook: Multi-Observation Fusion and Irregular Sampling}
+\label{sec:outlook_fusion}
+
+Because each operator row requires only a sample location, value,
+and spatial response, observations need not form a regular raster or
+come from one acquisition. Overlapping images could be combined in
+one inverse problem against a shared \healpix field, turning
+redundant Sentinel-2 UTM/MGRS coverage into additional constraints
+rather than separate mosaicked estimates~\cite{bauer2023wasting}.
+
+More generally, acquisition or detector $m$ could be represented as
+\begin{equation}
+\mathbf y_m = \mathbf A_m(\boldsymbol\theta_m)\mathbf x
+             + \mathbf T_m\boldsymbol\alpha_m + \mathbf n_m,
+\label{eq:multi_observation_outlook}
+\end{equation}
+where $\mathbf A_m$ contains its geolocation and possibly asymmetric
+or spatially varying \psf parameters $\boldsymbol\theta_m$, while
+$\mathbf T_m\boldsymbol\alpha_m$ represents gains, offsets, or other
+instrumental templates. Stacking these blocks would allow all
+observations to constrain the same field $\mathbf x$, with their
+noise covariances supplying statistically appropriate relative
+weights. Data redundancy could then support joint estimation of
+selected instrumental parameters, following the general map-making
+logic exemplified by SRoll2~\cite{delouis2019sroll2}. Such a joint fit
+is not implemented or evaluated here and would require explicit
+identifiability tests, priors, and uncertainty propagation.
+
+The same construction could ingest native irregular or wide-swath
+samples such as Sentinel-3 OLCI/SLSTR or SWOT HR without an
+intermediate raster. Neither multi-acquisition fusion nor irregular
+sampling is evaluated here; both require dedicated baselines and
+uncertainty analysis. Direct stacking is appropriate for measurements
+of the same latent physical quantity; cross-band or time-separated
+fusion additionally requires a spectral or temporal observation
+model rather than an assumption that the latent field is unchanged.
+
+The same formulation also applies beyond EO. For astronomical data, each
+block $\mathbf y_m$ may represent a detector timeline, a scanning ring, or an
+instrument-specific map. The associated $\mathbf A_m$ can include pointing,
+a detector beam, polarization orientation, and sampling masks, while
+$\mathbf T_m\boldsymbol\alpha_m$ can carry gains, offsets, transfer-function
+modes, or other instrumental templates. The common unknown may be a scalar
+sky intensity, a polarized $I,Q,U$ field, or a set of spectrally linked sky
+components on \healpix. This is the same structural move as in the present
+paper: preserve each observation in its native measurement model and combine
+it through a common latent support rather than first forcing all inputs to one
+poorest response.
+
+The connection to SRoll2 is therefore methodological rather than merely
+historical. In SRoll2, redundancy between repeated sky observations helps
+separate a common map from selected instrumental effects
+\cite{delouis2019sroll2}. In the extension envisaged here, beam or calibration
+parameters would enter $\boldsymbol\theta_m$ or
+$\boldsymbol\alpha_m$ and would be estimated only when scan redundancy and
+priors make them identifiable. The current work stops before that step: its
+operators are fixed, its response is scalar and isotropic, and no
+self-calibration is attempted. Nevertheless, the weighted block formulation
+provides a direct route from fixed-operator resampling toward correction and
+fusion of heterogeneous astronomical observations without changing the
+underlying \healpix representation.
+
+\subsection{Implications for HEALPix Earth-Observation Data Cubes}
+\label{sec:hpx_datacube_implications}
+
+The common storage support should not be confused with effective resolution.
+A finer \healpix level introduces spatial redundancy in exchange for a
+non-overlapping global index, equal-area cells, and hierarchy. Different
+acquisitions need not be smoothed to one poorest response: each can retain
+its own operator while contributing to a shared estimate. Effective
+resolution then becomes a property of the combined normal operator, and
+fused products should carry cell- or region-dependent uncertainty and
+resolution diagnostics.
+
+On an NVIDIA L4 (22~GiB) system, over 357 $256\times256$ patches the
+median operator construction time is 0.302~s (interquartile range
+0.296--0.309~s) and the median solve time 0.072~s, a combined
+$\sim$0.37~s of which construction accounts for roughly 81\%.
+The matched operator contains a median 1,441,792 nonzero coefficients and
+uses a median 1021~MiB peak GPU memory. Because operators depend on geometry,
+they can be reused for repeated acquisitions of one footprint; a descriptive
+batch sweep in the supplement observed an 11.4--11.5$\times$ amortized
+speedup. Regional production still requires parallel construction, chunk
+scheduling, preconditioning, storage, and compression design.
+
+Some applications require exact preservation of an area-integrated quantity.
+Two optional implementations -- a hard-binning transfer and a constrained
+PSF-aware correction -- are derived and tested on ERA5 sensible-heat flux in
+the supplement, alongside their relation to established conservative
+remapping methods \cite{jones1999scrip,hill2004esmf,zhuang2020xesmf,ullrich2015tempestremap}.
+Their maximum relative global-integral errors are
+$3.9\times10^{-16}$ and $2.9\times10^{-14}$, respectively; conservation of a
+scalar total does not by itself establish spatial fidelity.
+
+\section{Conclusion}
+
+We introduced \texttt{healpix-resample}, a PSF-aware framework that maps
+projected EO imagery onto \healpix through a sparse weighted inverse problem.
+Dual-normalized operators form an exact adjoint pair in grid-dependent
+metrics, and a matrix-free weighted-CG solve estimates a cell-average field
+while retaining an explicit relation to sampling geometry and spatial
+response.
+
+Across 40 synthetic regions and 358 valid patches, the method recovers
+15.4--19.6\% of the imposed blur error by scene class. In the real-data
+reduced-resolution experiment it ranks first against every competitor in all
+40 Sentinel-2 regions, with 11.0--17.9\% lower RMSE than Richardson--Lucy and
+the same ordering under an estimator-independent reference. The evidence
+supports stable partial restoration, not blind super-resolution or
+cross-sensor generality.
+
+In practice, three conditions govern safe application. The effective
+response width should be known to roughly $\pm20\%$, the level at which the
+real-data ranking is largely preserved and which a spectral consistency
+check against the target sensor can secure. Geolocation must be accurate to
+a small fraction of a source pixel: jitter of $0.1$~px already raises RMSE
+by $14$--$27\%$, and no regularization compensates for a geometric error.
+And the damping should be matched to the anticipated noise amplitude and
+covariance, stronger values being justified only when white-noise
+amplification dominates.
+
+The block formulation also opens a path toward PSF-aware fusion of
+acquisitions, detectors, and irregular samples on a common \healpix support.
+Following the redundancy-based logic exemplified by SRoll2, future work may
+jointly fit selected instrumental parameters where identifiability and priors
+permit, including for astronomical observations with detector-specific beams
+and pointing. These extensions remain prospective rather than validated
+claims of the present study.
+
+\section*{Code and Data Availability}
+The \texttt{healpix-resample} package and the notebooks used to reproduce the
+figures and tables are available at
+\url{https://github.com/GRID4EARTH/healpix-resample}
+\cite{healpix_resample_repo}. The frozen Sentinel-2 and ERA5 inputs are
+archived on Zenodo \cite{healpix_resample_paper_data}, and the repository
+provides a verified loader for installing them at the expected paths. The
+Esri-derived textures are not redistributed; they regenerate
+deterministically from the pinned World Imagery Wayback release 26334
+(2026-08-05), with the expected SHA-256 of every store recorded in the
+repository's data manifest.
+
+\section*{Acknowledgment}
+This work was carried out primarily in the ESA-funded GRID4EARTH project,
+ESA Digital Twin Earth Framework: Common DGGS for DestinE and Copernicus
+Sentinel Data, contract 4000147951/25/I-NS. A. K. is supported by Estonian
+Research Agency grants PRG1764 and PSG841, the Centre of Excellence for
+Sustainable Land Use TK232, and ERC WaterSmartLand 101125476. The authors
+thank the HEALPix, Pangeo, Xarray, and Zarr communities.
+
+\IEEEtriggercmd{\balance}
+\IEEEtriggeratref{32}
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
