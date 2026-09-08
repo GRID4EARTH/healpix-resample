@@ -1,0 +1,4 @@
+source_grid,n_source,healpix_level,n_target,nnz_weights,weights_mib,build_s,apply_s
+1.0deg,64800,6,49152,269449,3.27,3.293,0.00016
+1.0deg,64800,7,196608,572994,7.31,4.752,0.00047
+0.5deg,259200,7,196608,1084031,13.16,13.783,0.00084
