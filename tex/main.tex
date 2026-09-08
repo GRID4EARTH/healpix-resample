@@ -76,7 +76,7 @@ Email: vincent.dumoulin@esa.int. ORCID: 0000-0001-5049-3817.}%
 \maketitle
 
 \begin{abstract}
-Earth-observation datasets are often provided on projected grids, while global studies increasingly rely on hierarchical spherical grids such as \healpix. Conventional interpolation typically neglects the sensor point-spread function (\psf) and may warp spatial patterns when the target support is finer than the original sampling. We introduce \texttt{healpix-resample}, a sparse approach that treats projected-grid pixels as spatially weighted measurements of an underlying \healpix field of cell averages. A pair of dual-normalized transfer operators constitutes an exact adjoint pair under grid-specific weighted inner products, and a damped refinement is computed via a matrix-free, weighted conjugate-gradient solve on GPU. In a controlled synthetic experiment spanning 40 regions, reconstruction with the nominal Gaussian width lowered blur-driven RMSE by 15.4--19.6\% across four scene categories. In reduced-resolution tests with real Sentinel-2 B04 imagery, the method produced the smallest RMSE in all 40 regions relative to four competing methods, improving by 11.0--17.9\% over Richardson--Lucy, the best-performing baseline. The same ranking held when using an estimator-independent geometric reference. It was mostly maintained under 20\% errors in response width, except for one smooth-scene case with a 20\% overestimate. The median time to build the operators and solve was 0.37~s for a $256\times256$ patch on an NVIDIA L4. Overall, the method enables model-consistent transfer to \healpix when spatial response and geolocation are sufficiently accurate, and it offers a foundation for future multi-observation map-making.
+Earth-observation datasets are often provided on projected grids, while global studies increasingly rely on hierarchical spherical grids such as \healpix. Conventional interpolation typically neglects the sensor point-spread function (\psf) and may warp spatial patterns when the target support is finer than the original sampling. We introduce \texttt{healpix-resample}, a sparse approach that treats projected-grid pixels as spatially weighted measurements of an underlying \healpix field of cell averages. A pair of dual-normalized transfer operators constitutes an exact adjoint pair under grid-specific weighted inner products, and a damped refinement is computed via a matrix-free, weighted conjugate-gradient solve on GPU. In a controlled synthetic experiment spanning 40 regions, reconstruction with the nominal Gaussian width lowered blur-driven RMSE by 15.4--19.6\% across four scene categories. In reduced-resolution tests with real Sentinel-2 B04 imagery, the method produced the smallest RMSE in all 40 regions relative to four fixed-configuration baselines, improving by 11.0--17.9\% over Richardson--Lucy, the best-performing baseline. The same ranking held when using an estimator-independent geometric reference. It was mostly maintained under 20\% errors in response width, except for one smooth-scene case with a 20\% overestimate. The median time to build the operators and solve was 0.37~s for a $256\times256$ patch on an NVIDIA L4. Overall, the method enables model-consistent transfer to \healpix when spatial response and geolocation are sufficiently accurate, and it offers a foundation for future multi-observation map-making.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -181,7 +181,7 @@ g_{ij}
 \end{equation}
 
 where $s_{\psf}$ controls the width of the effective spatial
-response\footnote{The isotropic Gaussian of Eq.~\eqref{eq:raw_weight} is a choice, not a structural requirement: every subsequent step uses only the numeric weights $g_{ij}$, so a more complex response — anisotropic, spatially varying, or different for each measurement, detector, or acquisition — can be substituted for $g$ without changing the normalizations, the weighted-adjoint relation of Eq.~\eqref{eq:dxdy}, or the solver. The released interface currently exposes only the scalar width $s_{PSF}$ (Section \ref{sec:auxiliary_controls}).}. With this convention, the corresponding full width at
+response\footnote{The isotropic Gaussian of Eq.~\eqref{eq:raw_weight} is a choice, not a structural requirement: every subsequent step uses only the numeric weights $g_{ij}$, so a more complex response — anisotropic, spatially varying, or different for each measurement, detector, or acquisition — can be substituted for $g$ without changing the normalizations, the weighted-adjoint relation of Eq.~\eqref{eq:weighted_adjoint}, or the solver. The released interface currently exposes only the scalar width $s_{PSF}$ (Section~\ref{sec:generalization}).}. With this convention, the corresponding full width at
 half maximum is
 
 \begin{equation}
@@ -234,7 +234,7 @@ A second operator
 $\mathbf{B}\in\mathbb{R}^{M\times N}$ is constructed by
 normalizing the same raw weights independently for each retained
 \healpix cell, optionally scaled by a per-source-pixel area (or
-more generally, weight) $a_i\geq0$:
+more generally, weight) $a_i\geq0$. Zero-weight observations are excluded from the active observation space, and retained cells have strictly positive accumulated weights, so the diagonal inverses and weighted inner products below are well defined:
 
 \begin{equation}
 B_{ji}
@@ -421,8 +421,10 @@ is an exact ablation in the criterion actually optimized: the correction
 cannot worsen that criterion relative to $\mathbf x_{\mathrm{ref}}$. It does
 not guarantee a lower RMSE to a latent cell-average reference, so an
 image-domain $\mathbf x_{\mathrm{ref}}$ comparison must be computed directly
-rather than inferred from the full-solution tables. The supplement specifies
-the cell-aligned numerical export needed for that additional check.
+rather than inferred from the full-solution tables. That comparison is
+reported in Section~\ref{sec:real_downscale_multiregion_results}, where
+$\mathbf x_{\mathrm{ref}}=\mathbf B\mathbf y$ is scored as a method in its
+own right over the 40 regions.
 
 \subsection{Matrix-Free Iterative Solution}
 \label{sec:matrix_free_solution}
@@ -436,11 +438,9 @@ per iteration, and, started from zero, it minimizes the weighted objective
 of Eq.~\eqref{eq:weighted_variational} over a growing Krylov subspace --
 the property behind the zero-correction bound of
 Eq.~\eqref{eq:zero_correction_bound}. A matrix-free LSQR
-iteration~\cite{paige1982lsqr} is mathematically equivalent on this
-system at the same per-iteration cost; its better numerical behaviour on
-ill-conditioned normal equations matters when iterating to tight
-tolerances, not in the present damped ($\lambda>0$), 14-iteration
-regime, and is not explored here.
+iteration~\cite{paige1982lsqr} applied to the corresponding weighted
+least-squares problem is mathematically equivalent to CG on these normal
+equations, at the same per-iteration cost; the two were not compared here.
 
 Each iteration therefore requires one sparse application of
 $\mathbf{A}$ and one sparse application of $\mathbf{B}$. If each
@@ -594,13 +594,13 @@ In a separate path, the same native image is blurred by an \emph{additional}
 Gaussian of 25~m FWHM and
 point-sampled every other pixel to obtain a 20~m observation. Decimation is
 used rather than a $2\times2$ block average so that no additional boxcar
-component is introduced. Since the native image already carries the nominal
-12.5~m response, which the reference only partly removes, the total response
-relative to the reference estimand lies between 25~m and
-$\sqrt{25^2+12.5^2}=27.95$~m; the inverse below uses the 25~m kernel actually
-applied, so it slightly under-corrects and the reported gains are
-conservative in that respect. The observation is reconstructed on the level-19
-support with that same 25~m kernel and compared with nearest-neighbor,
+component is introduced. Under the nominal Gaussian approximation for the
+native response, the combined response relative to the pre-instrument field
+would have $\mathrm{FWHM}=\sqrt{25^2+12.5^2}=27.95$~m. Because the reference
+is itself obtained by regularized reconstruction and aggregation, the
+experiment is not claimed to be exactly response-matched relative to it. The
+observation is reconstructed on the level-19
+support with the applied 25~m kernel and compared with nearest-neighbor,
 bilinear, bicubic, and Richardson--Lucy followed by bicubic cell-average
 regridding. Evaluation is restricted to cells at least 200~m from the patch
 boundary. A deliberately anisotropic 24~m by 45~m degradation, inverted with
@@ -777,7 +777,7 @@ The patches are not treated as independent observations. The nine patches drawn 
 \label{eq:recovery_fraction}
 \end{equation}
 
-for which a positive value indicates recovery relative to the blurred observation and a negative value indicates a reconstruction worse than the blurred observation itself, together with paired per-patch RMSE differences against every competing method and the corresponding win fraction.
+for which a positive value indicates recovery relative to the blurred observation and a negative value indicates a reconstruction worse than the blurred observation itself, together with paired per-patch RMSE differences against every competing method and the corresponding win fraction. Reported recovery fractions and percentage gains are averages of ratios formed at the patch or region level, and therefore need not equal the ratio recomputed from the rounded mean RMSE values shown in the tables.
 
 This site selection is not intended to generalize to conditions outside the four benchmark classes; clouds, snow and ice, open ocean, mountainous terrain, coastal regions, and incomplete observations remain out of scope (Section~\ref{sec:generalization}). A descriptive breakdown by absolute latitude band is available but is unbalanced -- several class--band combinations contain a single region -- and is not used here to claim latitude invariance or a statistically significant latitude effect.
 
@@ -1038,8 +1038,9 @@ illustrative patch is not a typical one.
 How much of this depends on knowing the response width is worth stating
 directly, and at the level of error that actually matters. The spectral
 consistency check of Section~\ref{sec:psf_calibration} cannot distinguish the
-adopted response from its $\pm20\%$ alternatives, so $\pm20\%$ -- not
-$\pm50\%$ -- is the realistic calibration uncertainty. We therefore repeat
+adopted response from its $\pm20\%$ alternatives. We therefore use $\pm20\%$
+as a sensitivity interval around the adopted operating point, rather than as
+an estimated calibration uncertainty, and repeat
 the four-scene test with the degradation held at $25$~m and the
 \emph{assumed} reconstruction width swept over
 $\{0.5,0.8,1.0,1.2,1.5\}\times25$~m, with the edge margin pinned so that all
@@ -1083,6 +1084,7 @@ implementation sanity check only, not as recovery evidence.
 \section{Discussion}
 
 \subsection{Observation Consistency and Partial Spatial Restoration}
+\label{sec:roundtrip_interpretation}
 
 The validation separates two recovery benchmarks from one auxiliary
 consistency check: recovery relative to a known synthetic latent field,
@@ -1095,7 +1097,6 @@ It is therefore best interpreted as stable partial deconvolution
 combined with inverse resampling, not as purely geometric regridding.
 
 \paragraph{Round-trip sanity check.}
-\label{sec:roundtrip_interpretation}
 The same operator $\mathbf A$ enters both the fit and the round-trip
 prediction, with roughly $1.7\times10^{5}$ retained cells for $65\,536$
 observations; a small residual is therefore expected by construction. The
@@ -1288,7 +1289,7 @@ remapping \cite{jones1999scrip,hill2004esmf,zhuang2020xesmf,ullrich2015tempestre
 and a constrained PSF-aware correction imposes a prescribed global integral
 on the damped reconstruction itself. On ERA5 sensible-heat
 flux the first and third conserve the global total to maximum relative errors
-of $3.9\times10^{-16}$ and $2.9\times10^{-14}$; the overlap operator conserves
+of $6.7\times10^{-16}$ and $2.9\times10^{-14}$; the overlap operator conserves
 the area integral to $10^{-14}$ and preserves a constant field relative to the
 full geometric cell area, which hard binning does only relative to the source
 area it assigns. The three are not interchangeable, and conservation of a
@@ -1312,9 +1313,10 @@ supports stable partial restoration, not blind super-resolution or
 cross-sensor generality.
 
 In practice, three conditions govern safe application. The effective
-response width should be known to roughly $\pm20\%$: the ranking is largely
-preserved over that range, which is a tested sensitivity interval around a
-plausible operating point rather than a demonstrated calibration uncertainty.
+response width must be reasonably well known: in the four illustrative
+scenes the method retains the lowest RMSE in seven of the eight tested
+$\pm20\%$ response-width perturbations, a sensitivity interval around the
+adopted operating point rather than a demonstrated calibration uncertainty.
 Geolocation must be accurate to
 a small fraction of a source pixel: jitter of $0.1$~px already raises RMSE
 by $14$--$27\%$ at the tested damping; regularization does not correct
