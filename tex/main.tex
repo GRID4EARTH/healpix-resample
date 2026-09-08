@@ -103,67 +103,39 @@ Using a \healpix grid at a resolution finer than the sensor’s native sampling 
 The contribution has three parts. First, projected-grid pixels are modeled as sparse measurements of a \healpix cell-averaged field via an explicit spatial response model, instead of being handled purely through geometry. Second, a pair of dual-normalized operators constitutes an exact weighted adjoint pair, enabling a matrix-free GPU solver with linear per-iteration complexity for a fixed neighborhood size. Third, the approach is validated using controlled synthetic images and real Sentinel-2 observations across 40 geographically distributed regions, including comparisons to geometric and deconvolution baselines, response-mismatch experiments, and an estimator-agnostic reference. The open-source code is intended for \healpix/DGGS data-cube workflows \cite{healpix_resample_repo}.
 
 Comprehensive results on robustness, throughput, and area-integral conservation are included in the supplementary material.
-%----------- END OF WRITEFULL REVIEW -----------------
+
 \section{Background and Related Work}
 
 \subsection{HEALPix as a Latent Spherical Support}
 
-The \healpix tessellation divides the sphere into $12\Nside^2$ equal-area cells, with $\Nside=2^L$ at hierarchy level $L$ \cite{gorski2005healpix,calabretta2007healpix}. Its equal-area, hierarchical, and iso-latitude properties make it useful for area-consistent statistics, multi-resolution indexing, and efficient spherical data access.
+The \healpix tessellation partitions the sphere into $12\Nside^2$ equal-area pixels, where $\Nside=2^L$ at hierarchical level $L$ \cite{gorski2005healpix,calabretta2007healpix}. Because it is equal-area, hierarchical, and iso-latitude, it is well suited to area-preserving statistics, multi-scale indexing, and fast access to spherical datasets.
 
-Here \healpix serves as a latent spherical support rather than a sensor-specific sampling grid; the method depends on neither a particular sensor resolution nor a fixed level. Sentinel-2 imagery is only a representative high-resolution optical test case, for which we take $L=20$ ($\Nside=1{,}048{,}576$, cell size $\approx6.22$~m). This makes the target support finer than the native 10~m sampling, but the same formulation applies to coarser or finer sensors and other DGGS resolutions.
+Here \healpix is used as an underlying latent spherical support, not as a sensor-dependent sampling grid; accordingly, the approach is not tied to any specific sensor resolution or a fixed level. Sentinel-2 imagery is employed merely as a representative high-resolution optical example, for which we set $L=20$ ($\Nside=1{,}048{,}576$, cell size $\approx6.22$~m). This choice makes the target support finer than the native 10~m sampling, yet the same framework applies to sensors with coarser or finer sampling and to other DGGS resolutions.
 
-When the target grid is finer than the native sampling, the problem has more degrees of freedom than observations, so the finer grid does not by construction carry independent information at the target-cell scale. Those extra degrees of freedom must instead be constrained by the forward observation model, the effective spatial response, and regularization, as in image restoration and super-resolution.
+When the desired grid is finer than the instrument’s native sampling, there are more unknowns than measurements, meaning the higher-resolution grid cannot inherently provide independent information at the scale of the target cells. The additional degrees of freedom therefore need to be limited by the forward measurement model, the effective spatial response, and regularization, as is done in image restoration and super-resolution.
 
-\healpix is supported by a mature software ecosystem:
-\texttt{healpy} provides pixelization and spherical-harmonic
-transforms \cite{zonca2019healpy}, and \texttt{cdshealpix-python}
-efficient indexing and geometry \cite{cdshealpix2021}. The present
-implementation belongs to the GRID4EARTH stack
-(\texttt{healpix-geo}, \texttt{healpix-resample},
-\texttt{healpix-analyse}, \texttt{healpix-plot}, distributed
-through the \texttt{grid4earth} meta-package
-\cite{grid4earth_tools}) and uses \texttt{healpix-geo} for
-indexing, coordinate conversion, cell geometry, and neighbourhoods
-\cite{healpix_geo_repo,healpix_resample_repo}. \texttt{healpix-geo}
-(Apache-2.0) supports both spherical and ellipsoidal conventions --
-geodetic WGS84 coordinates mapped onto an authalic sphere before
-indexing, preserving equal area on the ellipsoidal Earth -- so the
-sparse transfer operators can be built consistently under either.
+\healpix is backed by a well-established software ecosystem: \texttt{healpy} offers pixelization and spherical-harmonic transforms \cite{zonca2019healpy}, while \texttt{cdshealpix-python} provides efficient indexing and geometric operations \cite{cdshealpix2021}. The implementation presented here is part of the GRID4EARTH stack (\texttt{healpix-geo}, \texttt{healpix-resample}, \texttt{healpix-analyse}, \texttt{healpix-plot}, distributed via the \texttt{grid4earth} meta-package \cite{grid4earth_tools}) and relies on \texttt{healpix-geo} for indexing, coordinate transforms, cell geometry, and neighbourhood queries \cite{healpix_geo_repo,healpix_resample_repo}. \texttt{healpix-geo} (Apache-2.0) supports both spherical and ellipsoidal conventions—mapping geodetic WGS84 coordinates to an authalic sphere prior to indexing to retain equal-area properties on the ellipsoidal Earth—allowing sparse transfer operators to be constructed consistently in either setting.
 
-General-purpose EO resampling toolkits such as
-\texttt{pyresample} already offer nearest-neighbour and
-Gaussian-weighted regridding onto \healpix and other target grids
-\cite{hoese2020pyresample}, but do not pose the target-grid values
-as the solution of an inverse observation problem with an explicit
-sensor \psf. The proposed method is thus complementary to the
-existing \healpix and EO ecosystems, while relying on the
-GRID4EARTH geometry layer for ellipsoid-aware coordinates.
+General-purpose EO resampling libraries such as \texttt{pyresample} already provide nearest-neighbour and Gaussian-weighted regridding onto \healpix and other target grids \cite{hoese2020pyresample}, but they do not frame the target-grid values as the solution to an inverse observation problem that explicitly incorporates the sensor \psf. The method proposed here therefore complements the current \healpix and EO ecosystems, while leveraging the GRID4EARTH geometry layer to obtain ellipsoid-aware coordinates.
 
-\psf-aware resampling has also been addressed outside the DGGS
-context: the SR2 workflow \cite{inamdar2023sr2} incorporates the
-sensor spatial response when resampling hyperspectral imagery, but
-in the forward direction, \emph{degrading} a high-resolution
-raster to emulate a coarser target sensor. The problem addressed
-here is the inverse one -- recovering a latent field at a finer,
-DGGS-indexed resolution from a coarser, \psf-blurred observation,
-posed as a regularized inverse problem with an explicit adjoint
-pair. Both approaches share the premise that ignoring the spatial
-response during resampling is a methodological error.
+\psf-aware resampling has been studied beyond the DGGS setting as well. For example, the SR2 workflow \cite{inamdar2023sr2} accounts for the sensor’s spatial response when resampling hyperspectral imagery, but it does so in the forward direction, i.e., by \emph{degrading} a high-resolution raster to mimic a coarser target sensor. The focus here is the inverse problem—estimating a latent field at a finer, DGGS-indexed resolution from a coarser, \psf-blurred measurement—formulated as a regularized inverse problem with an explicit adjoint operator pair. In both cases, the underlying assumption is the same: neglecting spatial response in resampling constitutes a methodological mistake.
 
 \subsection{Resampling as an Observation Model}
 
-In this work, resampling is formulated as an observation model rather than as a purely geometric interpolation. The projected image is treated as a set of spatially weighted measurements of a latent \healpix field, with weights determined by geolocation and by an assumed effective \psf. This connects the method to classical inverse formulations used in deconvolution, super-resolution, and model-based image reconstruction \cite{bertero1998inverse,starck1998deconvolution,richardson1972bayesian,lucy1974iterative,park2003superresolution}.
+In this study, resampling is cast as an observation model instead of being viewed as a purely geometric interpolation. The projected image is interpreted as a collection of spatially weighted measurements of an underlying \healpix field, where the weights are set by geolocation and an assumed effective \psf. This framing links the approach to classical inverse methods used in deconvolution, super-resolution, and model-based image reconstruction \cite{bertero1998inverse,starck1998deconvolution,richardson1972bayesian,lucy1974iterative,park2003superresolution}.
 
-The scientific motivation for this change is to preserve the relationship between the reconstructed field and the measurement process; GPU execution is an enabling technology rather than the justification for the model. Sparse operators and matrix-free iterations make an inverse formulation affordable at the scale of routine patch processing, as quantified in Section~\ref{sec:hpx_datacube_implications}. This viewpoint also connects resampling to map-making methods in which redundant observations constrain a common map and, when the model is sufficiently identifiable, instrumental nuisance parameters. For example, SRoll2 fits higher-order instrumental-response parameters from Planck data redundancy while constructing frequency maps~\cite{delouis2019sroll2}. The present work makes no equivalent calibration claim: geolocation and the effective \psf are held fixed, and only the latent spatial field is estimated.
+The primary scientific rationale for this modification is to maintain a consistent relationship between the reconstructed latent field and the underlying measurement model; in this context, GPU execution should be regarded as an enabling implementation detail rather than a justification for the modeling choice. The use of sparse operators and matrix-free iterative methods renders an inverse-problem formulation computationally tractable at the scale required for routine patch-based processing, as quantified in Section~\ref{sec:hpx_datacube_implications}. This perspective further situates resampling within the broader class of map-making approaches, wherein redundant observations constrain a shared map and, when the forward model is sufficiently identifiable, also permit estimation of instrumental nuisance parameters. As an example, SRoll2 exploits redundancy in Planck observations to fit higher-order instrumental response parameters while simultaneously producing frequency maps~\cite{delouis2019sroll2}. The present study makes no analogous calibration claim: geolocation and the effective \psf are treated as fixed, and inference is restricted to the latent spatial field.
 
-The objective is not blind super-resolution from a single image, but controlled inverse resampling: the recovered \healpix field is explicitly tied to the assumed observation operator and constrained by regularization.
+The aim is not single-image blind super-resolution, but rather a controlled inverse-resampling formulation: the reconstructed \healpix field is explicitly linked to the assumed observation operator and further constrained through regularization.
 
-Framed this way, the observation model makes very few structural assumptions about its input: each source sample contributes a value, a geolocation, and an assumed local spatial response, with no requirement that the samples originate from a single regular raster or a single acquisition. Section~\ref{sec:outlook_fusion} returns to this point and outlines how the mathematical formulation extends by stacking observation blocks for multiple overlapping acquisitions and for sensors whose measurements are not grid-aligned. The released implementation does not yet expose all of this generality.
+Under this formulation, the observation model imposes minimal structural constraints on the input data. Specifically, each source sample is characterized by (i) an observed value, (ii) an associated geolocation, and (iii) an assumed local spatial response, without requiring that samples be derived from a single regular raster or from a single acquisition event. Section~\ref{sec:outlook_fusion} revisits this issue and describes how the mathematical framework can be generalized by concatenating observation blocks corresponding to multiple overlapping acquisitions, including sensors whose measurements are not aligned to a common grid. The current released implementation, however, does not yet expose the full extent of this generality.
 
 \section{Method}
 
 \subsection{Dual-Normalized Transfer Operators}
 \label{sec:dual_normalized_operators}
+
+%----------- END OF WRITEFULL REVIEW -----------------
 
 Let $\mathbf{y}\in\mathbb{R}^{N}$ denote the vectorized image
 patch on the projected source grid, where $N$ is the number of
