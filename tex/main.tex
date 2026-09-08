@@ -151,15 +151,21 @@ field $f$,
 \label{eq:cell_average}
 \end{equation}
 The finer target support therefore increases the number of represented
-values, not the number of independent measurements.
+values, not the number of independent measurements. The response integral
+over each cell is approximated by its centre value, $\int_{C_j}p_i\,\mathrm
+d\Omega\simeq|C_j|\,p_i(\boldsymbol s_j)$; because the retained cells are
+equal-area, the common factor $|C_j|$ cancels under the row normalizations
+below. This is a quadrature approximation, not an exact integration of the
+response over each cell footprint.
 
 The implementation uses two sparse transfer operators with
 complementary normalization conventions. The first operator maps
 a \healpix field to the source observation grid, whereas the
 second maps source-grid values to an initial \healpix estimate.
 The two operators use the same spatial neighbourhoods and the
-same unnormalized Gaussian weights, but they are not exact
-transposes of one another.
+same unnormalized Gaussian weights, but they are not Euclidean
+transposes of one another; they form an exact adjoint pair in the
+weighted metrics introduced below.
 
 For source pixel $i$ and retained \healpix cell $j$, let
 $d_{ij}$ denote their local geodesic distance. The unnormalized
@@ -488,7 +494,8 @@ residual norm.
 
 The correction minimizes a weighted residual but does not enforce
 conservation of an area-integrated quantity. The supplementary material
-evaluates two optional conservative extensions on ERA5 flux data;
+evaluates three optional conservative extensions, two of them on ERA5 flux
+data;
 neither is used in the Sentinel-2 experiments.
 
 \subsection{Round-Trip Prediction}
@@ -583,11 +590,17 @@ level-19 cell. The reference is constructed before, and independently of, the
 degradation used to test the methods, although it shares the estimator family
 and is not an external higher-resolution reference.
 
-In a separate path, the same native image is blurred to 25~m FWHM and
+In a separate path, the same native image is blurred by an \emph{additional}
+Gaussian of 25~m FWHM and
 point-sampled every other pixel to obtain a 20~m observation. Decimation is
 used rather than a $2\times2$ block average so that no additional boxcar
-component is introduced. The observation is reconstructed on the level-19
-support with the known 25~m response and compared with nearest-neighbor,
+component is introduced. Since the native image already carries the nominal
+12.5~m response, which the reference only partly removes, the total response
+relative to the reference estimand lies between 25~m and
+$\sqrt{25^2+12.5^2}=27.95$~m; the inverse below uses the 25~m kernel actually
+applied, so it slightly under-corrects and the reported gains are
+conservative in that respect. The observation is reconstructed on the level-19
+support with that same 25~m kernel and compared with nearest-neighbor,
 bilinear, bicubic, and Richardson--Lucy followed by bicubic cell-average
 regridding. Evaluation is restricted to cells at least 200~m from the patch
 boundary. A deliberately anisotropic 24~m by 45~m degradation, inverted with
@@ -1124,8 +1137,11 @@ is uniformly optimal.
 \label{sec:noise_robustness}
 
 The primary controlled experiment of Section~\ref{sec:controlled_synthetic}
-uses the deterministic forward model $\mathbf y=\mathbf A\mathbf x$ with
-exact source geolocation. The supplementary material reports three
+generates observations by a prescribed pipeline combining a Gaussian blur
+with detector-aperture averaging, and inverts them with the scalar Gaussian
+operator $\mathbf A$, which therefore does not reproduce the full generation
+response exactly; source geolocation is exact. The supplementary material
+reports three
 robustness studies, kept out of the main text for length: a repeated
 $\mathbf y=\mathbf A\mathbf x+\mathbf n$ sweep over five noise levels, two
 noise models (white and spatially correlated), and five damping values at
@@ -1188,8 +1204,11 @@ More generally, acquisition or detector $m$ could be represented as
 \end{equation}
 where $\mathbf A_m$ contains its geolocation and possibly asymmetric
 or spatially varying \psf parameters $\boldsymbol\theta_m$, while
-$\mathbf T_m\boldsymbol\alpha_m$ represents gains, offsets, or other
-instrumental templates. Stacking these blocks would allow all
+$\mathbf T_m\boldsymbol\alpha_m$ represents offsets or other additive
+instrumental templates. Multiplicative gains are not additive templates in
+general: they either enter the operator parameters $\boldsymbol\theta_m$, or
+appear as gain-correction templates only after an explicit linearization
+around a current field estimate. Stacking these blocks would allow all
 observations to constrain the same field $\mathbf x$, with their
 noise covariances supplying statistically appropriate relative
 weights. Data redundancy could then support joint estimation of
@@ -1214,7 +1233,10 @@ a detector beam, polarization orientation, and sampling masks, while
 $\mathbf T_m\boldsymbol\alpha_m$ can carry gains, offsets, transfer-function
 modes, or other instrumental templates. The common unknown may be a scalar
 sky intensity, a polarized $I,Q,U$ field, or a set of spectrally linked sky
-components on \healpix. This is the same structural move as in the present
+components on \healpix. Polarized map-making fits naturally within this block
+structure, but requires its own operator and weighting construction rather
+than a direct reuse of the positivity-based properties of the scalar
+resampler. This is the same structural move as in the present
 paper: preserve each observation in its native measurement model and combine
 it through a common latent support rather than first forcing all inputs to one
 poorest response.
@@ -1267,8 +1289,9 @@ and a constrained PSF-aware correction imposes a prescribed global integral
 on the damped reconstruction itself. On ERA5 sensible-heat
 flux the first and third conserve the global total to maximum relative errors
 of $3.9\times10^{-16}$ and $2.9\times10^{-14}$; the overlap operator conserves
-the area integral to $10^{-14}$ and, unlike hard binning, preserves a constant
-field cell by cell. The three are not interchangeable, and conservation of a
+the area integral to $10^{-14}$ and preserves a constant field relative to the
+full geometric cell area, which hard binning does only relative to the source
+area it assigns. The three are not interchangeable, and conservation of a
 scalar total does not by itself establish spatial fidelity.
 
 \section{Conclusion}
@@ -1289,14 +1312,17 @@ supports stable partial restoration, not blind super-resolution or
 cross-sensor generality.
 
 In practice, three conditions govern safe application. The effective
-response width should be known to roughly $\pm20\%$, the level at which the
-real-data ranking is largely preserved and which a spectral consistency
-check against the target sensor can secure. Geolocation must be accurate to
+response width should be known to roughly $\pm20\%$: the ranking is largely
+preserved over that range, which is a tested sensitivity interval around a
+plausible operating point rather than a demonstrated calibration uncertainty.
+Geolocation must be accurate to
 a small fraction of a source pixel: jitter of $0.1$~px already raises RMSE
-by $14$--$27\%$, and no regularization compensates for a geometric error.
+by $14$--$27\%$ at the tested damping; regularization does not correct
+erroneous coordinates, and its ability to mitigate their propagated error was
+not assessed here.
 And the damping should be matched to the anticipated noise amplitude and
-covariance, stronger values being justified only when white-noise
-amplification dominates.
+covariance under the noise models tested here, stronger values being justified
+only when white-noise amplification dominates.
 
 The block formulation also opens a path toward PSF-aware fusion of
 acquisitions, detectors, and irregular samples on a common \healpix support.

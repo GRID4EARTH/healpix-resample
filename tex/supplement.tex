@@ -90,7 +90,7 @@ Email: vincent.dumoulin@esa.int. ORCID: 0000-0001-5049-3817.}%
 This supplement provides the complete illustrative-scene tables and spectral
 diagnostics, acquisition and baseline details, hold-out and round-trip
 controls, noise and geolocation sweeps, throughput scaling, and the derivation
-and ERA5 evaluation of two optional conservative resamplers.
+and ERA5 evaluation of the optional conservative resamplers.
 \end{abstract}
 
 \section{Detailed Validation Protocol}
@@ -213,10 +213,19 @@ The real-data protocol starts from a native 10~m Sentinel-2 Level-2A B04
 patch. The primary level-19 reference is constructed before the tested
 degradation: the undegraded image is transferred to level 20 with the nominal
 12.5~m operator and its children are geometrically averaged to level 19. In a
-separate path, the native image is blurred to 25~m FWHM and point-sampled
+separate path, the native image is blurred by an \emph{additional} Gaussian
+of 25~m FWHM and point-sampled
 every other pixel to form a 20~m observation. Decimation is used instead of a
-$2\times2$ average to avoid an additional boxcar component. The observation
-is reconstructed to the same level-19 support with an assumed 25~m response;
+$2\times2$ average to avoid an additional boxcar component. The 25~m value is
+the width of the kernel applied, not the total response of the degraded path:
+the native image already carries the nominal 12.5~m response, which the
+damped reference inversion only partly removes, so the effective total width
+relative to the reference estimand lies between 25~m and
+$\sqrt{25^2+12.5^2}=27.95$~m. The inverse uses the applied 25~m kernel and is
+therefore nominally, not exactly, matched --- it under-corrects slightly,
+which penalizes the \psf-aware arm and leaves the geometric baselines
+unaffected, since they use no response model. The observation
+is reconstructed to the same level-19 support with that assumed 25~m response;
 evaluation excludes cells within 200~m of the boundary. The anisotropic
 control uses a 24~m by 45~m degradation but retains the isotropic 25~m inverse
 and a 360~m edge margin.
@@ -379,7 +388,12 @@ out-of-sample interpolation test, we withhold a random $10\%$ of source
 pixels from each real Sentinel-2 patch, build the operator and
 solve for $\widehat{\mathbf{x}}$ using only the remaining $90\%$,
 and predict the withheld pixels by interpolating the fitted
-\healpix field at their locations. Table~\ref{tab:holdout} reports
+\healpix field at their locations. The readout is a point
+interpolation of the latent field, not an application of the
+observation operator, so the predicted quantity is a cell-average
+estimate compared with measurements that still carry the
+instrumental response; part of the residual reported below reflects
+that difference in estimand. Table~\ref{tab:holdout} reports
 the resulting RMSE and its value normalized by the withheld
 pixels' own dynamic range (NRMSE).
 
@@ -993,8 +1007,12 @@ The other two methods address the same conservation objective by
 different constructions. Hard binning treats source samples as
 area-weighted points assigned to a single \healpix cell: it
 conserves the resulting discrete weighted sum exactly, but it is
-not a polygon-overlap remapper and does not preserve a constant
-field cell by cell. The constrained \psf-aware method instead
+not a polygon-overlap remapper. A constant field is preserved
+under its source-coverage normalization $h_k/A_k$ on every
+non-empty cell; since $A_k$ is the assigned source area rather
+than the geometric cell area, hard binning does not in general
+preserve constant cell densities and the integral over the full
+target areas simultaneously. The constrained \psf-aware method instead
 preserves the smooth kernel-based reconstruction while imposing a
 prescribed global integral.
 
@@ -1271,8 +1289,8 @@ deviation of $\sum_j A_j^{\mathrm{cov}}$ from $4\pi$.}
 Source & Norm. & $\varepsilon_I$ & $\varepsilon_C$ & Coverage \\
 \midrule
 $1^\circ$, L6   & dest.    & $7.1\times10^{-14}$ & $2.1\times10^{-11}$ & $8.2\times10^{-14}$ \\
-$1^\circ$, L7   & dest.    & $6.6\times10^{-15}$ & $7.4\times10^{-11}$ & $1.1\times10^{-14}$ \\
-$0.5^\circ$, L7 & dest.    & $8.9\times10^{-15}$ & $7.4\times10^{-11}$ & $5.3\times10^{-15}$ \\
+$1^\circ$, L7   & dest.    & $6.5\times10^{-15}$ & $7.4\times10^{-11}$ & $1.0\times10^{-14}$ \\
+$0.5^\circ$, L7 & dest.    & $9.0\times10^{-15}$ & $7.4\times10^{-11}$ & $5.3\times10^{-15}$ \\
 $1^\circ$, L6   & covered  & $2.8\times10^{-16}$ & $1.1\times10^{-15}$ & $8.2\times10^{-14}$ \\
 \bottomrule
 \end{tabular}
@@ -1288,14 +1306,16 @@ coordinate-to-index routine --- a code path that takes no part in
 the area computation. For a smooth test field at $2^\circ$ onto
 level 4, the two estimates agree to a maximum absolute difference
 of $1.9\times10^{-3}$ and an RMS difference of
-$3.0\times10^{-4}$, that is $7.3\times10^{-4}$ of the field range,
-consistent with the residual sampling error of the quadrature
-rather than with a systematic geometric discrepancy.
+$3.0\times10^{-4}$, that is $7.3\times10^{-4}$ of the field range.
+This discrepancy is consistent with finite quadrature error,
+although attributing it exclusively to that source would require a
+quadrature-convergence study, which was not performed.
 
 A direct numerical comparison against ESMF or xESMF was not
-performed, because those libraries' structured interfaces cannot
-represent a \healpix destination: its cells do not form a
-logically rectangular mesh. The correspondence asserted here is
+performed. Such a comparison would require an explicit \healpix
+mesh representation --- these libraries do support unstructured
+meshes --- together with harmonized conventions for cell
+boundaries, areas and normalization. The correspondence asserted here is
 therefore at the level of the formulation,
 Eqs.~\eqref{eq:overlap_area}--\eqref{eq:overlap_conservation}, and
 of the properties verified above; numerical equivalence with a
@@ -1303,11 +1323,11 @@ specific implementation is not claimed.
 
 Weight construction is the dominant cost and is amortized across
 fields. On a single CPU core, a global $1^\circ$ source
-($64{,}800$ cells) onto level~6 takes $4.4$~s to build
+($64{,}800$ cells) onto level~6 takes $3.4$~s to build
 $2.7\times10^{5}$ nonzero weights ($3.3$~MiB), and onto level~7
-$7.0$~s for $5.7\times10^{5}$ weights; a $0.5^\circ$ source onto
-level~7 takes $18.7$~s for $1.1\times10^{6}$ weights. Applying the
-stored operator to one field takes $0.4$--$1.6$~ms, so the
+$4.9$~s for $5.7\times10^{5}$ weights; a $0.5^\circ$ source onto
+level~7 takes $14.0$~s for $1.1\times10^{6}$ weights. Applying the
+stored operator to one field takes $0.2$--$0.8$~ms, so the
 geometric cost is recovered after a handful of variables or time
 steps.
 
@@ -1446,8 +1466,7 @@ The supplementary figures and tables are generated by the public notebooks in
 \cite{healpix_resample_paper_data}.
 
 Cross-references to sections and equations of the main paper use label
-numbers frozen at submission (\texttt{main-refs.tex}); regenerate that file
-if the main paper is renumbered. Citations below are
+numbers frozen at submission. Citations below are
 numbered locally to keep this supplement self-contained.
 
 \bibliographystyle{IEEEtran}
