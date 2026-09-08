@@ -15,6 +15,22 @@ Resamplers
    healpix_resample.CellPointResampler
    healpix_resample.GroupByResampler
    healpix_resample.ConservativeResampler
+   healpix_resample.OverlapConservativeResampler
+
+Conservative remapping
+----------------------
+
+Three distinct notions of conservation are available and are *not*
+interchangeable: :class:`~healpix_resample.ConservativeResampler` performs
+area-weighted hard binning (each sample to its containing cell),
+:class:`~healpix_resample.OverlapConservativeResampler` performs
+first-order overlap-area remapping from a rectilinear lat/lon grid (each
+source cell split across the HEALPix cells it intersects, the formulation
+used by ESMF/xESMF), and :class:`~healpix_resample.PSFResampler` with
+``conservative=True`` solves a PSF-aware inverse problem under a global
+conservation constraint. See the
+:doc:`user-guide/regrid_to_healpix_overlap_conservative` page for the
+comparison table.
 
 Mask-like / categorical data
 -----------------------------

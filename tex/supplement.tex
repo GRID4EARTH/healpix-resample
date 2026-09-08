@@ -929,14 +929,44 @@ transferred between grids. This is essential for fluxes used in
 budget calculations, boundary conditions, and coupling terms in
 Earth-system models.
 
-This appendix presents two optional conservation paths implemented
-in \texttt{healpix-resample}. The first adds a global linear
-constraint to the smooth \psf-aware reconstruction. The second is
-a purely algebraic hard-binning operator that conserves the
-discrete area-weighted source sum by construction. Neither method
-is used in the Sentinel-2 experiments of the main paper. Their
-purpose is to support applications for which integrated
-conservation, rather than spatial restoration alone, is required.
+This appendix presents three optional conservation paths
+implemented in \texttt{healpix-resample}. The first adds a global
+linear constraint to the smooth \psf-aware reconstruction. The
+second is a purely algebraic hard-binning operator that conserves
+the discrete area-weighted source sum by construction. The third
+is a first-order overlap-area remapper that redistributes each
+source cell across the \healpix cells it intersects, following the
+formulation used in Earth-system remapping. None of them is used
+in the Sentinel-2 experiments of the main paper. Their purpose is
+to support applications for which integrated conservation, rather
+than spatial restoration alone, is required.
+
+The three mechanisms answer different questions and are not
+interchangeable (Table~\ref{tab:conservation_mechanisms}). They
+differ in the geometry they use, in whether a source cell is split
+across several target cells, and in whether an instrument response
+is modelled.
+
+\begin{table}[t]
+\centering
+\caption{The three conservation mechanisms implemented in
+\texttt{healpix-resample}, and the conventional remapping tools
+they relate to. ``Local redistribution'' refers to splitting a
+source cell across the target cells it overlaps.}
+\label{tab:conservation_mechanisms}
+\footnotesize
+\begin{tabular}{@{}p{1.45cm}p{1.7cm}p{1.35cm}p{1.5cm}@{}}
+\toprule
+Method & Geometry & Local redistribution & Conserves \\
+\midrule
+Hard binning (\S\ref{sec:hard_binning}) & sample to containing cell & no & discrete weighted total \\
+Overlap, first order (\S\ref{sec:overlap_conservative}) & source/target intersections & yes, by area & area integral \\
+Constrained \psf (\S\ref{sec:conservative_constraint}) & observation operator & implicit, via reconstruction & global constraint \\
+\midrule
+SCRIP, ESMF, xESMF & source/target intersections & yes, by area & area integral \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 
 \subsection{Relation to Conservative Remapping Tools}
@@ -949,14 +979,24 @@ finite-area source and target cells
 \cite{jones1999scrip,hill2004esmf,zhuang2020xesmf,
 ullrich2015tempestremap}.
 
-The hard-binning method introduced below addresses the same
-conservation objective but uses a different construction: source
-samples are treated as area-weighted points and assigned to a
-single \healpix cell. It therefore conserves the resulting
-discrete weighted sum exactly, but it is not a polygon-overlap
-remapper. The constrained \psf-aware method instead preserves the
-smooth kernel-based reconstruction while imposing a prescribed
-global integral.
+The overlap remapper of
+Section~\ref{sec:overlap_conservative} implements the same
+first-order construction directly onto \healpix: weights are
+overlap areas between source and target cells, so its formulation
+is that of the tools above rather than an approximation of them.
+It is not claimed to be numerically identical to any particular
+implementation, since Earth model, cell-boundary representation
+and tolerances differ between packages; the shared property is the
+first-order overlap-area definition itself.
+
+The other two methods address the same conservation objective by
+different constructions. Hard binning treats source samples as
+area-weighted points assigned to a single \healpix cell: it
+conserves the resulting discrete weighted sum exactly, but it is
+not a polygon-overlap remapper and does not preserve a constant
+field cell by cell. The constrained \psf-aware method instead
+preserves the smooth kernel-based reconstruction while imposing a
+prescribed global integral.
 
 
 \subsection{Optional Flux-Conservation Constraint}
@@ -1131,6 +1171,146 @@ solve. The appropriate choice therefore depends on whether the
 downstream application prioritizes a spatial-response model,
 discrete conservation, or both.
 
+\subsection{First-Order Overlap-Area Conservative Remapping}
+\label{sec:overlap_conservative}
+
+Hard binning conserves the global total but not the local
+geometric distribution: a source cell that straddles several
+\healpix cells is assigned entirely to the one containing its
+position. When source cells are comparable to or larger than the
+target cells --- the usual situation when an Earth-system grid is
+transferred to a fine \healpix support --- the classical
+first-order conservative construction is required instead.
+
+Let $S_i$ denote source cells and $D_j$ target \healpix cells, and
+let
+
+\begin{equation}
+O_{ji}=\left|S_i\cap D_j\right|
+\label{eq:overlap_area}
+\end{equation}
+
+be their intersection area. For an intensive field $y_i$, assumed
+piecewise constant on each source cell, the remapped value is
+
+\begin{equation}
+x_j=\frac{1}{\left|D_j\right|}\sum_i O_{ji}\,y_i ,
+\label{eq:overlap_remap}
+\end{equation}
+
+which satisfies, for complete coverage of the target support,
+
+\begin{equation}
+\sum_j\left|D_j\right|x_j=\sum_i\left|S_i\right|y_i .
+\label{eq:overlap_conservation}
+\end{equation}
+
+Equations~\eqref{eq:overlap_area}--\eqref{eq:overlap_conservation}
+are the first-order conservative formulation of
+\cite{jones1999scrip,hill2004esmf,zhuang2020xesmf}. Two
+normalizations are exposed. Dividing by the full cell area
+$\left|D_j\right|$, as in Eq.~\eqref{eq:overlap_remap}, treats
+uncovered target area as contributing zero and conserves the
+integral over the whole target grid. Dividing instead by the
+covered area $A_j^{\mathrm{cov}}=\sum_i O_{ji}$ reproduces a
+constant field exactly on partially covered cells, which is
+usually the intended behaviour for an intensive field on a
+regional domain. They coincide wherever coverage is complete. For
+an extensive quantity $q_i$ the source total is split by the
+overlap fraction of the source cell,
+$q_j=\sum_i q_i O_{ji}/\left|S_i\right|$, so that
+$\sum_j q_j=\sum_i q_i$ identically.
+
+\emph{Geometric exactness.} The overlap areas are computed exactly
+on the sphere, without polygon densification. Two structural
+properties of \healpix \cite{gorski2005healpix} make this
+possible. In the \healpix planar projection the mapping from
+$(\lambda,\sin\phi)$ has constant Jacobian, so plane areas are
+proportional to spherical areas; and level-$L$ cells are exact
+squares in that plane, while images of parallels are straight
+everywhere and images of meridians are straight within the
+equatorial belt ($\left|\sin\phi\right|\le 2/3$) and within each
+polar quadrant. Splitting every source lat/lon rectangle at the
+two transition latitudes and at the quadrant meridians therefore
+maps each piece to a straight-edged convex quadrilateral, and each
+intersection reduces to convex polygon clipping against four
+axis-aligned half-planes in rotated coordinates. Antimeridian
+crossings and polar cells require no special treatment beyond this
+splitting, and the only approximation is floating-point rounding.
+The present implementation is spherical; an authalic-ellipsoid
+variant would modify only the latitude-to-$\sin\phi$ mapping. The
+weights form a sparse matrix that is built once and reused for
+every field sharing the same source and target grids.
+
+\subsection{Results: Overlap-Remapping Validation}
+\label{sec:overlap_results}
+
+Table~\ref{tab:overlap_validation} reports the properties of
+Eqs.~\eqref{eq:overlap_remap}--\eqref{eq:overlap_conservation} for
+global regular lat/lon sources onto \healpix levels 6 and 7. The
+global integral is conserved to $10^{-14}$ or better and the
+overlap areas tile the sphere to the same order, confirming that
+the clipped intersections form an exact partition of each target
+cell. A constant field is preserved to $7\times10^{-11}$ under
+destination-area normalization --- the accumulated rounding of the
+per-cell weight sums --- and to machine precision under
+covered-area normalization, where the same sums appear in the
+denominator and cancel.
+
+\begin{table}[t]
+\centering
+\caption{Overlap-remapping validation on global regular lat/lon
+source grids. $\varepsilon_I$ is the relative error of the
+area integral, $\varepsilon_C$ the maximum deviation from a
+constant unit field, and the coverage error the relative
+deviation of $\sum_j A_j^{\mathrm{cov}}$ from $4\pi$.}
+\label{tab:overlap_validation}
+\footnotesize
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Source & Norm. & $\varepsilon_I$ & $\varepsilon_C$ & Coverage \\
+\midrule
+$1^\circ$, L6   & dest.    & $7.1\times10^{-14}$ & $2.1\times10^{-11}$ & $8.2\times10^{-14}$ \\
+$1^\circ$, L7   & dest.    & $6.6\times10^{-15}$ & $7.4\times10^{-11}$ & $1.1\times10^{-14}$ \\
+$0.5^\circ$, L7 & dest.    & $8.9\times10^{-15}$ & $7.4\times10^{-11}$ & $5.3\times10^{-15}$ \\
+$1^\circ$, L6   & covered  & $2.8\times10^{-16}$ & $1.1\times10^{-15}$ & $8.2\times10^{-14}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A conservation identity alone would not establish that the
+intersection areas are geometrically correct, since any partition
+of unity conserves the integral. The clipped weights were
+therefore cross-validated against an independent oracle: an
+equal-area quadrature of $1.46\times10^{7}$ points, each assigned
+to its source cell and to its \healpix cell by the library's
+coordinate-to-index routine --- a code path that takes no part in
+the area computation. For a smooth test field at $2^\circ$ onto
+level 4, the two estimates agree to a maximum absolute difference
+of $1.9\times10^{-3}$ and an RMS difference of
+$3.0\times10^{-4}$, that is $7.3\times10^{-4}$ of the field range,
+consistent with the residual sampling error of the quadrature
+rather than with a systematic geometric discrepancy.
+
+A direct numerical comparison against ESMF or xESMF was not
+performed, because those libraries' structured interfaces cannot
+represent a \healpix destination: its cells do not form a
+logically rectangular mesh. The correspondence asserted here is
+therefore at the level of the formulation,
+Eqs.~\eqref{eq:overlap_area}--\eqref{eq:overlap_conservation}, and
+of the properties verified above; numerical equivalence with a
+specific implementation is not claimed.
+
+Weight construction is the dominant cost and is amortized across
+fields. On a single CPU core, a global $1^\circ$ source
+($64{,}800$ cells) onto level~6 takes $4.4$~s to build
+$2.7\times10^{5}$ nonzero weights ($3.3$~MiB), and onto level~7
+$7.0$~s for $5.7\times10^{5}$ weights; a $0.5^\circ$ source onto
+level~7 takes $18.7$~s for $1.1\times10^{6}$ weights. Applying the
+stored operator to one field takes $0.4$--$1.6$~ms, so the
+geometric cost is recovered after a handful of variables or time
+steps.
+
 \subsection{ERA5 Experimental Setup}
 \label{sec:era5_experiment}
 
@@ -1245,12 +1425,15 @@ not, by itself, assess spatial fidelity or prove optimality of the
 reconstructed field; these properties must be evaluated
 separately.
 
-The two methods should consequently be regarded as complementary
+The three methods should consequently be regarded as complementary
 options rather than competing estimators. Hard binning is suited
-to applications requiring a simple and exactly conserved
-discrete transfer, whereas the constrained formulation is useful
-when conservation must be combined with the observation model of
-the main method.
+to applications requiring a simple and exactly conserved discrete
+transfer of scattered samples; overlap remapping is the
+appropriate choice when finite-area source cells must be split
+geometrically across target cells, as in conventional
+Earth-system flux remapping; and the constrained formulation is
+useful when conservation must be combined with the observation
+model of the main method.
 
 
 

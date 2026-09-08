@@ -1256,12 +1256,19 @@ speedup. Regional production still requires parallel construction, chunk
 scheduling, preconditioning, storage, and compression design.
 
 Some applications require exact preservation of an area-integrated quantity.
-Two optional implementations -- a hard-binning transfer and a constrained
-PSF-aware correction -- are derived and tested on ERA5 sensible-heat flux in
-the supplement, alongside their relation to established conservative
-remapping methods \cite{jones1999scrip,hill2004esmf,zhuang2020xesmf,ullrich2015tempestremap}.
-Their maximum relative global-integral errors are
-$3.9\times10^{-16}$ and $2.9\times10^{-14}$, respectively; conservation of a
+Three complementary mechanisms are derived and tested in the supplement,
+corresponding to three different requirements. A hard-binning transfer
+assigns each source sample to its containing cell and conserves the discrete
+area-weighted total; a first-order overlap remapper splits each source cell
+across the \healpix cells it intersects, with weights given by the
+intersection areas, following the construction used in Earth-system
+remapping \cite{jones1999scrip,hill2004esmf,zhuang2020xesmf,ullrich2015tempestremap};
+and a constrained PSF-aware correction imposes a prescribed global integral
+on the damped reconstruction itself. On ERA5 sensible-heat
+flux the first and third conserve the global total to maximum relative errors
+of $3.9\times10^{-16}$ and $2.9\times10^{-14}$; the overlap operator conserves
+the area integral to $10^{-14}$ and, unlike hard binning, preserves a constant
+field cell by cell. The three are not interchangeable, and conservation of a
 scalar total does not by itself establish spatial fidelity.
 
 \section{Conclusion}
