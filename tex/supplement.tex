@@ -90,7 +90,7 @@ Email: vincent.dumoulin@esa.int. ORCID: 0000-0001-5049-3817.}%
 This supplement provides the complete illustrative-scene tables and spectral
 diagnostics, acquisition and baseline details, hold-out and round-trip
 controls, noise and geolocation sweeps, throughput scaling, and the derivation
-and ERA5 evaluation of two optional conservative resamplers.
+and ERA5 evaluation of the optional conservative resamplers.
 \end{abstract}
 
 \section{Detailed Validation Protocol}
@@ -148,14 +148,9 @@ $\lambda_{\mathrm{Tik}}=10^{-2}$ and circular FFT boundaries. These are
 fixed configurations; neither setting was selected on held-out calibration
 regions.
 
-A definitive tuned comparison should split regions before inspecting method
-scores, use one global calibration subset shared by all methods, and select a
-single parameter per method by mean region-level RMSE: for example,
-Richardson--Lucy iteration count, $\lambda_{\mathrm{Tik}}$, and the proposed
-method's damping over predeclared grids. The selected values must then be
-frozen and evaluated on disjoint regions, without per-scene or per-region
-tuning. The tables below do not claim that protocol has been executed; they
-report only the stated fixed configurations.
+Hyperparameters were not selected on held-out calibration regions; the
+reported rankings therefore apply to the stated fixed configurations, and
+not to comparators tuned by a global protocol on disjoint regions.
 
 \subsection{Zero-Correction Reference Ablation}
 \label{supp:xref_ablation}
@@ -213,10 +208,19 @@ The real-data protocol starts from a native 10~m Sentinel-2 Level-2A B04
 patch. The primary level-19 reference is constructed before the tested
 degradation: the undegraded image is transferred to level 20 with the nominal
 12.5~m operator and its children are geometrically averaged to level 19. In a
-separate path, the native image is blurred to 25~m FWHM and point-sampled
+separate path, the native image is blurred by an \emph{additional} Gaussian
+of 25~m FWHM and point-sampled
 every other pixel to form a 20~m observation. Decimation is used instead of a
-$2\times2$ average to avoid an additional boxcar component. The observation
-is reconstructed to the same level-19 support with an assumed 25~m response;
+$2\times2$ average to avoid an additional boxcar component. The 25~m value is
+the width of the kernel applied, not the total response of the degraded path:
+the native image already carries the nominal 12.5~m response, so under the
+nominal Gaussian approximation the combined response relative to the
+pre-instrument field would have $\mathrm{FWHM}=\sqrt{25^2+12.5^2}=27.95$~m.
+The primary reference is itself obtained by regularized reconstruction and
+aggregation, so this experiment is not claimed to be exactly
+response-matched relative to that reference; the configuration is nominal,
+with added and assumed kernel FWHM both equal to 25~m. The observation
+is reconstructed to the same level-19 support with that assumed 25~m response;
 evaluation excludes cells within 200~m of the boundary. The anisotropic
 control uses a 24~m by 45~m degradation but retains the isotropic 25~m inverse
 and a 360~m edge margin.
@@ -379,7 +383,12 @@ out-of-sample interpolation test, we withhold a random $10\%$ of source
 pixels from each real Sentinel-2 patch, build the operator and
 solve for $\widehat{\mathbf{x}}$ using only the remaining $90\%$,
 and predict the withheld pixels by interpolating the fitted
-\healpix field at their locations. Table~\ref{tab:holdout} reports
+\healpix field at their locations. The readout is a point
+interpolation of the latent field, not an application of the
+observation operator, so the predicted quantity is a cell-average
+estimate compared with measurements that still carry the
+instrumental response; part of the residual reported below reflects
+that difference in estimand. Table~\ref{tab:holdout} reports
 the resulting RMSE and its value normalized by the withheld
 pixels' own dynamic range (NRMSE).
 
@@ -434,8 +443,8 @@ graphically.
 \centering
 \caption{Controlled reduced-resolution validation: RMSE and Pearson
 correlation against the level-19 reference constructed before the imposed degradation
-of Section~\ref{sec:real_downscale_experiment}. Panel (a) uses a
-matched isotropic $25$~m degradation and reconstruction response.
+of Section~\ref{sec:real_downscale_experiment}. Panel (a) uses the nominal
+isotropic configuration: added and assumed kernel $\mathrm{FWHM}=25$~m.
 Panel (b) imposes a $24\times45$~m anisotropic degradation but retains
 the current isotropic $25$~m reconstruction model. Bold indicates the
 best result for each scene and response configuration.}
@@ -833,11 +842,12 @@ increase over the exact-geolocation baseline. Degradation is
 monotonic and substantial: at $0.1$~px ($\approx1$~m) RMSE already
 increases by $14$--$27\%$, and at $0.4$~px ($\approx4$~m) it
 increases by $172$--$283\%$, more than doubling or tripling the
-reconstruction error in every scene. Unlike the noise sweep above,
-no damping-based mitigation is tested here: the mismatch is purely
-geometric, between the assumed and the true source-sample location,
-and is not the kind of error that regularization against noise
-suppresses. This confirms that sub-pixel geolocation accuracy is a
+reconstruction error in every scene. These experiments quantify geolocation
+sensitivity at a fixed damping value: the mismatch is purely
+geometric, between the assumed and the true source-sample
+location. Regularization does not correct erroneous coordinates,
+but its ability to mitigate the resulting reconstruction error was
+not evaluated. This confirms that sub-pixel geolocation accuracy is a
 material requirement for the method, not a second-order concern,
 and motivates the geolocation-correction terms outlined as future
 work in Section~\ref{sec:generalization}.
@@ -929,14 +939,36 @@ transferred between grids. This is essential for fluxes used in
 budget calculations, boundary conditions, and coupling terms in
 Earth-system models.
 
-This appendix presents two optional conservation paths implemented
-in \texttt{healpix-resample}. The first adds a global linear
-constraint to the smooth \psf-aware reconstruction. The second is
-a purely algebraic hard-binning operator that conserves the
-discrete area-weighted source sum by construction. Neither method
-is used in the Sentinel-2 experiments of the main paper. Their
-purpose is to support applications for which integrated
-conservation, rather than spatial restoration alone, is required.
+This appendix presents three optional conservation paths
+implemented in \texttt{healpix-resample}: a global linear
+constraint on the \psf-aware reconstruction, an algebraic
+hard-binning operator, and a first-order overlap-area remapper.
+They answer different questions and are not interchangeable
+(Table~\ref{tab:conservation_mechanisms}). None is used in the
+Sentinel-2 experiments of the main paper; their purpose is to
+support applications for which integrated conservation, rather
+than spatial restoration alone, is required.
+
+\begin{table}[t]
+\centering
+\caption{The three conservation mechanisms implemented in
+\texttt{healpix-resample}, and the conventional remapping tools
+they relate to. ``Local redistribution'' refers to splitting a
+source cell across the target cells it overlaps.}
+\label{tab:conservation_mechanisms}
+\footnotesize
+\begin{tabular}{@{}p{1.45cm}p{1.7cm}p{1.35cm}p{1.5cm}@{}}
+\toprule
+Method & Geometry & Local redistribution & Conserves \\
+\midrule
+Hard binning (\S\ref{sec:hard_binning}) & sample to containing cell & no & discrete weighted total \\
+Overlap, first order (\S\ref{sec:overlap_conservative}) & source/target intersections & yes, by area & area integral \\
+Constrained \psf (\S\ref{sec:conservative_constraint}) & observation operator & implicit, via reconstruction & global constraint \\
+\midrule
+SCRIP, ESMF, xESMF & source/target intersections & yes, by area & area integral \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 
 \subsection{Relation to Conservative Remapping Tools}
@@ -949,14 +981,21 @@ finite-area source and target cells
 \cite{jones1999scrip,hill2004esmf,zhuang2020xesmf,
 ullrich2015tempestremap}.
 
-The hard-binning method introduced below addresses the same
-conservation objective but uses a different construction: source
-samples are treated as area-weighted points and assigned to a
-single \healpix cell. It therefore conserves the resulting
-discrete weighted sum exactly, but it is not a polygon-overlap
-remapper. The constrained \psf-aware method instead preserves the
-smooth kernel-based reconstruction while imposing a prescribed
-global integral.
+The overlap remapper of
+Section~\ref{sec:overlap_conservative} implements that same
+first-order construction directly onto \healpix, so it shares the
+definition rather than approximating it. Numerical identity with a
+particular implementation is not claimed: Earth model,
+cell-boundary representation and tolerances differ between
+packages.
+
+Hard binning instead treats source samples as area-weighted points
+assigned to a single cell; it is not a polygon-overlap remapper. A
+constant field is preserved under its source-coverage
+normalization $h_k/A_k$ on every non-empty cell, but since $A_k$
+is the assigned source area rather than the geometric cell area,
+constant cell densities and the integral over full target areas
+are not preserved simultaneously.
 
 
 \subsection{Optional Flux-Conservation Constraint}
@@ -1114,22 +1153,155 @@ This identity holds up to floating-point summation error and is
 independent of the source-grid regularity or target \healpix
 resolution.
 
-The quantity $h_k$ is an extensive cell total. The normalization
-$A_k$ in Eq.~\eqref{eq:hardbin_inverse} is the total source weight
-assigned to cell $k$, not necessarily the geometric area of the
-complete \healpix cell. Consequently,
-Eq.~\eqref{eq:hardbin_inverse} defines a source-coverage-weighted
-density and ensures a self-consistent back projection; it should
-not be interpreted as a polygon-overlap estimate of the complete
-target-cell mean.
+The quantity $h_k$ is an extensive cell total, and $A_k$ in
+Eq.~\eqref{eq:hardbin_inverse} is the source weight assigned to
+cell $k$, not the geometric area of the complete \healpix cell.
+Eq.~\eqref{eq:hardbin_inverse} therefore defines a
+source-coverage-weighted density ensuring a self-consistent back
+projection, not a polygon-overlap estimate of the target-cell
+mean.
 
-Hard binning is exact and inexpensive but does not model a spatial
-response and produces a piecewise-constant representation. The
-constrained \psf-aware method instead retains a smooth,
-kernel-based reconstruction at the cost of an additional iterative
-solve. The appropriate choice therefore depends on whether the
-downstream application prioritizes a spatial-response model,
-discrete conservation, or both.
+Hard binning is exact and inexpensive but models no spatial
+response and yields a piecewise-constant field, whereas the
+constrained \psf-aware method retains a smooth reconstruction at
+the cost of an extra iterative solve.
+
+\subsection{First-Order Overlap-Area Conservative Remapping}
+\label{sec:overlap_conservative}
+
+Hard binning conserves the global total but not the local
+geometric distribution: a source cell that straddles several
+\healpix cells is assigned entirely to the one containing its
+position. When source cells are comparable to or larger than the
+target cells --- the usual situation when an Earth-system grid is
+transferred to a fine \healpix support --- the classical
+first-order conservative construction is required instead.
+
+Let $S_i$ denote source cells and $D_j$ target \healpix cells, and
+let
+
+\begin{equation}
+O_{ji}=\left|S_i\cap D_j\right|
+\label{eq:overlap_area}
+\end{equation}
+
+be their intersection area. For an intensive field $y_i$, assumed
+piecewise constant on each source cell, the remapped value is
+
+\begin{equation}
+x_j=\frac{1}{\left|D_j\right|}\sum_i O_{ji}\,y_i ,
+\label{eq:overlap_remap}
+\end{equation}
+
+which satisfies, for complete coverage of the target support,
+
+\begin{equation}
+\sum_j\left|D_j\right|x_j=\sum_i\left|S_i\right|y_i .
+\label{eq:overlap_conservation}
+\end{equation}
+
+Equations~\eqref{eq:overlap_area}--\eqref{eq:overlap_conservation}
+are the first-order conservative formulation of
+\cite{jones1999scrip,hill2004esmf,zhuang2020xesmf}. Two
+normalizations are exposed. Dividing by the full cell area
+$\left|D_j\right|$, as in Eq.~\eqref{eq:overlap_remap}, treats
+uncovered target area as contributing zero and conserves the
+integral over the whole target grid. Dividing instead by the
+covered area $A_j^{\mathrm{cov}}=\sum_i O_{ji}$ reproduces a
+constant field exactly on partially covered cells, which is
+usually the intended behaviour for an intensive field on a
+regional domain. They coincide wherever coverage is complete. For
+an extensive quantity $q_i$ the source total is split by the
+overlap fraction of the source cell,
+$q_j=\sum_i q_i O_{ji}/\left|S_i\right|$, so that
+$\sum_j q_j=\sum_i q_i$ identically.
+
+\emph{Geometric exactness.} The overlap areas are computed exactly
+on the sphere, without polygon densification. Two structural
+properties of \healpix \cite{gorski2005healpix} make this
+possible. In the \healpix planar projection the mapping from
+$(\lambda,\sin\phi)$ has constant Jacobian, so plane areas are
+proportional to spherical areas; and level-$L$ cells are exact
+squares in that plane, while images of parallels are straight
+everywhere and images of meridians are straight within the
+equatorial belt ($\left|\sin\phi\right|\le 2/3$) and within each
+polar quadrant. Splitting every source lat/lon rectangle at the
+two transition latitudes and at the quadrant meridians therefore
+maps each piece to a straight-edged convex quadrilateral, and each
+intersection reduces to convex polygon clipping against four
+axis-aligned half-planes in rotated coordinates. Antimeridian
+crossings and polar cells require no special treatment beyond this
+splitting, and the only approximation is floating-point rounding.
+The present implementation is spherical; an authalic-ellipsoid
+variant would modify only the latitude-to-$\sin\phi$ mapping. The
+weights form a sparse matrix that is built once and reused for
+every field sharing the same source and target grids.
+
+\subsection{Results: Overlap-Remapping Validation}
+\label{sec:overlap_results}
+
+Table~\ref{tab:overlap_validation} reports the properties of
+Eqs.~\eqref{eq:overlap_remap}--\eqref{eq:overlap_conservation} for
+global regular lat/lon sources onto \healpix levels 6 and 7. The
+global integral is conserved below $10^{-13}$ in every reported
+test and the overlap areas tile the sphere to the same order, so the clipped
+intersections form an exact partition of each target cell. A
+constant field is preserved to $7\times10^{-11}$ under
+destination-area normalization --- accumulated rounding of the
+per-cell weight sums --- and to machine precision under
+covered-area normalization, where those sums cancel in the
+denominator.
+
+\begin{table}[t]
+\centering
+\caption{Overlap-remapping validation on global regular lat/lon
+source grids. $\varepsilon_I$ is the relative error of the
+area integral, $\varepsilon_C$ the maximum deviation from a
+constant unit field, and the coverage error the relative
+deviation of $\sum_j A_j^{\mathrm{cov}}$ from $4\pi$.}
+\label{tab:overlap_validation}
+\footnotesize
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Source & Norm. & $\varepsilon_I$ & $\varepsilon_C$ & Coverage \\
+\midrule
+$1^\circ$, L6   & dest.    & $7.1\times10^{-14}$ & $2.1\times10^{-11}$ & $8.2\times10^{-14}$ \\
+$1^\circ$, L7   & dest.    & $6.5\times10^{-15}$ & $7.4\times10^{-11}$ & $1.0\times10^{-14}$ \\
+$0.5^\circ$, L7 & dest.    & $9.0\times10^{-15}$ & $7.4\times10^{-11}$ & $5.3\times10^{-15}$ \\
+$1^\circ$, L6   & covered  & $2.8\times10^{-16}$ & $1.1\times10^{-15}$ & $8.2\times10^{-14}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A conservation identity alone would not establish that the
+intersection areas are geometrically correct, since any partition
+of unity conserves the integral. The clipped weights were
+therefore cross-validated against an independent oracle: an
+equal-area quadrature of $1.46\times10^{7}$ points, each assigned
+to its source cell and to its \healpix cell by the library's
+coordinate-to-index routine --- a code path that takes no part in
+the area computation. For a smooth test field at $2^\circ$ onto
+level 4, the two estimates agree to a maximum absolute difference
+of $1.9\times10^{-3}$ and an RMS difference of
+$3.0\times10^{-4}$, that is $7.3\times10^{-4}$ of the field range.
+This discrepancy is consistent with finite quadrature error,
+although attributing it exclusively to that source would require a
+quadrature-convergence study, which was not performed.
+
+A direct numerical comparison against ESMF was not performed: it
+would require an explicit \healpix mesh representation with
+harmonized cell-boundary, area and normalization conventions. The correspondence claimed here is therefore that of
+the formulation and of the properties verified above, not
+numerical equivalence with a specific implementation.
+
+Weight construction dominates the cost and is amortized across
+fields. On a single CPU core, a global $1^\circ$ source
+($64{,}800$ cells) takes $3.4$~s onto level~6
+($2.7\times10^{5}$ weights, $3.3$~MiB) and $4.9$~s onto level~7
+($5.7\times10^{5}$); a $0.5^\circ$ source onto level~7 takes
+$14.0$~s ($1.1\times10^{6}$). Applying the stored operator to one
+field takes $0.2$--$0.8$~ms, so the geometric cost is recovered
+after a handful of variables or time steps.
 
 \subsection{ERA5 Experimental Setup}
 \label{sec:era5_experiment}
@@ -1159,13 +1331,13 @@ Because \texttt{sshf} is accumulated, the mean flux over the
 The resulting values span approximately
 $[-350,310]\,\mathrm{W\,m^{-2}}$ across the ensemble.
 
-Per-sample area weights $a_i$ were constructed from midpoint
-latitude boundaries and the longitude spacing of each reduced
-Gaussian-grid ring. By construction, their sum reproduces the
-sphere area $4\pi R^2$ to floating-point precision. These weights
-are required because the source points are not exactly equal-area:
-the largest associated area is approximately $3.6$ times the
-smallest.
+Per-sample area weights $a_i$ were built from midpoint latitude
+boundaries and the longitude spacing of each reduced
+Gaussian-grid ring, in $\mathrm{m^2}$ with $R=6\,371$~km; their sum
+is $5.100645\times10^{14}\,\mathrm{m^2}$, reproducing $4\pi R^2$ to
+floating-point precision. They are required because
+the source points are not exactly equal-area: the largest
+associated area is about $3.6$ times the smallest.
 
 Both methods target a nested level-6 \healpix grid
 ($N_{\mathrm{side}}=64$, $K=49{,}152$ cells). Hard binning uses
@@ -1213,13 +1385,13 @@ surface sensible heat flux for all ten ensemble members. Results
 are shown for the hard-binning
 \texttt{ConservativeResampler} and the constrained kernel-based
 operator at \healpix level~6. Maximum relative errors are
-$3.9\times10^{-16}$ and $2.9\times10^{-14}$, respectively.}
+$6.7\times10^{-16}$ and $2.9\times10^{-14}$, respectively.}
 \label{fig:conservative_proof}
 \end{figure}
 
 Both methods preserve the global area-integrated total for every
 ensemble member. The maximum relative error is
-$3.9\times10^{-16}$ for hard binning and
+$6.7\times10^{-16}$ for hard binning and
 $2.9\times10^{-14}$ for the constrained reconstruction
 (Fig.~\ref{fig:conservative_proof}). These errors are negligible
 relative to any physical variability in the tested fields.
@@ -1236,21 +1408,19 @@ accuracy of the minimum-distortion correction, rather than the
 algebraic satisfaction of the scalar constraint.
 
 The experiment therefore verifies that both implementations
-preserve the requested global integral, while producing different
-spatial representations. Hard binning provides an unconditional
-discrete conservation identity but no spatial-response model. The
-constrained operator combines conservation with a smooth
-kernel-based reconstruction. Conservation of the scalar total does
+preserve the requested global integral while producing different
+spatial representations. Conservation of the scalar total does
 not, by itself, assess spatial fidelity or prove optimality of the
 reconstructed field; these properties must be evaluated
 separately.
 
-The two methods should consequently be regarded as complementary
-options rather than competing estimators. Hard binning is suited
-to applications requiring a simple and exactly conserved
-discrete transfer, whereas the constrained formulation is useful
-when conservation must be combined with the observation model of
-the main method.
+The three methods are consequently complementary rather than
+competing estimators: hard binning for a simple exactly conserved
+discrete transfer of scattered samples, overlap remapping when
+finite-area source cells must be split geometrically across target
+cells as in conventional Earth-system flux remapping, and the
+constrained formulation when conservation must be combined with
+the observation model of the main method.
 
 
 
@@ -1263,8 +1433,7 @@ The supplementary figures and tables are generated by the public notebooks in
 \cite{healpix_resample_paper_data}.
 
 Cross-references to sections and equations of the main paper use label
-numbers frozen at submission (\texttt{main-refs.tex}); regenerate that file
-if the main paper is renumbered. Citations below are
+numbers frozen at submission. Citations below are
 numbered locally to keep this supplement self-contained.
 
 \bibliographystyle{IEEEtran}
