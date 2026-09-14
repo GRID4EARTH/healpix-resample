@@ -78,6 +78,12 @@ Delaunay triangulation + Clough-Tocher C1 cubic. Genuine bivariate interpolant, 
 Gaussian kernel + conjugate gradient. Best quality.
 :::
 
+:::{grid-item-card} OverlapConservativeResampler
+:link: regrid_to_healpix_overlap_conservative
+:link-type: doc
+First-order overlap-area conservative remapping from a lat/lon grid (the ESMF/xESMF formulation), and how it differs from the other two conservative modes.
+:::
+
 :::{grid-item-card} Parent-cell subsetting
 :link: regrid_to_healpix_parent_cell_subsetting
 :link-type: doc
@@ -100,6 +106,7 @@ regrid_to_healpix_nearest
 regrid_to_healpix_bicubic
 regrid_to_healpix_clough_tocher
 regrid_to_healpix_psf
+regrid_to_healpix_overlap_conservative
 regrid_to_healpix_parent_cell_subsetting
 regrid_to_healpix_mask
 ```

@@ -1,0 +1,12 @@
+quantity,unit,value
+sshf accumulation unit,J m^-2,as decoded from the GRIB message
+de-accumulation,s,(sshf(6h) - sshf(3h)) / (3*3600)
+flux unit after Eq. de-accum,W m^-2,"range [-345.8, 310.9]"
+Earth radius used,m,"6,371,000"
+per-sample area a_i unit,m^2,"min 4.2348e+08, max 1.5267e+09"
+sum(a_i),m^2,5.100645e+14
+4 pi R^2,m^2,5.100645e+14
+sum(a_i) / 4 pi R^2 - 1,1,0.00e+00
+"sum(flux_i a_i), member 0",W,1.170057e+15  (1.170 PW)
+area-weighted mean flux,W m^-2,2.2939
+display conversion factor,1,none: totals are plotted in W
