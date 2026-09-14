@@ -312,19 +312,18 @@ Scene & Comparison &  &  &  &  &  &  &  \\
 \multirow[t]{3}{*}{urban} & Estimated vs. Esri pre-degradation & \textbf{0.0684} & 0.1426 & 0.0980 & 0.0822 & 0.1056 & 0.1051 & 0.0960 \\
  & Estimated vs. Esri PSF & 0.0525 & 0.1801 & 0.0311 & 0.0189 & 0.0420 & 0.0244 & \textbf{0.0135} \\
  & Esri PSF vs. Esri pre-degradation (degradation) & 0.0859 & - & - & - & - & - & - \\
-\cline{1-9}
+\cmidrule(lr){1-9}\addlinespace[2pt]
 \multirow[t]{3}{*}{water} & Estimated vs. Esri pre-degradation & \textbf{0.0211} & 0.0456 & 0.0313 & 0.0256 & 0.0342 & 0.0337 & 0.0305 \\
  & Estimated vs. Esri PSF & 0.0170 & 0.0590 & 0.0102 & 0.0066 & 0.0147 & 0.0083 & \textbf{0.0044} \\
  & Esri PSF vs. Esri pre-degradation (degradation) & 0.0274 & - & - & - & - & - & - \\
-\cline{1-9}
+\cmidrule(lr){1-9}\addlinespace[2pt]
 \multirow[t]{3}{*}{forest} & Estimated vs. Esri pre-degradation & \textbf{0.0242} & 0.0463 & 0.0333 & 0.0284 & 0.0363 & 0.0354 & 0.0326 \\
  & Estimated vs. Esri PSF & 0.0171 & 0.0572 & 0.0105 & 0.0064 & 0.0154 & 0.0080 & \textbf{0.0044} \\
  & Esri PSF vs. Esri pre-degradation (degradation) & 0.0294 & - & - & - & - & - & - \\
-\cline{1-9}
+\cmidrule(lr){1-9}\addlinespace[2pt]
 \multirow[t]{3}{*}{agriculture} & Estimated vs. Esri pre-degradation & \textbf{0.0155} & 0.0308 & 0.0224 & 0.0184 & 0.0255 & 0.0238 & 0.0214 \\
  & Estimated vs. Esri PSF & 0.0117 & 0.0392 & 0.0086 & 0.0050 & 0.0134 & 0.0060 & \textbf{0.0030} \\
  & Esri PSF vs. Esri pre-degradation (degradation) & 0.0191 & - & - & - & - & - & - \\
-\cline{1-9}
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -382,13 +381,18 @@ is, in part, expected by construction
 out-of-sample interpolation test, we withhold a random $10\%$ of source
 pixels from each real Sentinel-2 patch, build the operator and
 solve for $\widehat{\mathbf{x}}$ using only the remaining $90\%$,
-and predict the withheld pixels by interpolating the fitted
-\healpix field at their locations. The readout is a point
-interpolation of the latent field, not an application of the
-observation operator, so the predicted quantity is a cell-average
-estimate compared with measurements that still carry the
-instrumental response; part of the residual reported below reflects
-that difference in estimand. Table~\ref{tab:holdout} reports
+and predict the withheld pixels by applying the observation
+operator at their own locations,
+$\widehat{\mathbf y}_{\mathcal H}
+=\mathbf A_{\mathcal H}\widehat{\mathbf x}_{\mathcal T}$,
+where $\mathcal T$ are the pixels used for the fit and
+$\mathcal H$ those withheld. $\mathbf A_{\mathcal H}$ uses only
+the withheld pixels' positions and the assumed response; their
+measured values never enter the reconstruction. Prediction and
+measurement are therefore the same quantity --- observations
+through the assumed response --- so the residual is a genuine
+prediction error rather than a mixture of reconstruction error and
+a latent/observed estimand difference. Table~\ref{tab:holdout} reports
 the resulting RMSE and its value normalized by the withheld
 pixels' own dynamic range (NRMSE).
 
@@ -403,18 +407,19 @@ max$-$min range.}
 \toprule
 Scene & RMSE & NRMSE \\
 \midrule
-Urban       & 0.0707 & $4.3\%$ \\
-Water       & 0.0597 & $14.7\%$ \\
-Forest      & 0.0735 & $21.5\%$ \\
-Agriculture & 0.1009 & $28.1\%$ \\
+Urban       & 0.0875 & $5.3\%$ \\
+Water       & 0.0294 & $7.2\%$ \\
+Forest      & 0.0585 & $17.1\%$ \\
+Agriculture & 0.1172 & $32.7\%$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 The withheld pixels contribute nothing directly to
 $\widehat{\mathbf{x}}$, and their errors are substantially larger
-than the fitted round-trip residual: NRMSE ranges from $4.3\%$ in
-urban to $28.1\%$ in agriculture. Because the hold-out pixels are
+than the fitted round-trip residual: NRMSE ranges from $5.3\%$ in
+urban to $32.7\%$ in agriculture, ordered by how much fine-scale
+structure each scene carries at the withheld locations. Because the hold-out pixels are
 randomly interspersed among retained neighbours, spatial
 autocorrelation makes this test less stringent than a blocked or
 region-level hold-out. We therefore interpret it as an

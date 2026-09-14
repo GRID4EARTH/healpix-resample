@@ -228,9 +228,10 @@ class OverlapConservativeResampler:
 
     Parameters
     ----------
-    lon_bounds, lat_bounds : 1D array-like, degrees
-        Cell *boundaries* of a (possibly irregular) rectilinear lat/lon
-        source grid: ``nlon = len(lon_bounds) - 1`` columns and
+    lon_bounds, lat_bounds : array-like
+        One-dimensional cell *boundaries*, in degrees, of a (possibly
+        irregular) rectilinear lat/lon source grid:
+        ``nlon = len(lon_bounds) - 1`` columns and
         ``nlat = len(lat_bounds) - 1`` rows. ``lat_bounds`` must be
         strictly monotonic in [-90, 90]; ``lon_bounds`` strictly monotonic
         with total span <= 360 degrees (antimeridian crossing is allowed).
@@ -244,13 +245,24 @@ class OverlapConservativeResampler:
 
     Attributes
     ----------
-    cell_ids : (M,) int64 — HEALPix cells receiving nonzero overlap.
-    weights : scipy.sparse.csr_matrix, shape (M, nlat*nlon) — the
-        normalization-dependent intensive-remapping matrix W (x = W y).
-    overlap : scipy.sparse.csr_matrix — raw overlap areas O_ji [sr].
-    target_area : float — exact HEALPix cell area 4*pi/(12*nside^2) [sr].
-    covered_area : (M,) float — sum_i O_ji [sr] per target cell.
-    source_area : (nlat*nlon,) float — |S_i| [sr].
+    cell_ids : numpy.ndarray
+        The ``M`` HEALPix cells receiving nonzero overlap, ``int64``.
+    weights : object
+        SciPy CSR sparse matrix of shape ``(M, nlat * nlon)``: the
+        normalization-dependent intensive-remapping matrix ``W``
+        (``x = W y``), built once and reusable for every field sharing
+        this source and target grid.
+    overlap : object
+        SciPy CSR sparse matrix of the raw overlap areas ``O_ji``, in
+        steradians.
+    target_area : float
+        Exact HEALPix cell area ``4 * pi / (12 * nside ** 2)``, in
+        steradians.
+    covered_area : numpy.ndarray
+        Per target cell, ``sum_i O_ji`` in steradians, shape ``(M,)``.
+    source_area : numpy.ndarray
+        Per source cell, ``|S_i|`` in steradians, shape
+        ``(nlat * nlon,)``.
     """
 
     def __init__(self, lon_bounds, lat_bounds, level, nest=True,
