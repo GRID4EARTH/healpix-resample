@@ -62,6 +62,22 @@ workflow.
 
    healpix_resample.subset_for_parent_cell
 
+HEALPix to UTM
+--------------
+
+:class:`~healpix_resample.HealpixToUTM` resamples HEALPix cell data onto a
+regular raster in a projected (UTM) CRS, by building a resampler on the
+pixel centers of the target grid and applying its ``invert()``. Requires the
+optional dependency ``pyproj``. See the :doc:`user-guide/healpix_to_utm` page.
+
+.. autosummary::
+   :toctree: generated
+
+   healpix_resample.HealpixToUTM
+   healpix_resample.UTMGrid
+   healpix_resample.healpix_to_utm
+   healpix_resample.utm_crs_from_lonlat
+
 Base class
 ----------
 
