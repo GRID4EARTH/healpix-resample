@@ -12,13 +12,17 @@ the samples to be the pixel centers of the target UTM grid:
 1. build the target grid (`UTMGrid`): pixel-center eastings/northings in a
    projected CRS;
 2. reproject the pixel centers to lon/lat (``pyproj``);
-3. construct a resampler on those lon/lat points, restricted to the HEALPix
-   cells that actually carry data (``out_cell_ids=cell_ids``);
-4. call ``resampler.invert(cell_data)`` and reshape to ``(ny, nx)``.
+3. construct a resampler on those lon/lat points -- this is where the HEALPix
+   cells the raster needs are determined (`HealpixToUTM.cell_ids`);
+4. read only those cells from the source dataset;
+5. call ``resampler.invert(cell_data)`` and reshape to ``(ny, nx)``.
 
-`HealpixToUTM` packages steps 2-4 (the operator is built once and can be
-applied to any number of fields / batches defined on the same cells), and
-`healpix_to_utm` is the one-call convenience wrapper.
+`HealpixToUTM` packages steps 2, 3 and 5. Its construction uses the geometry
+only (grid and HEALPix level): it never sees the source dataset, so its cost
+depends on the size of the raster, not on the size of the archive. Step 4 is
+left to the caller, who selects ``op.cell_ids`` in its own store (a Zarr
+archive, an in-memory array, ...). `healpix_to_utm` is the one-call
+convenience wrapper for data already in memory.
 
 Which ``invert()`` is used
 --------------------------
@@ -34,16 +38,16 @@ Which ``invert()`` is used
                         centers, evaluated at the pixel centers (exact for
                         an affine field, no extrapolation).
 a resampler class       instantiated as ``cls(lon_deg=, lat_deg=, level=,
-                        out_cell_ids=, ...)`` and used through ``invert()``.
+                        ...)`` and used through ``invert()``.
 ======================  ==================================================
 
 ``"nearest"`` deliberately does **not** use `NearestResampler.invert`: that
 method scatters each cell to its single nearest sample, so on a raster finer
 than the HEALPix cells most pixels would receive nothing.
 
-Pixels whose center does not fall in one of the cells of `cell_ids` (no
-extrapolation beyond the data footprint), and, for Clough-Tocher, pixels
-outside the convex hull of the cell centers, are returned as NaN.
+A pixel that depends on a cell without data (NaN, or absent from the cells
+passed to ``resample``) is returned as NaN, and so are, for Clough-Tocher,
+pixels outside the convex hull of the cell centers.
 
 ``pyproj`` is an optional dependency, only needed by this module
 (``pip install healpix-resample[utm]``).
@@ -259,25 +263,30 @@ _METHODS = {
 class HealpixToUTM:
     """Resample HEALPix cell data onto a UTM raster through ``invert()``.
 
-    The operator is geometry-only: it is built once from the HEALPix cells
-    and the target grid, and `resample()` can then be applied to any field
-    (or batch of fields) defined on those cells.
+    The operator is **geometry-only**: it is built from the target grid and
+    the HEALPix level alone, without any data and without the list of cells
+    available in the source dataset. Construction determines which HEALPix
+    cells the raster needs (`cell_ids`); only those have to be read from the
+    source, which is what makes the operator usable on a store far larger
+    than memory (e.g. a global, metre-scale Zarr archive):
+
+    >>> op = HealpixToUTM(grid, level, method="bilinear")
+    >>> op.cell_ids                       # (K,) cells to read, sorted
+    >>> data = store.sel(cell_ids=op.cell_ids)   # (B, K), read only those
+    >>> img = op.resample(data)           # (B, ny, nx)
 
     Parameters
     ----------
-    cell_ids : array-like, shape (K,)
-        HEALPix cell ids (at `level`) on which the data are defined. Must be
-        unique; any order.
-    level : int
-        HEALPix level of `cell_ids`.
     grid : UTMGrid
-        Target raster.
+        Target raster (pixel-center ``x``, ``y`` and CRS of the tile).
+    level : int
+        HEALPix level of the source data.
     method : {"bilinear", "nearest", "bicubic", "clough_tocher"} or class
         Which resampler's ``invert()`` to use -- see the module docstring.
         A resampler class can be passed directly; it must accept
-        ``lon_deg, lat_deg, level, out_cell_ids`` and implement ``invert()``.
+        ``lon_deg, lat_deg, level`` and implement ``invert()``.
     nest : bool
-        HEALPix indexing scheme of `cell_ids`.
+        HEALPix indexing scheme of the source cell ids.
     ellipsoid : str
         Passed through to the resampler (``healpix_geo``).
     pad : int, optional
@@ -297,18 +306,24 @@ class HealpixToUTM:
     Attributes
     ----------
     grid : UTMGrid
+    cell_ids : numpy.ndarray, int64, shape (K,)
+        The HEALPix cells (at `level`) required to fill the raster, sorted
+        in ascending order. This is the selection to apply to the source
+        dataset before calling `resample()`.
+    K : int
+        ``len(cell_ids)``.
     resampler
         The underlying resampler (built on the padded pixel centers).
     valid : numpy.ndarray, bool, shape (ny, nx)
-        Pixels whose center lies in a cell of `cell_ids` and that the
-        operator can interpolate; the others are NaN in every output.
+        Pixels the operator can fill when every cell of `cell_ids` carries
+        data. Pixels outside it are NaN in every output (only Clough-Tocher
+        can have such pixels: those outside the hull of the cell centers).
     """
 
     def __init__(
         self,
-        cell_ids: T_Array,
-        level: int,
         grid: UTMGrid,
+        level: int,
         *,
         method: Union[str, type] = "bilinear",
         nest: bool = True,
@@ -336,15 +351,6 @@ class HealpixToUTM:
             resampler_cls = method
         self.method = method
 
-        ids = _to_numpy(cell_ids).astype(np.int64).reshape(-1)
-        if ids.size == 0:
-            raise ValueError("HealpixToUTM: `cell_ids` is empty.")
-        order = np.argsort(ids, kind="stable")
-        ids_sorted = ids[order]
-        if np.any(ids_sorted[1:] == ids_sorted[:-1]):
-            raise ValueError("HealpixToUTM: `cell_ids` must be unique.")
-        self.K = int(ids.size)
-
         # ---- pixel centers (optionally padded) -> lon/lat ------------------
         if pad is None:
             if resampler_cls is CloughTocherResampler and min(grid.shape) >= 2:
@@ -358,6 +364,9 @@ class HealpixToUTM:
         lon, lat = work.lonlat()
 
         # ---- resampler on the pixel centers --------------------------------
+        # No `out_cell_ids`: the resampler discovers by itself the cells
+        # surrounding the pixel centers, so the size of the source dataset
+        # never enters the construction.
         kwargs = dict(
             lon_deg=lon.reshape(-1),
             lat_deg=lat.reshape(-1),
@@ -369,38 +378,25 @@ class HealpixToUTM:
             verbose=verbose,
         )
         kwargs.update(resampler_kwargs)
-        if not (isinstance(resampler_cls, type) and issubclass(resampler_cls, GroupByResampler)):
-            # Group-by resamplers bin each pixel into its own cell and do not
-            # take `out_cell_ids`; cells without data are masked below.
-            kwargs.setdefault("out_cell_ids", ids)
         self.resampler = resampler_cls(**kwargs)
-
-        # ---- align the caller's cell order with the resampler's ------------
-        rs_ids = np.asarray(self.resampler.get_cell_ids()).astype(np.int64).reshape(-1)
-        pos = np.clip(np.searchsorted(ids_sorted, rs_ids), 0, self.K - 1)
-        found = ids_sorted[pos] == rs_ids
         dev = self.resampler.device
-        self._sel = torch.as_tensor(order[pos], dtype=torch.long, device=dev)
-        self._missing = torch.as_tensor(~found, device=dev)
 
-        # ---- pixels actually supported by input cells -----------------------
+        # ---- required cells, exposed sorted --------------------------------
+        rs_ids = np.asarray(self.resampler.get_cell_ids()).astype(np.int64).reshape(-1)
+        order = np.argsort(rs_ids, kind="stable")
+        self.cell_ids = rs_ids[order]
+        self.K = int(rs_ids.size)
+        # position, in the sorted `cell_ids`, of each resampler-order cell
+        rank = np.empty(self.K, dtype=np.int64)
+        rank[order] = np.arange(self.K)
+        self._rank = torch.as_tensor(rank, dtype=torch.long, device=dev)
+
+        # ---- pixels the operator can fill -----------------------------------
         # invert(1) is the per-pixel weight sum: ~1 where the pixel is
-        # interpolated from data cells, 0 where no cell reaches it, NaN where
-        # the operator itself declines (Clough-Tocher outside the hull, or a
-        # cell absent from `cell_ids`).
-        ones = torch.ones(rs_ids.size, dtype=self.resampler.dtype, device=dev)
-        ones[self._missing] = float("nan")
-        cov = self.resampler.invert(ones)
-        # On top of that, a pixel is only kept if its center lies in a cell
-        # that carries data: the KNN-based operators would otherwise
-        # extrapolate a few cells beyond the footprint of `cell_ids`.
-        hp = healpix_geo.nested if self.nest else healpix_geo.ring
-        pix_cell = np.asarray(
-            hp.lonlat_to_healpix(lon.reshape(-1), lat.reshape(-1), self.level, ellipsoid=ellipsoid)
-        ).astype(np.int64)
-        ppos = np.clip(np.searchsorted(ids_sorted, pix_cell), 0, self.K - 1)
-        in_footprint = torch.as_tensor(ids_sorted[ppos] == pix_cell, device=dev)
-        self._valid_flat = torch.isfinite(cov) & (cov > 0.5) & in_footprint
+        # interpolated from cells, 0 where no cell reaches it, NaN where the
+        # operator itself declines (Clough-Tocher outside the cell hull).
+        cov = self.resampler.invert(torch.ones(self.K, dtype=self.resampler.dtype, device=dev))
+        self._valid_flat = torch.isfinite(cov) & (cov > 0.5)
         self.valid = self._crop(self._valid_flat.reshape(self._work_shape)).cpu().numpy()
 
     def _crop(self, a):
@@ -410,17 +406,25 @@ class HealpixToUTM:
         return a[..., p:-p, p:-p]
 
     @torch.no_grad()
-    def resample(self, cell_data: T_Array) -> T_Array:
+    def resample(self, cell_data: T_Array, cell_ids: Optional[T_Array] = None) -> T_Array:
         """HEALPix cells -> UTM raster.
 
         Args:
-            cell_data: (K,) or (B, K) values, in the order of the `cell_ids`
-                given at construction. NumPy array or torch tensor.
+            cell_data: values on HEALPix cells, shape (K,) or (B, K) (B is a
+                batch dimension: bands, time steps, ...). NumPy array or
+                torch tensor.
+            cell_ids: the cell ids `cell_data` is defined on, shape (K,).
+                If omitted, `cell_data` must be given on ``self.cell_ids``,
+                in that order (the natural case when the data were read
+                with that selection). If given, the cells may come in any
+                order and may be a superset or a subset of
+                ``self.cell_ids``; required cells that are absent are
+                treated as NaN.
 
         Returns:
             (ny, nx) or (B, ny, nx), same array type as `cell_data`, in the
-            resampler's floating dtype. Unsupported pixels are NaN (see
-            `valid`). NaN cells propagate to the pixels they contribute to.
+            resampler's floating dtype. NaN cells (or absent ones) propagate
+            to the pixels they contribute to; pixels outside `valid` are NaN.
         """
         rs = self.resampler
         y = cell_data if isinstance(cell_data, torch.Tensor) else torch.as_tensor(np.asarray(cell_data))
@@ -428,16 +432,40 @@ class HealpixToUTM:
         squeezed = y.ndim == 1
         if squeezed:
             y = y[None, :]
-        if y.ndim != 2 or y.shape[-1] != self.K:
+        if y.ndim != 2:
             raise ValueError(
                 f"HealpixToUTM.resample: expected cell_data of shape (K,) or "
-                f"(B, K) with K={self.K}, got {tuple(cell_data.shape)}."
+                f"(B, K), got {tuple(cell_data.shape)}."
             )
 
-        aligned = y[:, self._sel]
-        aligned[:, self._missing] = float("nan")
+        if cell_ids is None:
+            if y.shape[-1] != self.K:
+                raise ValueError(
+                    f"HealpixToUTM.resample: cell_data has {y.shape[-1]} cells "
+                    f"but the operator needs K={self.K} (self.cell_ids); pass "
+                    f"`cell_ids=` if the data are defined on other cells."
+                )
+        else:
+            ids = _to_numpy(cell_ids).astype(np.int64).reshape(-1)
+            if ids.size != y.shape[-1]:
+                raise ValueError(
+                    f"HealpixToUTM.resample: cell_ids has {ids.size} entries but "
+                    f"cell_data has {y.shape[-1]} cells."
+                )
+            if ids.size == 0:
+                raise ValueError("HealpixToUTM.resample: `cell_ids` is empty.")
+            src = np.argsort(ids, kind="stable")
+            ids_sorted = ids[src]
+            if np.any(ids_sorted[1:] == ids_sorted[:-1]):
+                raise ValueError("HealpixToUTM.resample: `cell_ids` must be unique.")
+            pos = np.clip(np.searchsorted(ids_sorted, self.cell_ids), 0, ids.size - 1)
+            found = ids_sorted[pos] == self.cell_ids
+            sel = torch.as_tensor(src[pos], dtype=torch.long, device=rs.device)
+            y = y[:, sel]
+            if not found.all():
+                y[:, torch.as_tensor(~found, device=rs.device)] = float("nan")
 
-        out = rs.invert(aligned)  # (B, ny_work * nx_work)
+        out = rs.invert(y[:, self._rank])  # (B, ny_work * nx_work)
         out = torch.where(self._valid_flat[None, :], out, torch.full_like(out, float("nan")))
         out = self._crop(out.reshape((out.shape[0],) + self._work_shape))
 
@@ -461,7 +489,7 @@ def healpix_to_utm(
     ellipsoid: str = "WGS84",
     **kwargs,
 ) -> Tuple[T_Array, UTMGrid]:
-    """Resample a HEALPix field onto a UTM raster in one call.
+    """Resample an in-memory HEALPix field onto a UTM raster in one call.
 
     If `grid` is not given, it is built with `UTMGrid.from_cell_ids` from
     the bounding box of the cells, using `resolution` (default: the HEALPix
@@ -470,13 +498,16 @@ def healpix_to_utm(
     Returns
     -------
     data : (ny, nx) or (B, ny, nx)
-        Raster values, same array type as `cell_data`.
+        Raster values, same array type as `cell_data`. Pixels that depend
+        on a cell absent from `cell_ids` are NaN.
     grid : UTMGrid
         The grid the data are defined on (``grid.x``, ``grid.y``,
         ``grid.crs``).
 
-    To apply the same geometry to several fields, build a `HealpixToUTM`
-    once and call its ``resample()`` instead.
+    This wrapper needs `cell_data` and `cell_ids` in memory. For a dataset
+    larger than memory, or to apply the same geometry to several fields,
+    build a `HealpixToUTM` first, read only its ``cell_ids`` from the
+    source, and call its ``resample()``.
     """
     if grid is None:
         grid = UTMGrid.from_cell_ids(
@@ -484,7 +515,5 @@ def healpix_to_utm(
         )
     elif resolution is not None or crs is not None:
         raise ValueError("healpix_to_utm: pass either `grid` or `resolution`/`crs`, not both.")
-    op = HealpixToUTM(
-        cell_ids, level, grid, method=method, nest=nest, ellipsoid=ellipsoid, **kwargs
-    )
-    return op.resample(cell_data), grid
+    op = HealpixToUTM(grid, level, method=method, nest=nest, ellipsoid=ellipsoid, **kwargs)
+    return op.resample(cell_data, cell_ids=cell_ids), grid
