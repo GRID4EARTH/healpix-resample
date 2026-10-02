@@ -109,10 +109,25 @@ Sample space → HEALPix cell space: `hval = val @ self.M`. Accepts `val` of sha
 
 ### `invert(hval)`
 
-**Not implemented.** Unlike the KNN-based resamplers (which get a natural `MT` "for free" from a
-symmetric neighbour search), Delaunay/Clough-Tocher only defines a mapping from scattered samples to
-arbitrary query points, not the reverse. Calling `invert()` raises `NotImplementedError` with a pointer
-to `planning/05_clough_tocher_resampler.md` for the reasoning.
+HEALPix cell space → sample space: `val_hat = hval @ self.MT`. `MT` is a second, independent
+Delaunay/Clough-Tocher operator built the other way round: the `K` retained HEALPix cell centers are
+triangulated (in the same gnomonic plane as the forward operator) and the C1 cubic interpolant is
+evaluated at the `N` input sample positions. It has the same properties as the forward direction:
+
+- exact for an affine field, C1 across triangle edges;
+- **no extrapolation**: samples outside the convex hull of the retained cell centers are returned as
+  `NaN` (`self.invert_valid` is the `(N,)` boolean mask of the samples that do get a value). Because
+  cells are only retained *inside* the hull of the samples, the outermost ring of samples is normally
+  in that case;
+- `MT` is neither the transpose nor the inverse of `M`: `invert(resample(val))` reproduces `val` up to
+  interpolation error.
+
+`MT` needs its own triangulation, so it is built lazily on the first `invert()` call (or first access
+to `MT` / `invert_valid`) and cached; a forward-only use never pays for it. Accepts `(K,)` or `(B, K)`,
+`np.ndarray` or `torch.Tensor`.
+
+This is the operator behind `method="clough_tocher"` of
+[HEALPix → UTM](healpix_to_utm.md).
 
 ---
 

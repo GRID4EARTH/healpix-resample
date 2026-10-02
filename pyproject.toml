@@ -33,6 +33,12 @@ dependencies = [
   "scipy",
 ]
 
+[project.optional-dependencies]
+# healpix_resample.utm (HEALPix -> UTM raster) reprojects pixel centers with
+# pyproj. In a conda/pixi environment, install pyproj from conda-forge
+# instead (see REPRODUCING.md on not mixing a PyPI pyproj with conda's PROJ).
+utm = ["pyproj"]
+
 [tool.setuptools.packages.find]
 include = [
     "healpix_resample",

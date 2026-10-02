@@ -354,14 +354,93 @@ def test_torch_in_torch_out(small_grid):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. invert() is deliberately unimplemented
+# 6. invert(): reverse Clough-Tocher operator (retained HEALPix cell centers
+#    triangulated, evaluated at the input sample positions).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_invert_raises_not_implemented(small_grid):
+def test_invert_affine_field_is_exact(small_grid):
+    """Same discriminating check as `test_affine_field_is_exact`, in the
+    reverse direction: an affine field (in the projected plane) given on the
+    retained cell centers must be read back exactly at every sample inside
+    the hull of those cell centers."""
     lon, lat = small_grid
     op = CloughTocherResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False)
-    with pytest.raises(NotImplementedError):
-        op.invert(np.zeros(op.K))
+
+    f = lambda p: 3.0 + 2.3e-4 * p[:, 0] - 1.7e-4 * p[:, 1]
+    rval = op.invert(f(op.cell_points2d))
+    valid = op.invert_valid.cpu().numpy()
+
+    assert rval.shape == (op.N,)
+    assert valid.sum() > 0.5 * op.N
+    np.testing.assert_allclose(rval[valid], f(op.points2d)[valid], rtol=1e-9, atol=1e-9)
+
+
+def test_invert_nan_outside_cell_hull_only(small_grid):
+    """No extrapolation in the reverse direction either: exactly the samples
+    outside the convex hull of the retained cell centers are NaN."""
+    lon, lat = small_grid
+    op = CloughTocherResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False)
+
+    rval = op.invert(np.ones(op.K))
+    valid = op.invert_valid.cpu().numpy()
+
+    assert not valid.all()  # cells are kept strictly inside the sample hull
+    assert np.isnan(rval[~valid]).all()
+    np.testing.assert_allclose(rval[valid], 1.0, rtol=1e-10)
+
+    from scipy.spatial import Delaunay as _Delaunay
+    expected = _Delaunay(op.cell_points2d).find_simplex(op.points2d) >= 0
+    np.testing.assert_array_equal(valid, expected)
+
+
+def test_invert_matches_scipy_on_curved_field(curved_grid):
+    """Not bit-identical to scipy (different vertex-gradient estimator, see
+    the module docstring), but on a smooth field both are accurate cubic
+    interpolants of the same cell-center data."""
+    lon, lat = curved_grid
+    op = CloughTocherResampler(lon_deg=lon, lat_deg=lat, level=6, verbose=False)
+
+    import healpix_geo
+    clon, clat = healpix_geo.nested.healpix_to_lonlat(
+        op.get_cell_ids().astype(np.uint64), 6, ellipsoid="WGS84"
+    )
+    field = lambda lo, la: np.sin(np.deg2rad(lo)) * np.cos(np.deg2rad(la))
+    hval = field(np.asarray(clon), np.asarray(clat))
+
+    rval = op.invert(hval)
+    valid = op.invert_valid.cpu().numpy()
+    ref = scipy_interpolate.CloughTocher2DInterpolator(op.cell_points2d, hval)(op.points2d)
+
+    np.testing.assert_allclose(rval[valid], field(lon, lat)[valid], atol=2e-3)
+    np.testing.assert_allclose(rval[valid], ref[valid], atol=2e-3)
+
+
+def test_invert_roundtrip_batch_and_types(curved_grid):
+    """resample -> invert reproduces a smooth field up to interpolation
+    error; (N,)/(B,N) batching and NumPy/Torch symmetry as elsewhere."""
+    lon, lat = curved_grid
+    val = np.sin(np.deg2rad(lon)) * np.cos(np.deg2rad(lat))
+    op = CloughTocherResampler(lon_deg=lon, lat_deg=lat, level=6, verbose=False)
+    valid = op.invert_valid.cpu().numpy()
+
+    res = op.resample(val)
+    rval = op.invert(res.cell_data)
+    assert isinstance(rval, np.ndarray)
+    np.testing.assert_allclose(rval[valid], val[valid], atol=5e-3)
+
+    batch = np.stack([val, 2.0 * val])
+    rbatch = op.invert(op.resample(batch).cell_data)
+    assert rbatch.shape == (2, op.N)
+    np.testing.assert_allclose(rbatch[0][valid], rval[valid], rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(rbatch[1][valid], 2.0 * rval[valid], rtol=1e-12, atol=1e-12)
+
+    rtorch = op.invert(torch.as_tensor(res.cell_data))
+    assert isinstance(rtorch, torch.Tensor)
+    np.testing.assert_allclose(rtorch.cpu().numpy()[valid], rval[valid], rtol=1e-12, atol=1e-12)
+
+    assert tuple(op.MT.shape) == (op.K, op.N)
+    with pytest.raises(ValueError):
+        op.invert(np.zeros(op.K + 1))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
