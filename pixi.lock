@@ -10,8 +10,6 @@ environments:
   default:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
-    indexes:
-    - https://pypi.org/simple
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-7_kmp_llvm.conda
@@ -204,14 +202,9 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/webencodings-0.5.1-pyhd8ed1ab_3.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/websocket-client-1.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: ./
-      - pypi: https://files.pythonhosted.org/packages/1d/11/2e5967fff7af438c08ab23cf6366cd15e80e99e28c30954cf76d1898cf12/healpix_geo-0.2.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-      - pypi: https://files.pythonhosted.org/packages/ac/31/ec95df1853307419b173c1063669e865124222337e89bcf8ef57c20c8594/marray-0.0.12-py3-none-any.whl
   docs:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
-    indexes:
-    - https://pypi.org/simple
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-7_kmp_llvm.conda
@@ -523,9 +516,6 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/websocket-client-1.9.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/xyzservices-2026.3.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/zipp-4.1.0-pyhcf101f3_0.conda
-      - pypi: ./
-      - pypi: https://files.pythonhosted.org/packages/1d/11/2e5967fff7af438c08ab23cf6366cd15e80e99e28c30954cf76d1898cf12/healpix_geo-0.2.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-      - pypi: https://files.pythonhosted.org/packages/ac/31/ec95df1853307419b173c1063669e865124222337e89bcf8ef57c20c8594/marray-0.0.12-py3-none-any.whl
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-7_kmp_llvm.conda
   build_number: 7
@@ -5560,33 +5550,3 @@ packages:
   run_exports: {}
   size: 24190
   timestamp: 1779159948016
-- pypi: ./
-  name: healpix-resample
-  requires_dist:
-  - numpy
-  - torch
-  - healpix-geo
-  requires_python: '>=3.10'
-- pypi: https://files.pythonhosted.org/packages/1d/11/2e5967fff7af438c08ab23cf6366cd15e80e99e28c30954cf76d1898cf12/healpix_geo-0.2.1-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-  name: healpix-geo
-  version: 0.2.1
-  sha256: d247ca3f18d252fc27a454382b981850e1fd9d30764c5e347149eb40dafa8edb
-  requires_dist:
-  - numpy>=2.0
-  - marray
-  - shapely>=2 ; extra == 'geometries'
-  requires_python: '>=3.10'
-- pypi: https://files.pythonhosted.org/packages/ac/31/ec95df1853307419b173c1063669e865124222337e89bcf8ef57c20c8594/marray-0.0.12-py3-none-any.whl
-  name: marray
-  version: 0.0.12
-  sha256: 86e1bf6120e9eb39ab3c4b4dd9ae8283f8f92d5c2895c0fc0f56c6255c50ecb7
-  requires_dist:
-  - jupyter-book ; extra == 'docs'
-  - ghp-import ; extra == 'docs'
-  - numpy ; extra == 'test'
-  - pytest ; extra == 'test'
-  - pytest-cov ; extra == 'test'
-  - array-api-strict ; extra == 'test'
-  - array-api-compat ; extra == 'test'
-  - pytorch ; extra == 'test'
-  requires_python: '>=3.10'
