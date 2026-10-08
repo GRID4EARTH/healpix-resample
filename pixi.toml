@@ -26,13 +26,13 @@ healpix-geo = ">=0.4.1"
 [tasks]
 
 [dependencies]
+healpix-resample = { path = "." }
 numpy = ">=2.4.2,<3"
 python = ">=3.10,<3.14"
 jupyterlab = ">=4.5.5,<5"
 pytorch = ">=2.0,<3"
 
 [pypi-dependencies]
-healpix-resample= { path = ".", editable = true }
 healpix-geo = "*"
 
 [feature.affine.dependencies]
