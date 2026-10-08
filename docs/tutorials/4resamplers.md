@@ -21,9 +21,12 @@ from healpix_resample import (
     NearestResampler,
     BilinearResampler,
     BicubicResampler,
+    CloughTocherResampler,
     PSFResampler,
     CellPointResampler,
     ConservativeResampler,
+    BitmaskResampler,
+    CategoricalResampler,
 )
 
 # Shared dataset: a small structured grid near the origin
@@ -75,6 +78,24 @@ res_bicubic = nr_bicubic.resample(val, lam=0.0)
 rval_bicubic = nr_bicubic.invert(res_bicubic.cell_data)
 mse_bicubic = np.mean((rval_bicubic - val) ** 2)
 print(f"Bicubic  — output cells: {res_bicubic.cell_data.shape[0]}, MSE: {mse_bicubic:.2e}")
+```
+
+### `CloughTocherResampler`
+
+A **Delaunay triangulation + Clough-Tocher C1 cubic** interpolant — a genuine bivariate interpolant (exact
+at input points, C1 continuous across triangle edges), rather than a radial kernel sum like
+`BicubicResampler`. On fields with real curvature this shows fewer small-scale artifacts than
+`BicubicResampler`, because its discrete KNN neighbour-set membership can flip between adjacent output
+cells; Delaunay/CT has no such failure mode. Only resamples cells whose center falls **inside the convex
+hull** of the input samples (no extrapolation), and is intended for regional/local input extents (it
+projects samples to a local tangent plane — see `docs/user-guide/regrid_to_healpix_clough_tocher.md`).
+`invert()` is not implemented for this class (see its docstring).
+
+```{code-cell} python
+nr_ct = CloughTocherResampler(lon_deg=lon, lat_deg=lat, level=level, verbose=False)
+res_ct = nr_ct.resample(val)
+
+print(f"Clough-Tocher — output cells: {res_ct.cell_data.shape[0]} (only cells inside the sample convex hull)")
 ```
 
 ### Conservative mode (`BilinearResampler` / `BicubicResampler`)
@@ -154,4 +175,36 @@ print(f"Conservative — output cells: {res_cons.cell_data.shape[0]}")
 print(f"  sum(val*area)         = {flux_in:.6f}")
 print(f"  sum(hval)              = {flux_out:.6f}  (should equal the line above)")
 print(f"  sum(invert(hval)*area) = {flux_back:.6f}  (should equal the line above)")
+```
+
+### `CategoricalResampler`
+
+For mutually-exclusive class labels (issue [#43](https://github.com/GRID4EARTH/healpix-resample/issues/43)): resamples a one-hot indicator per class through `BilinearResampler` (by default) and picks the argmax per cell. `return_scores=True` also returns a softmax-normalized per-class confidence.
+
+```{code-cell} python
+# Three "land-cover" classes split by longitude tercile.
+land_cover = np.digitize(lon, np.quantile(lon, [1 / 3, 2 / 3])).astype(np.int64)
+
+nr_cat = CategoricalResampler(lon_deg=lon, lat_deg=lat, level=level)
+res_cat = nr_cat.resample(land_cover, return_scores=True)
+
+winner_score = res_cat.scores.max(axis=0)  # (K,) softmax score of the winning class per cell
+print(f"Categorical — output cells: {res_cat.cell_data.shape[0]}, classes found: {res_cat.classes}")
+print(f"Winning-class softmax score range: [{winner_score.min():.3f}, {winner_score.max():.3f}]")
+```
+
+### `BitmaskResampler`
+
+For independent, co-occurring boolean flags packed into an integer (e.g. an 8-bit quality/cloud mask): each bit is resampled and thresholded independently, then the bits are recombined.
+
+```{code-cell} python
+bit0 = (lon > np.median(lon)).astype(np.int64)   # e.g. "cloud" flag
+bit1 = (lat > np.median(lat)).astype(np.int64)   # e.g. "cloud-shadow" flag, independent of bit0
+quality_mask = bit0 | (bit1 << 1)
+
+nr_bitmask = BitmaskResampler(lon_deg=lon, lat_deg=lat, level=level, n_bits=2)
+res_bitmask = nr_bitmask.resample(quality_mask)
+
+print(f"Bitmask — output cells: {res_bitmask.cell_data.shape[0]}")
+print(f"Distinct output values: {sorted(set(res_bitmask.cell_data.tolist()))}  (subset of [0, 1, 2, 3])")
 ```

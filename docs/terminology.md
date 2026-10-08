@@ -91,6 +91,21 @@ leave `area` at its default — plain summation is exactly conservative regardle
 Unlike `NearestResampler` and `BilinearResampler` — which interpolate *values* at points —
 `ConservativeResampler` preserves a *flux*, at the cost of not producing a smooth field.
 
+This is **hard binning**: a source pixel straddling several HEALPix cells is not split, its
+whole quantity goes to the cell containing its position. The global total is exact, but the
+local redistribution is not geometric. When source cells must be split across the target cells
+they overlap — the classical Earth-system flux-remapping situation — use
+`OverlapConservativeResampler` instead, which builds its weights from source/target
+intersection areas:
+
+```
+x_j = (1 / |D_j|) * sum_i |S_i ∩ D_j| * y_i
+```
+
+This is the *first-order conservative* formulation of ESMF/xESMF, and unlike hard binning it
+preserves a constant field exactly. See
+`docs/user-guide/regrid_to_healpix_overlap_conservative.md`.
+
 `PSFResampler` can also be made conservative: passing `area` bakes the same area weighting
 directly into its kernel-based operator (a *conservative rebinning*, not just hard binning),
 and `resample(..., conservative=True)` adds an exact minimum-distortion correction on top —

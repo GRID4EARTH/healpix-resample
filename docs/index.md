@@ -18,7 +18,7 @@ HEALPix is a standard equal-area pixelization of the sphere used in astrophysics
 :::{grid-item-card} Tutorials
 :link: tutorials/index
 :link-type: doc
-Hands-on notebooks to get started quickly.
+Start with a real Sentinel-2 scene from Zenodo and compare every resampler.
 :::
 
 :::{grid-item-card} User Guide

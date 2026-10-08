@@ -93,6 +93,13 @@ autodoc_typehints = "none"
 # Suppress warnings for inherited methods in autosummary-generated pages
 nitpick_ignore_regex = [
     (r"py:(obj|meth)", r"healpix_resample\.(\w+\.)*\w+\.(comp_matrix|get_cell_ids|get_cell_area|invert|resample)"),
+    # CategoricalResampleResults is a `ResampleResults` dataclass subclass
+    # (mask.py): autosummary's generated Attributes table tries to
+    # cross-reference the inherited fields (cell_data, cell_ids,
+    # cg_residual_norms, cg_niters) as if they were defined directly on
+    # the subclass, which doesn't resolve -- same underlying pattern as
+    # the inherited-methods case above, just for dataclass attributes.
+    (r"py:obj", r"healpix_resample\.CategoricalResampleResults\.(cell_data|cell_ids|cg_residual_norms|cg_niters)"),
 ]
 
 # Suppress warnings from napoleon's type-preprocessing trying (and failing) to

@@ -1,0 +1,9 @@
+source,competitor,n_regions,psf_aware_wins,win_fraction,mean_delta_rmse
+synthetic,classical_cubic,40,40,1.0,0.010696662265784432
+synthetic,classical_linear,40,40,1.0,0.014300352746851406
+synthetic,classical_nearest,40,40,1.0,0.012725926974312334
+real,classical_cubic,40,40,1.0,0.0040735450900740424
+real,classical_linear,40,40,1.0,0.005476464460718474
+real,classical_nearest,40,40,1.0,0.004983321325337671
+real,richardson_lucy,40,40,1.0,0.002424388388878277
+real,xref,40,40,1.0,0.006124211851167083

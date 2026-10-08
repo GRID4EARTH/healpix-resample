@@ -1,0 +1,3 @@
+patch_id,scene_class,region_id,error_type,error
+water__caspian_sea__r1c2,water,caspian_sea,ValueError,Invalid PSF degradation for water__caspian_sea__r1c2: 0.0
+water__caspian_sea__r2c2,water,caspian_sea,ValueError,Invalid PSF degradation for water__caspian_sea__r2c2: 0.0

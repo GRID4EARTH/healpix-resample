@@ -1,0 +1,361 @@
+patch_id,scene_class,region_id,location,anchor_lat,anchor_lon,patch_lat,patch_lon,abs_latitude_band,utm_epsg,east_offset_m,north_offset_m,patch_row,patch_col
+urban__singapore__r0c0,urban,singapore,Singapore,1.2903,103.8519,1.2541021198934994,103.81596794666491,00-15,32648,-4000.0,-4000.0,0,0
+urban__singapore__r0c1,urban,singapore,Singapore,1.2903,103.8519,1.2541182383741496,103.85191599538406,00-15,32648,0.0,-4000.0,0,1
+urban__singapore__r0c2,urban,singapore,Singapore,1.2903,103.8519,1.254133860201693,103.88786449936873,00-15,32648,4000.0,-4000.0,0,2
+urban__singapore__r1c0,urban,singapore,Singapore,1.2903,103.8519,1.2902834163465642,103.81595145072481,00-15,32648,-4000.0,0.0,1,0
+urban__singapore__r1c1,urban,singapore,Singapore,1.2903,103.8519,1.2902999999999998,103.8519,00-15,32648,0.0,0.0,1,1
+urban__singapore__r1c2,urban,singapore,Singapore,1.2903,103.8519,1.290316072667127,103.88784900457223,00-15,32648,4000.0,0.0,1,2
+urban__singapore__r2c0,urban,singapore,Singapore,1.2903,103.8519,1.3264647022528997,103.81593448523955,00-15,32648,-4000.0,4000.0,2,0
+urban__singapore__r2c1,urban,singapore,Singapore,1.2903,103.8519,1.3264817510916866,103.85188354931874,00-15,32648,0.0,4000.0,2,1
+urban__singapore__r2c2,urban,singapore,Singapore,1.2903,103.8519,1.326498274610578,103.88783306872739,00-15,32648,4000.0,4000.0,2,2
+urban__nairobi__r0c0,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.3225305542879326,36.78123901895743,00-15,32737,-4000.0,-4000.0,0,0
+urban__nairobi__r0c1,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.3225626302473925,36.8171688223362,00-15,32737,0.0,-4000.0,0,1
+urban__nairobi__r0c2,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.3225941835392068,36.85309949078891,00-15,32737,4000.0,-4000.0,0,2
+urban__nairobi__r1c0,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.286368801375594,36.781270708793215,00-15,32737,-4000.0,0.0,1,0
+urban__nairobi__r1c1,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.2863999999999969,36.8172,00-15,32737,0.0,0.0,1,1
+urban__nairobi__r1c2,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.2864306902526315,36.85313015621936,00-15,32737,4000.0,0.0,1,2
+urban__nairobi__r2c0,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.2502070374169012,36.781301519406156,00-15,32737,-4000.0,4000.0,2,0
+urban__nairobi__r2c1,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.2502373587298494,36.817230312650956,00-15,32737,0.0,4000.0,2,1
+urban__nairobi__r2c2,urban,nairobi,"Nairobi, Kenya",-1.2864,36.8172,-1.2502671859665244,36.85315997084865,00-15,32737,4000.0,4000.0,2,2
+urban__sao_paulo__r0c0,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.586199295303587,-46.672933198899024,15-30,32723,-4000.0,-4000.0,0,0
+urban__sao_paulo__r0c1,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.58661641824638,-46.633746782506876,15-30,32723,0.0,-4000.0,0,1
+urban__sao_paulo__r0c2,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.58702366399111,-46.594559475654854,15-30,32723,4000.0,-4000.0,0,2
+urban__sao_paulo__r1c0,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.550083591293532,-46.672475712076306,15-30,32723,-4000.0,0.0,1,0
+urban__sao_paulo__r1c1,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.5505,-46.6333,15-30,32723,0.0,0.0,1,1
+urban__sao_paulo__r1c2,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.550906548416815,-46.594123398542685,15-30,32723,4000.0,0.0,1,2
+urban__sao_paulo__r2c0,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.513967711274553,-46.672019135933624,15-30,32723,-4000.0,4000.0,2,0
+urban__sao_paulo__r2c1,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.51438340612312,-46.63285410687462,15-30,32723,0.0,4000.0,2,1
+urban__sao_paulo__r2c2,urban,sao_paulo,"Sao Paulo, Brazil",-23.5505,-46.6333,-23.51478925758149,-46.59368818951062,15-30,32723,4000.0,4000.0,2,2
+urban__cape_town__r0c0,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.960025727460355,18.379763738660497,30-45,32734,-4000.0,-4000.0,0,0
+urban__cape_town__r0c1,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.9609394320875,18.423013535287144,30-45,32734,0.0,-4000.0,0,1
+urban__cape_town__r0c2,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.96183796023641,18.466265264593428,30-45,32734,4000.0,-4000.0,0,2
+urban__cape_town__r1c0,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.923987528109855,18.38086838718791,30-45,32734,-4000.0,0.0,1,0
+urban__cape_town__r1c1,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.924899999999994,18.4241,30-45,32734,0.0,0.0,1,1
+urban__cape_town__r1c2,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.9257973158621,18.46733354220432,30-45,32734,4000.0,0.0,1,2
+urban__cape_town__r2c0,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.88794908584836,18.381971074093535,30-45,32734,-4000.0,4000.0,2,0
+urban__cape_town__r2c1,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.88886032601885,18.42518453531914,30-45,32734,0.0,4000.0,2,1
+urban__cape_town__r2c2,urban,cape_town,"Cape Town, South Africa",-33.9249,18.4241,-33.88975643059475,18.46839992265851,30-45,32734,4000.0,4000.0,2,2
+urban__sydney__r0c0,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.904221970944,151.16530175038037,30-45,32756,-4000.0,-4000.0,0,0
+urban__sydney__r0c1,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.904858663668826,151.20854618059698,30-45,32756,0.0,-4000.0,0,1
+urban__sydney__r0c2,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.90548018506739,151.25179195262064,30-45,32756,4000.0,-4000.0,0,2
+urban__sydney__r1c0,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.86816416743214,151.16607374187643,30-45,32756,-4000.0,0.0,1,0
+urban__sydney__r1c1,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.86879999999999,151.2093,30-45,32756,0.0,0.0,1,1
+urban__sydney__r1c2,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.869420681725536,151.25252759765013,30-45,32756,4000.0,0.0,1,2
+urban__sydney__r2c0,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.83210613711003,151.16684436158428,30-45,32756,-4000.0,4000.0,2,0
+urban__sydney__r2c1,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.83274111023,151.2100524798755,30-45,32756,0.0,4000.0,2,1
+urban__sydney__r2c2,urban,sydney,"Sydney, Australia",-33.8688,151.2093,-33.83336095297478,151.2532619354189,30-45,32756,4000.0,4000.0,2,2
+urban__mexico_city__r0c0,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.396419093262978,-99.17126634016445,15-30,32614,-4000.0,-4000.0,0,0
+urban__mexico_city__r0c1,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.396450987683966,-99.13317056114029,15-30,32614,0.0,-4000.0,0,1
+urban__mexico_city__r0c2,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.396474899912338,-99.0950747164355,15-30,32614,4000.0,-4000.0,0,2
+urban__mexico_city__r1c0,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.432568041496072,-99.17130420043806,15-30,32614,-4000.0,0.0,1,0
+urban__mexico_city__r1c1,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.4326,-99.1332,15-30,32614,0.0,0.0,1,1
+urban__mexico_city__r1c2,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.43262396027334,-99.09509573381472,15-30,32614,4000.0,0.0,1,2
+urban__mexico_city__r2c0,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.46871684584549,-99.17134214526682,15-30,32614,-4000.0,4000.0,2,0
+urban__mexico_city__r2c1,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.468748868459762,-99.13322950460694,15-30,32614,0.0,4000.0,2,1
+urban__mexico_city__r2c2,urban,mexico_city,"Mexico City, Mexico",19.4326,-99.1332,19.468772876798614,-99.09511679813309,15-30,32614,4000.0,4000.0,2,2
+urban__tokyo__r0c0,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.63964131912426,139.6067378271551,30-45,32654,-4000.0,-4000.0,0,0
+urban__tokyo__r0c1,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.640144198849526,139.65090666203452,30-45,32654,0.0,-4000.0,0,1
+urban__tokyo__r0c2,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.64063088818847,139.69507657344073,30-45,32654,4000.0,-4000.0,0,2
+urban__tokyo__r1c0,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.67569645573704,139.6061113186456,30-45,32654,-4000.0,0.0,1,0
+urban__tokyo__r1c1,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.676200000000016,139.6503,30-45,32654,0.0,0.0,1,1
+urban__tokyo__r1c2,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.67668733248947,139.69448975980802,30-45,32654,4000.0,0.0,1,2
+urban__tokyo__r2c0,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.711751366415804,139.60548369642157,30-45,32654,-4000.0,4000.0,2,0
+urban__tokyo__r2c1,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.71225557580426,139.6496922595109,30-45,32654,0.0,4000.0,2,1
+urban__tokyo__r2c2,urban,tokyo,"Tokyo, Japan",35.6762,139.6503,35.71274355201317,139.69390190298608,30-45,32654,4000.0,4000.0,2,2
+urban__montreal__r0c0,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.466536422456436,-73.61946497358554,45-60,32618,-4000.0,-4000.0,0,0
+urban__montreal__r0c1,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.46590662060698,-73.56831217339206,45-60,32618,0.0,-4000.0,0,1
+urban__montreal__r0c2,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.46525391958254,-73.51716109636185,45-60,32618,4000.0,-4000.0,0,2
+urban__montreal__r1c0,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.502530588434226,-73.61858536552852,45-60,32618,-4000.0,0.0,1,0
+urban__montreal__r1c1,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.501900000000006,-73.5674,45-60,32618,0.0,0.0,1,1
+urban__montreal__r1c2,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.501246483809574,-73.51621636164262,45-60,32618,4000.0,0.0,1,2
+urban__montreal__r2c0,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.538524513295016,-73.61770409191038,45-60,32618,-4000.0,4000.0,2,0
+urban__montreal__r2c1,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.537893137281365,-73.56648609943463,45-60,32618,0.0,4000.0,2,1
+urban__montreal__r2c2,urban,montreal,"Montreal, Canada",45.5019,-73.5674,45.53723880489418,-73.51526983815103,45-60,32618,4000.0,4000.0,2,2
+urban__paris__r0c0,urban,paris,"Paris, France",48.8566,2.3522,48.82029996377494,2.2981754547839266,45-60,32631,-4000.0,-4000.0,0,0
+urban__paris__r0c1,urban,paris,"Paris, France",48.8566,2.3522,48.820618822804924,2.35266382896826,45-60,32631,0.0,-4000.0,0,1
+urban__paris__r0c2,urban,paris,"Paris, France",48.8566,2.3522,48.82091192858306,2.407153121052389,45-60,32631,4000.0,-4000.0,0,2
+urban__paris__r1c0,urban,paris,"Paris, France",48.8566,2.3522,48.856280739284,2.2976725913504663,45-60,32631,-4000.0,0.0,1,0
+urban__paris__r1c1,urban,paris,"Paris, France",48.8566,2.3522,48.85660000000001,2.3522,45-60,32631,0.0,0.0,1,1
+urban__paris__r1c2,urban,paris,"Paris, France",48.8566,2.3522,48.85689347502571,2.4067283288866896,45-60,32631,4000.0,0.0,1,2
+urban__paris__r2c0,urban,paris,"Paris, France",48.8566,2.3522,48.892261285227754,2.297168730250136,45-60,32631,-4000.0,4000.0,2,0
+urban__paris__r2c1,urban,paris,"Paris, France",48.8566,2.3522,48.892580948202585,2.3517352507932077,45-60,32631,0.0,4000.0,2,1
+urban__paris__r2c2,urban,paris,"Paris, France",48.8566,2.3522,48.89287479300247,2.406302693919052,45-60,32631,4000.0,4000.0,2,2
+urban__reykjavik__r0c0,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.11015571466663,-22.02347605636371,60-75,32627,-4000.0,-4000.0,0,0
+urban__reykjavik__r0c1,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.11070940369189,-21.94138469496526,60-75,32627,0.0,-4000.0,0,1
+urban__reykjavik__r0c2,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.11121683199232,-21.859289836082795,60-75,32627,4000.0,-4000.0,0,2
+urban__reykjavik__r1c0,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.14604543056885,-22.024797296008014,60-75,32627,-4000.0,0.0,1,0
+urban__reykjavik__r1c1,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.1466,-21.942600000000002,60-75,32627,0.0,0.0,1,1
+urban__reykjavik__r1c2,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.14710823517932,-21.86039919199552,60-75,32627,4000.0,0.0,1,2
+urban__reykjavik__r2c0,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.1819349535051,-22.0261223536254,60-75,32627,-4000.0,4000.0,2,0
+urban__reykjavik__r2c1,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.18249040561801,-21.94381881704467,60-75,32627,0.0,4000.0,2,1
+urban__reykjavik__r2c2,urban,reykjavik,"Reykjavik, Iceland",64.1466,-21.9426,64.18299944976205,-21.86151175387424,60-75,32627,4000.0,4000.0,2,2
+water__lake_victoria__r0c0,water,lake_victoria,Lake Victoria,-1.0,33.0,-1.0361889347151867,32.96404717228493,00-15,32736,-4000.0,-4000.0,0,0
+water__lake_victoria__r0c1,water,lake_victoria,Lake Victoria,-1.0,33.0,-1.036189140044676,33.0,00-15,32736,0.0,-4000.0,0,1
+water__lake_victoria__r0c2,water,lake_victoria,Lake Victoria,-1.0,33.0,-1.0361889347151867,33.03595282771507,00-15,32736,4000.0,-4000.0,0,2
+water__lake_victoria__r1c0,water,lake_victoria,Lake Victoria,-1.0,33.0,-0.9999998018431085,32.96404757313427,00-15,32736,-4000.0,0.0,1,0
+water__lake_victoria__r1c1,water,lake_victoria,Lake Victoria,-1.0,33.0,-0.9999999999999957,33.0,00-15,32736,0.0,0.0,1,1
+water__lake_victoria__r1c2,water,lake_victoria,Lake Victoria,-1.0,33.0,-0.9999998018431085,33.03595242686573,00-15,32736,4000.0,0.0,1,2
+water__lake_victoria__r2c0,water,lake_victoria,Lake Victoria,-1.0,33.0,-0.9638106609604543,32.96404795972799,00-15,32736,-4000.0,4000.0,2,0
+water__lake_victoria__r2c1,water,lake_victoria,Lake Victoria,-1.0,33.0,-0.9638108519448894,33.0,00-15,32736,0.0,4000.0,2,1
+water__lake_victoria__r2c2,water,lake_victoria,Lake Victoria,-1.0,33.0,-0.9638106609604543,33.03595204027201,00-15,32736,4000.0,4000.0,2,2
+water__lake_titicaca__r0c0,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.83608924910252,-69.43742591070479,15-30,32719,-4000.0,-4000.0,0,0
+water__lake_titicaca__r0c1,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.836161370527593,-69.40007108737676,15-30,32719,0.0,-4000.0,0,1
+water__lake_titicaca__r0c2,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.83622705865855,-69.36271608034622,15-30,32719,4000.0,-4000.0,0,2
+water__lake_titicaca__r1c0,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.799928051608038,-69.43734818636031,15-30,32719,-4000.0,0.0,1,0
+water__lake_titicaca__r1c1,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.8,-69.4,15-30,32719,0.0,0.0,1,1
+water__lake_titicaca__r1c2,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.800065530532443,-69.36265163009068,15-30,32719,4000.0,0.0,1,2
+water__lake_titicaca__r2c0,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.76376673359853,-69.43727066270147,15-30,32719,-4000.0,4000.0,2,0
+water__lake_titicaca__r2c1,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.76383850901652,-69.39992909617239,15-30,32719,0.0,4000.0,2,1
+water__lake_titicaca__r2c2,water,lake_titicaca,Lake Titicaca,-15.8,-69.4,-15.763903882004312,-69.36258734624727,15-30,32719,4000.0,4000.0,2,2
+water__lake_taupo__r0c0,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.81566187073572,176.01345833384605,30-45,32760,-4000.0,-4000.0,0,0
+water__lake_taupo__r0c1,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.81604181387148,176.05952638784726,30-45,32760,0.0,-4000.0,0,1
+water__lake_taupo__r0c2,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.8164035951402,176.10559529033287,30-45,32760,4000.0,-4000.0,0,2
+water__lake_taupo__r1c0,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.77962054284687,176.01395513641307,30-45,32760,-4000.0,0.0,1,0
+water__lake_taupo__r1c1,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.78,176.06,30-45,32760,0.0,0.0,1,1
+water__lake_taupo__r1c2,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.78036131851204,176.10604571042035,30-45,32760,4000.0,0.0,1,2
+water__lake_taupo__r2c0,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.74357898669962,176.01445105069422,30-45,32760,-4000.0,4000.0,2,0
+water__lake_taupo__r2c1,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.74395795835227,176.06047276531856,30-45,32760,0.0,4000.0,2,1
+water__lake_taupo__r2c2,water,lake_taupo,Lake Taupo,-38.78,176.06,-38.744318814566775,176.10649532513014,30-45,32760,4000.0,4000.0,2,2
+water__lake_geneva__r0c0,water,lake_geneva,Lake Geneva,46.459,6.43,46.42185721598893,6.379689345780408,45-60,32632,-4000.0,-4000.0,0,0
+water__lake_geneva__r0c1,water,lake_geneva,Lake Geneva,46.459,6.43,46.423037650688954,6.4316915123654566,45-60,32632,0.0,-4000.0,0,1
+water__lake_geneva__r0c2,water,lake_geneva,Lake Geneva,46.459,6.43,46.42419446102112,6.483696910550786,45-60,32632,4000.0,-4000.0,0,2
+water__lake_geneva__r1c0,water,lake_geneva,Lake Geneva,46.459,6.43,46.45781809065042,6.377963678998391,45-60,32632,-4000.0,0.0,1,0
+water__lake_geneva__r1c1,water,lake_geneva,Lake Geneva,46.459,6.43,46.459,6.43,45-60,32632,0.0,0.0,1,1
+water__lake_geneva__r1c2,water,lake_geneva,Lake Geneva,46.459,6.43,46.46015825553086,6.48203956030391,45-60,32632,4000.0,0.0,1,2
+water__lake_geneva__r2c0,water,lake_geneva,Lake Geneva,46.459,6.43,46.49377868859477,6.376234707690337,45-60,32632,-4000.0,4000.0,2,0
+water__lake_geneva__r2c1,water,lake_geneva,Lake Geneva,46.459,6.43,46.49496207452051,6.42830524832795,45-60,32632,0.0,4000.0,2,1
+water__lake_geneva__r2c2,water,lake_geneva,Lake Geneva,46.459,6.43,46.496121777138406,6.480379035995644,45-60,32632,4000.0,4000.0,2,2
+water__lake_michigan__r0c0,water,lake_michigan,Lake Michigan,43.0,-87.85,42.96360901691799,-87.89854417672127,30-45,32616,-4000.0,-4000.0,0,0
+water__lake_michigan__r0c1,water,lake_michigan,Lake Michigan,43.0,-87.85,42.96398349270397,-87.84950395424866,30-45,32616,0.0,-4000.0,0,1
+water__lake_michigan__r0c2,water,lake_michigan,Lake Michigan,43.0,-87.85,42.96433696087617,-87.80046281908129,30-45,32616,4000.0,-4000.0,0,2
+water__lake_michigan__r1c0,water,lake_michigan,Lake Michigan,43.0,-87.85,42.999625055110535,-87.89906884909321,30-45,32616,-4000.0,0.0,1,0
+water__lake_michigan__r1c1,water,lake_michigan,Lake Michigan,43.0,-87.85,43.0,-87.85,30-45,32616,0.0,0.0,1,1
+water__lake_michigan__r1c2,water,lake_michigan,Lake Michigan,43.0,-87.85,43.0003539109648,-87.80093023622433,30-45,32616,4000.0,0.0,1,2
+water__lake_michigan__r2c0,water,lake_michigan,Lake Michigan,43.0,-87.85,43.035640860642474,-87.89959448891861,30-45,32616,-4000.0,4000.0,2,0
+water__lake_michigan__r2c1,water,lake_michigan,Lake Michigan,43.0,-87.85,43.03601627517815,-87.8504969604348,30-45,32616,0.0,4000.0,2,1
+water__lake_michigan__r2c2,water,lake_michigan,Lake Michigan,43.0,-87.85,43.03637062944784,-87.80139851527466,30-45,32616,4000.0,4000.0,2,2
+water__lake_tahoe__r0c0,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.06280722943713,-120.04464512393872,30-45,32611,-4000.0,-4000.0,0,0
+water__lake_tahoe__r0c1,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.06400457318178,-119.99847449002667,30-45,32611,0.0,-4000.0,0,1
+water__lake_tahoe__r0c2,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.06518366683893,-119.95230112831956,30-45,32611,4000.0,-4000.0,0,2
+water__lake_tahoe__r1c0,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.098801128073546,-120.04619403587961,30-45,32611,-4000.0,0.0,1,0
+water__lake_tahoe__r1c1,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.1,-119.99999999999999,30-45,32611,0.0,0.0,1,1
+water__lake_tahoe__r1c2,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.10118059859638,-119.95380323097694,30-45,32611,4000.0,0.0,1,2
+water__lake_tahoe__r2c0,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.1347947521602,-120.04774572275976,30-45,32611,-4000.0,4000.0,2,0
+water__lake_tahoe__r2c1,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.13599515380014,-120.00152824311934,30-45,32611,0.0,4000.0,2,1
+water__lake_tahoe__r2c2,water,lake_tahoe,Lake Tahoe,39.1,-120.0,39.13717725884428,-119.95530802497149,30-45,32611,4000.0,4000.0,2,2
+water__great_salt_lake__r0c0,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.263305868872024,-112.65684772756683,30-45,32612,-4000.0,-4000.0,0,0
+water__great_salt_lake__r0c1,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.26398306005126,-112.6091148171065,30-45,32612,0.0,-4000.0,0,1
+water__great_salt_lake__r0c2,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.26464046998351,-112.56138030117226,30-45,32612,4000.0,-4000.0,0,2
+water__great_salt_lake__r1c0,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.299321955355346,-112.657759139712,30-45,32612,-4000.0,0.0,1,0
+water__great_salt_lake__r1c1,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.29999999999999,-112.61,30-45,32612,0.0,0.0,1,1
+water__great_salt_lake__r1c2,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.30065823848409,-112.56223925147232,30-45,32612,4000.0,0.0,1,2
+water__great_salt_lake__r2c0,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.33533779917703,-112.65867220829838,30-45,32612,-4000.0,4000.0,2,0
+water__great_salt_lake__r2c1,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.33601669821545,-112.6108867917109,30-45,32612,0.0,4000.0,2,1
+water__great_salt_lake__r2c2,water,great_salt_lake,Great Salt Lake,41.3,-112.61,41.336675766152744,-112.56309976295579,30-45,32612,4000.0,4000.0,2,2
+water__caspian_sea__r0c0,water,caspian_sea,Caspian Sea,42.0,48.355,41.962890474981585,48.308271183739436,30-45,32639,-4000.0,-4000.0,0,0
+water__caspian_sea__r0c1,water,caspian_sea,Caspian Sea,42.0,48.355,41.964011654720714,48.3564900532219,30-45,32639,0.0,-4000.0,0,1
+water__caspian_sea__r0c2,water,caspian_sea,Caspian Sea,42.0,48.355,41.96511260556185,48.40471163804328,30-45,32639,4000.0,-4000.0,0,2
+water__caspian_sea__r1c0,water,caspian_sea,Caspian Sea,42.0,48.355,41.99887741249511,48.3067540306194,30-45,32639,-4000.0,0.0,1,0
+water__caspian_sea__r1c1,water,caspian_sea,Caspian Sea,42.0,48.355,41.99999999999999,48.355,30-45,32639,0.0,0.0,1,1
+water__caspian_sea__r1c2,water,caspian_sea,Caspian Sea,42.0,48.355,42.00110233325514,48.4032486904708,30-45,32639,4000.0,0.0,1,2
+water__caspian_sea__r2c0,water,caspian_sea,Caspian Sea,42.0,48.355,42.03486407883251,48.305234107051625,30-45,32639,-4000.0,4000.0,2,0
+water__caspian_sea__r2c1,water,caspian_sea,Caspian Sea,42.0,48.355,42.0359880756714,48.353507225684936,30-45,32639,0.0,4000.0,2,1
+water__caspian_sea__r2c2,water,caspian_sea,Caspian Sea,42.0,48.355,42.037091792880695,48.4017830711774,30-45,32639,4000.0,4000.0,2,2
+water__lake_constance__r0c0,water,lake_constance,Lake Constance,47.6,9.4,47.56418248428852,9.34655093568043,45-60,32632,-4000.0,-4000.0,0,0
+water__lake_constance__r0c1,water,lake_constance,Lake Constance,47.6,9.4,47.56400949476512,9.399725937570112,45-60,32632,0.0,-4000.0,0,1
+water__lake_constance__r0c2,water,lake_constance,Lake Constance,47.6,9.4,47.56381185407448,9.452900407144588,45-60,32632,4000.0,-4000.0,0,2
+water__lake_constance__r1c0,water,lake_constance,Lake Constance,47.6,9.4,47.600173206419115,9.346788541872023,45-60,32632,-4000.0,0.0,1,0
+water__lake_constance__r1c1,water,lake_constance,Lake Constance,47.6,9.4,47.599999999999994,9.4,45-60,32632,0.0,0.0,1,1
+water__lake_constance__r1c2,water,lake_constance,Lake Constance,47.6,9.4,47.59980211150753,9.45321092450264,45-60,32632,4000.0,0.0,1,2
+water__lake_constance__r2c0,water,lake_constance,Lake Constance,47.6,9.4,47.63616370073636,9.347026610709834,45-60,32632,-4000.0,4000.0,2,0
+water__lake_constance__r2c1,water,lake_constance,Lake Constance,47.6,9.4,47.63599027712578,9.400274596055981,45-60,32632,0.0,4000.0,2,1
+water__lake_constance__r2c2,water,lake_constance,Lake Constance,47.6,9.4,47.63579214049363,9.453522046462153,45-60,32632,4000.0,4000.0,2,2
+water__lake_baikal__r0c0,water,lake_baikal,Lake Baikal,53.5,108.0,53.46256867747913,107.94236810894071,45-60,32649,-4000.0,-4000.0,0,0
+water__lake_baikal__r0c1,water,lake_baikal,Lake Baikal,53.5,108.0,53.4640944791155,108.00253422709692,45-60,32649,0.0,-4000.0,0,1
+water__lake_baikal__r0c2,water,lake_baikal,Lake Baikal,53.5,108.0,53.46559001346179,108.06270579270809,45-60,32649,4000.0,-4000.0,0,2
+water__lake_baikal__r1c0,water,lake_baikal,Lake Baikal,53.5,108.0,53.49847221009595,107.93978320563744,45-60,32649,-4000.0,0.0,1,0
+water__lake_baikal__r1c1,water,lake_baikal,Lake Baikal,53.5,108.0,53.499999999999986,108.0,45-60,32649,0.0,0.0,1,1
+water__lake_baikal__r1c2,water,lake_baikal,Lake Baikal,53.5,108.0,53.50149748331145,108.0602222575994,45-60,32649,4000.0,0.0,1,2
+water__lake_baikal__r2c0,water,lake_baikal,Lake Baikal,53.5,108.0,53.5343754391084,107.93719273032696,45-60,32649,-4000.0,4000.0,2,0
+water__lake_baikal__r2c1,water,lake_baikal,Lake Baikal,53.5,108.0,53.535905220627086,107.99746030965586,45-60,32649,0.0,4000.0,2,1
+water__lake_baikal__r2c2,water,lake_baikal,Lake Baikal,53.5,108.0,53.53740465618505,108.05773336806578,45-60,32649,4000.0,4000.0,2,2
+forest__amazon__r0c0,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-3.0360374009743705,-60.03604610728331,00-15,32721,-4000.0,-4000.0,0,0
+forest__amazon__r0c1,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-3.036138318393608,-60.00009919239565,00-15,32721,0.0,-4000.0,0,1
+forest__amazon__r0c2,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-3.0362380381720877,-59.964151084227396,00-15,32721,4000.0,-4000.0,0,2
+forest__amazon__r1c0,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-2.9999002858958455,-60.03594573079937,00-15,32721,-4000.0,0.0,1,0
+forest__amazon__r1c1,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-2.9999999999999996,-59.99999999999999,00-15,32721,0.0,0.0,1,1
+forest__amazon__r1c2,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-3.0000985307435695,-59.96405307611551,00-15,32721,4000.0,0.0,1,2
+forest__amazon__r2c0,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-2.963763143579563,-60.03584656164271,00-15,32721,-4000.0,4000.0,2,0
+forest__amazon__r2c1,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-2.9638616544441003,-59.999902000689836,00-15,32721,0.0,4000.0,2,1
+forest__amazon__r2c2,forest,amazon,"Amazon, Brazil",-3.0,-60.0,-2.9639589962273365,-59.96395624684498,00-15,32721,4000.0,4000.0,2,2
+forest__congo__r0c0,forest,congo,Congo Basin,-1.0,20.0,-1.0361719642168652,19.964041734513273,00-15,32734,-4000.0,-4000.0,0,0
+forest__congo__r0c1,forest,congo,Congo Basin,-1.0,20.0,-1.036183591076444,19.999988851144316,00-15,32734,0.0,-4000.0,0,1
+forest__congo__r0c2,forest,congo,Congo Basin,-1.0,20.0,-1.0361948075293572,20.035936364230206,00-15,32734,4000.0,-4000.0,0,2
+forest__congo__r1c0,forest,congo,Congo Basin,-1.0,20.0,-0.999988779231608,19.96405328396204,00-15,32734,-4000.0,0.0,1,0
+forest__congo__r1c1,forest,congo,Congo Basin,-1.0,20.0,-0.9999999999999925,20.0,00-15,32734,0.0,0.0,1,1
+forest__congo__r1c2,forest,congo,Congo Basin,-1.0,20.0,-1.0000108246959782,20.035947112470833,00-15,32734,4000.0,0.0,1,2
+forest__congo__r2c0,forest,congo,Congo Basin,-1.0,20.0,-0.963805586109991,19.964064422733447,00-15,32734,-4000.0,4000.0,2,0
+forest__congo__r2c1,forest,congo,Congo Basin,-1.0,20.0,-0.963816400795684,20.00001075242268,00-15,32734,0.0,4000.0,2,1
+forest__congo__r2c2,forest,congo,Congo Basin,-1.0,20.0,-0.9638268337429444,20.03595747852359,00-15,32734,4000.0,4000.0,2,2
+forest__borneo__r0c0,forest,borneo,Borneo,1.0,114.0,0.9638287314823707,113.9641304000693,00-15,32650,-4000.0,-4000.0,0,0
+forest__borneo__r0c1,forest,borneo,Borneo,1.0,114.0,0.9638607816682334,114.00003224516448,00-15,32650,0.0,-4000.0,0,1
+forest__borneo__r0c2,forest,borneo,Borneo,1.0,114.0,0.9638924519575655,114.03593527756362,00-15,32650,4000.0,-4000.0,0,2
+forest__borneo__r1c0,forest,borneo,Borneo,1.0,114.0,0.9999667478870533,113.96409777045069,00-15,32650,-4000.0,0.0,1,0
+forest__borneo__r1c1,forest,borneo,Borneo,1.0,114.0,1.0000000000000002,114.00000000000001,00-15,32650,0.0,0.0,1,1
+forest__borneo__r1c2,forest,borneo,Borneo,1.0,114.0,1.0000328579697848,114.03590341691667,00-15,32650,4000.0,0.0,1,2
+forest__borneo__r2c0,forest,borneo,Borneo,1.0,114.0,1.0361047552001827,113.9640639393076,00-15,32650,-4000.0,4000.0,2,0
+forest__borneo__r2c1,forest,borneo,Borneo,1.0,114.0,1.0361392092653152,113.99996656746782,00-15,32650,0.0,4000.0,2,1
+forest__borneo__r2c2,forest,borneo,Borneo,1.0,114.0,1.0361732549403584,114.03587038306107,00-15,32650,4000.0,4000.0,2,2
+forest__appalachian__r0c0,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.46304713735165,-83.54292588563318,30-45,32617,-4000.0,-4000.0,0,0
+forest__appalachian__r0c1,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.46396752537654,-83.49888381743439,30-45,32617,0.0,-4000.0,0,1
+forest__appalachian__r0c2,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.46487186327694,-83.45483976996755,30-45,32617,4000.0,-4000.0,0,2
+forest__appalachian__r1c0,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.49907839391964,-83.54406168929839,30-45,32617,-4000.0,0.0,1,0
+forest__appalachian__r1c1,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.5,-83.5,30-45,32617,0.0,0.0,1,1
+forest__appalachian__r1c2,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.50090553474169,-83.4559363279118,30-45,32617,4000.0,0.0,1,2
+forest__appalachian__r2c0,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.535109403202235,-83.5451995105412,30-45,32617,-4000.0,4000.0,2,0
+forest__appalachian__r2c1,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.53603222840682,-83.50111816535704,30-45,32617,0.0,4000.0,2,1
+forest__appalachian__r2c2,forest,appalachian,Great Smoky Mountains,35.5,-83.5,35.536938961040065,-83.45703483385154,30-45,32617,4000.0,4000.0,2,2
+forest__black_forest__r0c0,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.06362921073826,8.146874592040898,45-60,32632,-4000.0,-4000.0,0,0
+forest__black_forest__r0c1,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.06401527723078,8.200557790188315,45-60,32632,0.0,-4000.0,0,1
+forest__black_forest__r0c2,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.06437626460109,8.254242079544024,45-60,32632,4000.0,-4000.0,0,2
+forest__black_forest__r1c0,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.099613448687,8.146279356521001,45-60,32632,-4000.0,0.0,1,0
+forest__black_forest__r1c1,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.099999999999994,8.2,45-60,32632,0.0,0.0,1,1
+forest__black_forest__r1c2,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.10036144070311,8.253721737409213,45-60,32632,4000.0,0.0,1,2
+forest__black_forest__r2c0,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.135597454619784,8.145682953654482,45-60,32632,-4000.0,4000.0,2,0
+forest__black_forest__r2c1,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.135984491426136,8.199441115879894,45-60,32632,0.0,4000.0,2,1
+forest__black_forest__r2c2,forest,black_forest,"Black Forest, Germany",48.1,8.2,48.136346386091226,8.253200374766893,45-60,32632,4000.0,4000.0,2,2
+forest__canadian_rockies__r0c0,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,52.96453326789507,-122.06037552274115,45-60,32610,-4000.0,-4000.0,0,0
+forest__canadian_rockies__r0c1,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,52.964047646453196,-122.00082987198086,45-60,32610,0.0,-4000.0,0,1
+forest__canadian_rockies__r0c2,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,52.96353220240553,-121.94128598915609,45-60,32610,4000.0,-4000.0,0,2
+forest__canadian_rockies__r1c0,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,53.00048625180694,-122.05959508874882,45-60,32610,-4000.0,0.0,1,0
+forest__canadian_rockies__r1c1,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,52.99999999999999,-122.0,45-60,32610,0.0,0.0,1,1
+forest__canadian_rockies__r1c2,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,52.99948388689128,-121.9404066842441,45-60,32610,4000.0,0.0,1,2
+forest__canadian_rockies__r2c0,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,53.03643900898122,-122.05881298733725,45-60,32610,-4000.0,4000.0,2,0
+forest__canadian_rockies__r2c1,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,53.03595212576481,-121.99916835502289,45-60,32610,0.0,4000.0,2,1
+forest__canadian_rockies__r2c2,forest,canadian_rockies,Canadian Rockies,53.0,-122.0,53.03543534248655,-121.93952550077867,45-60,32610,4000.0,4000.0,2,2
+forest__finland_boreal__r0c0,forest,finland_boreal,Central Finland,62.0,25.0,61.962989603382255,24.926120391525682,60-75,32635,-4000.0,-4000.0,0,0
+forest__finland_boreal__r0c1,forest,finland_boreal,Central Finland,62.0,25.0,61.964115438780304,25.00235011123801,60-75,32635,0.0,-4000.0,0,1
+forest__finland_boreal__r0c2,forest,finland_boreal,Central Finland,62.0,25.0,61.96519914294394,25.07858612615139,60-75,32635,4000.0,-4000.0,0,2
+forest__finland_boreal__r1c0,forest,finland_boreal,Central Finland,62.0,25.0,61.998872470936035,24.923680754846412,60-75,32635,-4000.0,0.0,1,0
+forest__finland_boreal__r1c1,forest,finland_boreal,Central Finland,62.0,25.0,62.0,25.0,60-75,32635,0.0,0.0,1,1
+forest__finland_boreal__r1c2,forest,finland_boreal,Central Finland,62.0,25.0,62.001085334567215,25.076325564419125,60-75,32635,4000.0,0.0,1,2
+forest__finland_boreal__r2c0,forest,finland_boreal,Central Finland,62.0,25.0,62.034755094976,24.921234558698814,60-75,32635,-4000.0,4000.0,2,0
+forest__finland_boreal__r2c1,forest,finland_boreal,Central Finland,62.0,25.0,62.035884321690354,24.99764356947585,60-75,32635,0.0,4000.0,2,1
+forest__finland_boreal__r2c2,forest,finland_boreal,Central Finland,62.0,25.0,62.03697129049733,25.074058923706517,60-75,32635,4000.0,4000.0,2,2
+forest__tasmania__r0c0,forest,tasmania,Tasmania,-42.0,146.0,-42.03558964167568,145.95111719684712,30-45,32755,-4000.0,-4000.0,0,0
+forest__tasmania__r0c1,forest,tasmania,Tasmania,-42.0,146.0,-42.036021056131055,145.99943545282602,30-45,32755,0.0,-4000.0,0,1
+forest__tasmania__r0c2,forest,tasmania,Tasmania,-42.0,146.0,-42.03643213343804,146.0477547410131,30-45,32755,4000.0,-4000.0,0,2
+forest__tasmania__r1c0,forest,tasmania,Tasmania,-42.0,146.0,-41.99956912697892,145.951708994673,30-45,32755,-4000.0,0.0,1,0
+forest__tasmania__r1c1,forest,tasmania,Tasmania,-42.0,146.0,-41.999999999999986,146.0,30-45,32755,0.0,0.0,1,1
+forest__tasmania__r1c2,forest,tasmania,Tasmania,-42.0,146.0,-42.000410561389465,146.04829203534845,30-45,32755,4000.0,0.0,1,2
+forest__tasmania__r2c0,forest,tasmania,Tasmania,-42.0,146.0,-41.96354837866546,145.9522997127773,30-45,32755,-4000.0,4000.0,2,0
+forest__tasmania__r2c1,forest,tasmania,Tasmania,-42.0,146.0,-41.96397871085584,146.00056351715148,30-45,32755,0.0,4000.0,2,1
+forest__tasmania__r2c2,forest,tasmania,Tasmania,-42.0,146.0,-41.964388756903,146.04882834936697,30-45,32755,4000.0,4000.0,2,2
+forest__new_zealand__r0c0,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.53663307515397,172.45289564126605,30-45,32759,-4000.0,-4000.0,0,0
+forest__new_zealand__r0c1,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.53601732439317,172.50083204365427,30-45,32759,0.0,-4000.0,0,1
+forest__new_zealand__r0c2,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.53538160014447,172.54876693105012,30-45,32759,4000.0,-4000.0,0,2
+forest__new_zealand__r1c0,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.50061497649879,172.45209014984465,30-45,32759,-4000.0,0.0,1,0
+forest__new_zealand__r1c1,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.5,172.5,30-45,32759,0.0,0.0,1,1
+forest__new_zealand__r1c2,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.49936507511324,172.54790833832976,30-45,32759,4000.0,0.0,1,2
+forest__new_zealand__r2c0,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.464596638710795,172.45128612204334,30-45,32759,-4000.0,4000.0,2,0
+forest__new_zealand__r2c1,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.4639824356265,172.49916946817297,30-45,32759,0.0,4000.0,2,1
+forest__new_zealand__r2c2,forest,new_zealand,"South Island, New Zealand",-41.5,172.5,-41.46334830922675,172.5470513056341,30-45,32759,4000.0,4000.0,2,2
+forest__patagonia__r0c0,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.534688295925356,-72.05036409594506,30-45,32719,-4000.0,-4000.0,0,0
+forest__patagonia__r0c1,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.53597391029905,-72.00172285882306,30-45,32719,0.0,-4000.0,0,1
+forest__patagonia__r0c2,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.53723890782606,-71.95307846212971,30-45,32719,4000.0,-4000.0,0,2
+forest__patagonia__r1c0,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.4987159942444,-72.04861342380961,30-45,32719,-4000.0,0.0,1,0
+forest__patagonia__r1c1,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.50000000000001,-72.0,30-45,32719,0.0,0.0,1,1
+forest__patagonia__r1c2,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.501263414641684,-71.95138342338863,30-45,32719,4000.0,0.0,1,2
+forest__patagonia__r2c0,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.46274340757977,-72.04686595519775,30-45,32719,-4000.0,4000.0,2,0
+forest__patagonia__r2c1,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.46402580653854,-71.99828029398216,30-45,32719,0.0,4000.0,2,1
+forest__patagonia__r2c2,forest,patagonia,Patagonian forest,-42.5,-72.0,-42.46528764008722,-71.94969148671358,30-45,32719,4000.0,4000.0,2,2
+agriculture__beauce__r0c0,agriculture,beauce,"Beauce, France",48.258,1.499,48.22131003301224,1.4462177849996587,45-60,32631,-4000.0,-4000.0,0,0
+agriculture__beauce__r0c1,agriculture,beauce,"Beauce, France",48.258,1.499,48.222025117253715,1.5000522800096348,45-60,32631,0.0,-4000.0,0,1
+agriculture__beauce__r0c2,agriculture,beauce,"Beauce, France",48.258,1.499,48.22271500154237,1.5538888379322469,45-60,32631,4000.0,-4000.0,0,2
+agriculture__beauce__r1c0,agriculture,beauce,"Beauce, France",48.258,1.499,48.2572840174543,1.4451277741343804,45-60,32631,-4000.0,0.0,1,0
+agriculture__beauce__r1c1,agriculture,beauce,"Beauce, France",48.258,1.499,48.258,1.4990000000000003,45-60,32631,0.0,0.0,1,1
+agriculture__beauce__r1c2,agriculture,beauce,"Beauce, France",48.258,1.499,48.25869075095988,1.552874293944118,45-60,32631,4000.0,0.0,1,2
+agriculture__beauce__r2c0,agriculture,beauce,"Beauce, France",48.258,1.499,48.29325775714222,1.4440356211107468,45-60,32631,-4000.0,4000.0,2,0
+agriculture__beauce__r2c1,agriculture,beauce,"Beauce, France",48.258,1.499,48.293974639245285,1.4979456519088707,45-60,32631,0.0,4000.0,2,1
+agriculture__beauce__r2c2,agriculture,beauce,"Beauce, France",48.258,1.499,48.294666258085485,1.5518577559693458,45-60,32631,4000.0,4000.0,2,2
+agriculture__iowa__r0c0,agriculture,iowa,"Iowa, USA",42.0,-93.5,41.96375434030079,-93.5479878080762,30-45,32615,-4000.0,-4000.0,0,0
+agriculture__iowa__r0c1,agriculture,iowa,"Iowa, USA",42.0,-93.5,41.963974589434706,-93.49971823079127,30-45,32615,0.0,-4000.0,0,1
+agriculture__iowa__r0c2,agriculture,iowa,"Iowa, USA",42.0,-93.5,41.96417454526009,-93.4514481395076,30-45,32615,4000.0,-4000.0,0,2
+agriculture__iowa__r1c0,agriculture,iowa,"Iowa, USA",42.0,-93.5,41.999779474029914,-93.54829679120793,30-45,32615,-4000.0,0.0,1,0
+agriculture__iowa__r1c1,agriculture,iowa,"Iowa, USA",42.0,-93.5,42.00000000000001,-93.5,30-45,32615,0.0,0.0,1,1
+agriculture__iowa__r1c2,agriculture,iowa,"Iowa, USA",42.0,-93.5,42.0002002071561,-93.45170269370288,30-45,32615,4000.0,0.0,1,2
+agriculture__iowa__r2c0,agriculture,iowa,"Iowa, USA",42.0,-93.5,42.035804379017414,-93.5486063391726,30-45,32615,-4000.0,4000.0,2,0
+agriculture__iowa__r2c1,agriculture,iowa,"Iowa, USA",42.0,-93.5,42.03602518213272,-93.50028228429844,30-45,32615,0.0,4000.0,2,1
+agriculture__iowa__r2c2,agriculture,iowa,"Iowa, USA",42.0,-93.5,42.036225640900085,-93.45195771324137,30-45,32615,4000.0,4000.0,2,2
+agriculture__punjab__r0c0,agriculture,punjab,"Punjab, India",30.5,75.5,30.464058580111665,75.45814854761825,30-45,32643,-4000.0,-4000.0,0,0
+agriculture__punjab__r0c1,agriculture,punjab,"Punjab, India",30.5,75.5,30.463905593165304,75.49981554705344,30-45,32643,0.0,-4000.0,0,1
+agriculture__punjab__r0c2,agriculture,punjab,"Punjab, India",30.5,75.5,30.463739298956906,75.54148221322303,30-45,32643,4000.0,-4000.0,0,2
+agriculture__punjab__r1c0,agriculture,punjab,"Punjab, India",30.5,75.5,30.500153206436096,75.45831762506182,30-45,32643,-4000.0,0.0,1,0
+agriculture__punjab__r1c1,agriculture,punjab,"Punjab, India",30.5,75.5,30.5,75.5,30-45,32643,0.0,0.0,1,1
+agriculture__punjab__r1c2,agriculture,punjab,"Punjab, India",30.5,75.5,30.49983346721075,75.54168204115916,30-45,32643,4000.0,0.0,1,2
+agriculture__punjab__r2c0,agriculture,punjab,"Punjab, India",30.5,75.5,30.536247631864065,75.45848700846322,30-45,32643,-4000.0,4000.0,2,0
+agriculture__punjab__r2c1,agriculture,punjab,"Punjab, India",30.5,75.5,30.536094205779698,75.50018478672578,30-45,32643,0.0,4000.0,2,1
+agriculture__punjab__r2c2,agriculture,punjab,"Punjab, India",30.5,75.5,30.535927434237298,75.54188223069458,30-45,32643,4000.0,4000.0,2,2
+agriculture__pampas__r0c0,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.53532879431714,-59.04442484253823,30-45,32721,-4000.0,-4000.0,0,0
+agriculture__pampas__r0c1,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.536050574988764,-59.00086205658685,30-45,32721,0.0,-4000.0,0,1
+agriculture__pampas__r0c2,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.53675682889747,-58.95729773795751,30-45,32721,4000.0,-4000.0,0,2
+agriculture__pampas__r1c0,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.49927918565872,-59.043544048759365,30-45,32721,-4000.0,0.0,1,0
+agriculture__pampas__r1c1,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.499999999999986,-59.00000000000001,30-45,32721,0.0,0.0,1,1
+agriculture__pampas__r1c2,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.500705308349865,-58.956454421214055,30-45,32721,4000.0,0.0,1,2
+agriculture__pampas__r2c0,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.4632293442151,-59.04266481822355,30-45,32721,-4000.0,4000.0,2,0
+agriculture__pampas__r2c1,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.46394919304205,-58.99913947344097,30-45,32721,0.0,4000.0,2,1
+agriculture__pampas__r2c2,agriculture,pampas,"Pampas, Argentina",-34.5,-59.0,-34.46465355663164,-58.955612601275895,30-45,32721,4000.0,4000.0,2,2
+agriculture__canterbury__r0c0,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.53643410798007,171.95109473025653,30-45,32759,-4000.0,-4000.0,0,0
+agriculture__canterbury__r0c1,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.53601158936348,172.00059494953987,30-45,32759,0.0,-4000.0,0,1
+agriculture__canterbury__r0c2,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.535567644236046,172.0500940661603,30-45,32759,4000.0,-4000.0,0,2
+agriculture__canterbury__r1c0,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.50042199067015,171.95052920225245,30-45,32759,-4000.0,0.0,1,0
+agriculture__canterbury__r1c1,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.50000000000001,172.0,30-45,32759,0.0,0.0,1,1
+agriculture__canterbury__r1c2,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.49955660958402,172.0494696975147,30-45,32759,4000.0,0.0,1,2
+agriculture__canterbury__r2c0,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.464409639779,171.9499647200933,30-45,32759,-4000.0,4000.0,2,0
+agriculture__canterbury__r2c1,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.463988176434235,171.9994061506943,30-45,32759,0.0,4000.0,2,1
+agriculture__canterbury__r2c2,agriculture,canterbury,Canterbury Plains,-43.5,172.0,-43.4635453400772,172.0488464834848,30-45,32759,4000.0,4000.0,2,2
+agriculture__nile_delta__r0c0,agriculture,nile_delta,Nile Delta,30.8,31.0,30.76327713680268,30.95897564043118,30-45,32636,-4000.0,-4000.0,0,0
+agriculture__nile_delta__r0c1,agriculture,nile_delta,Nile Delta,30.8,31.0,30.763927941209495,31.00074652291647,30-45,32636,0.0,-4000.0,0,1
+agriculture__nile_delta__r0c2,agriculture,nile_delta,Nile Delta,30.8,31.0,30.764565305883355,31.04251875051399,30-45,32636,4000.0,-4000.0,0,2
+agriculture__nile_delta__r1c0,agriculture,nile_delta,Nile Delta,30.8,31.0,30.799348267874887,30.958213546374623,30-45,32636,-4000.0,0.0,1,0
+agriculture__nile_delta__r1c1,agriculture,nile_delta,Nile Delta,30.8,31.0,30.799999999999994,31.0,30-45,32636,0.0,0.0,1,1
+agriculture__nile_delta__r1c2,agriculture,nile_delta,Nile Delta,30.8,31.0,30.800638273245827,31.04178780082707,30-45,32636,4000.0,0.0,1,2
+agriculture__nile_delta__r2c0,agriculture,nile_delta,Nile Delta,30.8,31.0,30.835419180952112,30.957450077044548,30-45,32636,-4000.0,4000.0,2,0
+agriculture__nile_delta__r2c1,agriculture,nile_delta,Nile Delta,30.8,31.0,30.836071841472993,30.999252129880908,30-45,32636,0.0,4000.0,2,1
+agriculture__nile_delta__r2c2,agriculture,nile_delta,Nile Delta,30.8,31.0,30.836711023954354,31.041055532013978,30-45,32636,4000.0,4000.0,2,2
+agriculture__ukraine__r0c0,agriculture,ukraine,Central Ukraine,49.0,31.0,48.96307988174321,30.946825298431406,45-60,32636,-4000.0,-4000.0,0,0
+agriculture__ukraine__r0c1,agriculture,ukraine,Central Ukraine,49.0,31.0,48.96403935228539,31.001438992156054,45-60,32636,0.0,-4000.0,0,1
+agriculture__ukraine__r0c2,agriculture,ukraine,Central Ukraine,49.0,31.0,48.964972980160155,31.056055538437917,45-60,32636,4000.0,-4000.0,0,2
+agriculture__ukraine__r1c0,agriculture,ukraine,Central Ukraine,49.0,31.0,48.99903932061803,30.945347050167964,45-60,32636,-4000.0,0.0,1,0
+agriculture__ukraine__r1c1,agriculture,ukraine,Central Ukraine,49.0,31.0,48.99999999999999,31.0,45-60,32636,0.0,0.0,1,1
+agriculture__ukraine__r1c2,agriculture,ukraine,Central Ukraine,49.0,31.0,49.00093480419986,31.054655809675374,45-60,32636,4000.0,0.0,1,2
+agriculture__ukraine__r2c0,agriculture,ukraine,Central Ukraine,49.0,31.0,49.034998500941064,30.943865864183454,45-60,32636,-4000.0,4000.0,2,0
+agriculture__ukraine__r2c1,agriculture,ukraine,Central Ukraine,49.0,31.0,49.03596039089362,30.998558147996302,45-60,32636,0.0,4000.0,2,1
+agriculture__ukraine__r2c2,agriculture,ukraine,Central Ukraine,49.0,31.0,49.036896373102984,31.053253298964414,45-60,32636,4000.0,4000.0,2,2
+agriculture__po_valley__r0c0,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,44.96443021657764,9.948661611790412,45-60,32632,-4000.0,-4000.0,0,0
+agriculture__po_valley__r0c1,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,44.96399766755218,9.999374277733768,45-60,32632,0.0,-4000.0,0,1
+agriculture__po_valley__r0c2,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,44.96354260375915,10.050085768378684,45-60,32632,4000.0,-4000.0,0,2
+agriculture__po_valley__r1c0,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,45.00043308930792,9.949255594072975,45-60,32632,-4000.0,0.0,1,0
+agriculture__po_valley__r1c1,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,45.0,10.0,45-60,32632,0.0,0.0,1,1
+agriculture__po_valley__r1c2,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,44.99954436781082,10.050743227930447,45-60,32632,4000.0,0.0,1,2
+agriculture__po_valley__r2c0,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,45.03643572792597,9.949850694621672,45-60,32632,-4000.0,4000.0,2,0
+agriculture__po_valley__r2c1,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,45.03600209766428,10.000626900264272,45-60,32632,0.0,4000.0,2,1
+agriculture__po_valley__r2c2,agriculture,po_valley,"Po Valley, Italy",45.0,10.0,45.03554589637275,10.051401925203386,45-60,32632,4000.0,4000.0,2,2
+agriculture__western_australia__r0c0,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.536083047998233,116.95786272830834,30-45,32750,-4000.0,-4000.0,0,0
+agriculture__western_australia__r0c1,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.53608998913279,117.0,30-45,32750,0.0,-4000.0,0,1
+agriculture__western_australia__r0c2,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.536083047998233,117.04213727169166,30-45,32750,4000.0,-4000.0,0,2
+agriculture__western_australia__r1c0,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.499993068617112,116.95787892220514,30-45,32750,-4000.0,0.0,1,0
+agriculture__western_australia__r1c1,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.5,117.0,30-45,32750,0.0,0.0,1,1
+agriculture__western_australia__r1c2,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.499993068617112,117.04212107779485,30-45,32750,4000.0,0.0,1,2
+agriculture__western_australia__r2c0,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.463902885463376,116.95789508704188,30-45,32750,-4000.0,4000.0,2,0
+agriculture__western_australia__r2c1,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.463909807101928,117.0,30-45,32750,0.0,4000.0,2,1
+agriculture__western_australia__r2c2,agriculture,western_australia,Western Australian wheat belt,-31.5,117.0,-31.463902885463376,117.04210491295811,30-45,32750,4000.0,4000.0,2,2
+agriculture__mato_grosso__r0c0,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-13.036305061804198,-56.03674117298044,00-15,32721,-4000.0,-4000.0,0,0
+agriculture__mato_grosso__r0c1,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-13.036165273811926,-55.99985496760605,00-15,32721,0.0,-4000.0,0,1
+agriculture__mato_grosso__r0c2,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-13.036020235583045,-55.962969200399336,00-15,32721,4000.0,-4000.0,0,2
+agriculture__mato_grosso__r1c0,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-13.000139387050169,-56.036880858509534,00-15,32721,-4000.0,0.0,1,0
+agriculture__mato_grosso__r1c1,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-13.000000000000002,-56.0,00-15,32721,0.0,0.0,1,1
+agriculture__mato_grosso__r1c2,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-12.999855377771578,-55.96311957935426,00-15,32721,4000.0,0.0,1,2
+agriculture__mato_grosso__r2c0,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-12.963973610301924,-56.03702012231636,00-15,32721,-4000.0,4000.0,2,0
+agriculture__mato_grosso__r2c1,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-12.963834624082315,-56.00014459453,00-15,32721,0.0,4000.0,2,1
+agriculture__mato_grosso__r2c2,agriculture,mato_grosso,"Mato Grosso, Brazil",-13.0,-56.0,-12.963690417738613,-55.96326950430455,00-15,32721,4000.0,4000.0,2,2

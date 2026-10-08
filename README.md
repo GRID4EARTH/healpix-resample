@@ -89,9 +89,11 @@ healpix_cells  = result.cell_ids    # (K,) HEALPix cell ids, same order as cell_
 Every resampler follows this same `resample(val) -> ResampleResults(cell_data, cell_ids)` pattern; swap
 `BilinearResampler` for any of the other classes above to change interpolation strategy without changing
 the rest of your code. See the [full documentation](https://grid4earth.eu/healpix-resample/) —
-in particular the [`4resamplers` tutorial](docs/tutorials/4resamplers.md), which runs every resampler
-side by side on the same dataset — for a complete tour, including conservative mode, batched inputs,
-`out_cell_ids`, and large-scale parent-cell processing.
+in particular the [real-data resampler tutorial](docs/tutorials/zenodo_resamplers.ipynb), which downloads
+one small frozen Zenodo archive and runs every resampler on the same Sentinel-2 scene. The compact
+[`4resamplers` tutorial](docs/tutorials/4resamplers.md) remains available as a synthetic API reference.
+Together with the user guide, these cover conservative mode, batched inputs, `out_cell_ids`, and
+large-scale parent-cell processing.
 
 ## Documentation
 
