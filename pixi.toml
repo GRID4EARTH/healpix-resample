@@ -42,7 +42,7 @@ affine = "*"
 [feature.test.dependencies]
 pytest = "*"
 pytest-cov = "*"
-# tests/test_kernel_geometry.py imports pyproj
+# tests/test_kernel_geometry.py and tests/test_utm.py import pyproj
 pyproj = "*"
 
 [feature.docs.dependencies]

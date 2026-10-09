@@ -89,7 +89,8 @@ at input points, C1 continuous across triangle edges), rather than a radial kern
 cells; Delaunay/CT has no such failure mode. Only resamples cells whose center falls **inside the convex
 hull** of the input samples (no extrapolation), and is intended for regional/local input extents (it
 projects samples to a local tangent plane — see `docs/user-guide/regrid_to_healpix_clough_tocher.md`).
-`invert()` is not implemented for this class (see its docstring).
+`invert()` is a second Clough-Tocher operator built the other way round (cell centers → samples); samples
+outside the convex hull of the retained cells are returned as NaN.
 
 ```{code-cell} python
 nr_ct = CloughTocherResampler(lon_deg=lon, lat_deg=lat, level=level, verbose=False)

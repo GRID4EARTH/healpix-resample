@@ -90,6 +90,12 @@ First-order overlap-area conservative remapping from a lat/lon grid (the ESMF/xE
 Process one coarse HEALPix cell at a time for large-scale/global datasets.
 :::
 
+:::{grid-item-card} HEALPix → UTM
+:link: healpix_to_utm
+:link-type: doc
+Resample HEALPix cell data onto a UTM raster through each resampler's `invert()`.
+:::
+
 :::{grid-item-card} Mask-like / categorical data
 :link: regrid_to_healpix_mask
 :link-type: doc
@@ -109,4 +115,5 @@ regrid_to_healpix_psf
 regrid_to_healpix_overlap_conservative
 regrid_to_healpix_parent_cell_subsetting
 regrid_to_healpix_mask
+healpix_to_utm
 ```
