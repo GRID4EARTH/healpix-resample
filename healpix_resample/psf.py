@@ -77,7 +77,12 @@ def conjugate_gradient(
         if torch.max(denom.abs()) < 1e-30:
             break  # breakdown (shouldn't happen for SPD unless numerical issues)
 
-        alpha = rs_old / denom
+        # A batch row can have nothing left to solve while the others still
+        # iterate (zero right-hand side, or a row of the bounded solve below
+        # whose cells are all held at a bound): its denominator is then 0.
+        # Give it a zero step instead of the 0/0 = nan that would otherwise
+        # reach x.
+        alpha = torch.where(denom != 0, rs_old / torch.where(denom != 0, denom, 1.0), 0.0)
         x = x + torch.einsum('k,ki->ki',alpha,p)
         r = r - torch.einsum('k,ki->ki',alpha,Ap)
         rs_new = _wdot(r, r)
@@ -89,7 +94,7 @@ def conjugate_gradient(
             rs_old = rs_new
             break
 
-        beta = rs_new / rs_old
+        beta = torch.where(rs_old != 0, rs_new / torch.where(rs_old != 0, rs_old, 1.0), 0.0)
         p = r + torch.einsum('k,ki->ki',beta,p)
         rs_old = rs_new
         if k%4==0 and verbose:
@@ -165,6 +170,166 @@ def least_squares_cg(M,
         A_mv=A_mv, b=b, x0=x0, max_iter=max_iter, tol=tol, verbose=verbose, weight=weight,
     )
     return x, info
+
+
+@torch.no_grad()
+def bounded_least_squares_cg(M,
+        MT,
+        y,
+        x_ref,
+        x0,
+        lower: torch.Tensor,
+        upper: torch.Tensor,
+        max_iter = 200,
+        tol = 1e-6,
+        damp = 0.0,
+        max_outer: int = 10,
+        verbose: bool = True,
+        weight: Optional[torch.Tensor] = None,
+        ):
+    """
+    Same damped weighted least-squares problem as :func:`least_squares_cg`,
+    under the box constraint ``lower <= delta <= upper`` (cell by cell).
+
+    The bounds are hard constraints of the fit, not a clip of its result.
+    An active-set loop around the same weighted CG:
+
+    1. **Hold.** A cell at a bound whose gradient points out of the box is
+       *active*: it is held at that bound and its CG search direction is
+       zeroed. With ``r = b - A delta`` (``-r`` is the gradient in the ``Dx``
+       metric, and ``Dx`` is a positive diagonal so the sign is the same in
+       any metric), a cell is active at its lower bound when ``r_k <= 0`` and
+       at its upper bound when ``r_k >= 0``.
+    2. **Solve.** CG on the free cells only, for the step ``d`` that cancels
+       the residual there with the active cells fixed. The active cells still
+       enter the forward model ``delta @ MT``: the samples they cannot explain
+       any more leave a residual that the free neighbours take up. That is
+       how a cell held at 0 constrains its neighbours, and how the energy a
+       cell held at its upper bound cannot carry is spread around it.
+    3. **Clamp.** Cells the step takes out of the box are clamped to the
+       bound they crossed and become active at the next pass.
+    4. **Release.** Repeat until a pass clamps nothing and no active cell
+       has a gradient pointing back into the box (Karush-Kuhn-Tucker
+       conditions), or until ``max_outer`` passes.
+
+    Restricting the operator to the free cells keeps it self-adjoint and
+    positive-definite in the ``Dx`` metric (``Dx`` is diagonal), so the
+    inner solve is the same :func:`conjugate_gradient` as the unbounded fit.
+
+    Shapes:
+        lower, upper : (B, K), bounds on ``delta`` (``-inf``/``+inf`` where a
+        side is not constrained). Everything else as in
+        :func:`least_squares_cg`.
+
+    Returns:
+        delta: (B, K)
+        info: dict with ``residual_norms`` (all inner CG iterations, stacked),
+        ``niters`` (their total), ``n_outer`` and the final ``at_lower`` /
+        ``at_upper`` masks (B, K) of the cells held at a bound.
+    """
+    b = (y - x_ref @ MT) @ M
+
+    def A_mv(v: torch.Tensor) -> torch.Tensor:
+        return (v @ MT) @ M + damp * v
+
+    x = torch.minimum(torch.maximum(x0, lower), upper)
+    if b.shape[-1] == 0:
+        # no cell to fit (K = 0, see KNeighborsResampler with out_cell_ids)
+        empty = torch.zeros_like(x, dtype=torch.bool)
+        return x, {
+            "residual_norms": torch.zeros((1, b.shape[0]), device=b.device, dtype=b.dtype),
+            "niters": torch.tensor(0, device=b.device),
+            "n_outer": 0,
+            "at_lower": empty,
+            "at_upper": empty,
+        }
+    # Tolerance of the KKT sign tests, per batch row: without it, a gradient
+    # that is zero up to rounding would hold and release the same cell at
+    # every pass.
+    eps = max(float(tol), 100.0 * torch.finfo(b.dtype).eps)
+    kkt_tol = eps * b.abs().amax(dim=-1, keepdim=True)
+
+    residual_norms = []
+    niters = torch.tensor(0, device=b.device)
+    n_outer = 0
+    for n_outer in range(1, max_outer + 1):
+        r = b - A_mv(x)
+        at_lower = (x <= lower) & (r <= kkt_tol)
+        at_upper = (x >= upper) & (r >= -kkt_tol)
+        free = ~(at_lower | at_upper)
+        free_f = free.to(b.dtype)
+
+        def A_free(v: torch.Tensor) -> torch.Tensor:
+            return free_f * A_mv(free_f * v)
+
+        d, info = conjugate_gradient(
+            A_mv=A_free, b=free_f * r, max_iter=max_iter, tol=tol,
+            verbose=verbose, weight=weight,
+        )
+        residual_norms.append(info["residual_norms"].reshape(-1, b.shape[0]))
+        niters = niters + info["niters"]
+
+        x_new = x + free_f * d
+        crossed = (x_new < lower) | (x_new > upper)
+        x = torch.minimum(torch.maximum(x_new, lower), upper)
+
+        if bool(crossed.any()):
+            continue
+        r = b - A_mv(x)
+        release = (at_lower & (r > kkt_tol)) | (at_upper & (r < -kkt_tol))
+        if not bool(release.any()):
+            break
+
+    if verbose:
+        print('Bounded fit: %d pass(es), %d CG iterations' % (n_outer, int(niters)))
+
+    r = b - A_mv(x)
+    info = {
+        "residual_norms": torch.cat(residual_norms, dim=0),
+        "niters": niters,
+        "n_outer": n_outer,
+        "at_lower": (x <= lower) & (r <= kkt_tol),
+        "at_upper": (x >= upper) & (r >= -kkt_tol),
+    }
+    return x, info
+
+
+def _clip_bounds(clip, y, valid) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Turn ``resample(..., clip=(lo, hi))`` into per-row bounds, each (B, 1).
+
+    Each side is ``None`` (not constrained: -inf or +inf), a number, or
+    ``"input"`` (the min or max of the row's valid samples).
+    """
+    if not (isinstance(clip, (tuple, list)) and len(clip) == 2):
+        raise ValueError(
+            "clip must be None or a pair (lo, hi); use None for a side that "
+            f"is not constrained, e.g. clip=(0.0, None). Got {clip!r}."
+        )
+    B = y.shape[0]
+    out = []
+    for side, value, fill, reduce in (
+        ("lo", clip[0], float("-inf"), torch.amin),
+        ("hi", clip[1], float("inf"), torch.amax),
+    ):
+        if value is None:
+            bound = torch.full((B, 1), fill, device=y.device, dtype=y.dtype)
+        elif isinstance(value, str):
+            if value != "input":
+                raise ValueError(
+                    f"clip {side} must be None, a number or 'input', got {value!r}."
+                )
+            masked = torch.where(valid, y, torch.full_like(y, -fill))
+            bound = reduce(masked, dim=-1, keepdim=True)
+        else:
+            value = float(value)
+            if math.isnan(value):
+                raise ValueError(f"clip {side} must not be nan.")
+            bound = torch.full((B, 1), value, device=y.device, dtype=y.dtype)
+        out.append(bound)
+    lo, hi = out
+    if bool((lo > hi).any()):
+        raise ValueError(f"clip lower bound is above the upper bound: {clip!r}.")
+    return lo, hi
 
 
 class PSFResampler(KNeighborsResampler, Generic[T_Array]):
@@ -613,6 +778,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         x0: Optional[torch.Tensor] = None,
         return_info: bool = False,
         conservative: bool = False,
+        clip=None,
+        max_outer: int = 10,
     ) -> ResampleResults[T_Array]:
         """Estimate the HEALPix field from unstructured samples.
 
@@ -630,6 +797,46 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 cells are equal-area, this is equivalent to conserving the
                 total area-integrated quantity. See ``area`` in ``__init__``.
                 Off by default -- does not change existing behaviour.
+            clip: ``None`` (the default: unconstrained fit, existing
+                behaviour) or a pair ``(lo, hi)`` of hard bounds on the
+                output, imposed inside the fit rather than applied to its
+                result (see "Bounded fit" below). Each side is ``None`` (that
+                side is not constrained), a number, or ``"input"`` (the min,
+                or max, of the row's valid input samples). For example
+                ``clip=(0.0, None)`` for a non-negative field,
+                ``clip=(None, 1.0)`` for an upper bound only, and
+                ``clip=("input", "input")`` to stay within the input range.
+            max_outer: with ``clip``, the maximum number of hold/solve/release
+                passes of the bounded fit; each pass runs one CG of up to
+                ``max_iter`` iterations.
+
+        Bounded fit
+        -----------
+        With ``clip``, the fit solves the same weighted least-squares problem
+        under ``lo <= hval <= hi`` (see :func:`bounded_least_squares_cg`). A
+        cell that the fit would push out of the box is held at the bound and
+        removed from the free unknowns, but its value still enters the
+        forward model: the samples it can no longer explain leave a residual
+        that the free neighbouring cells take up. A cell held at 0 thus pulls
+        its neighbours down a little instead of being zeroed after the fact,
+        and the energy a cell held at its upper bound cannot carry is spread
+        to the cells around it.
+
+        A lower bound such as ``0`` is usually physical (reflectances,
+        concentrations, precipitation). An upper bound is a stronger choice:
+        a sharp, bright feature smoothed by the PSF of the input is
+        legitimately reconstructed above the input values, so capping it at
+        the input maximum spreads that energy over its neighbours and widens
+        the feature.
+
+        With ``conservative=True``, the conservation correction is computed
+        on the free cells only, and cells it would take out of the box are
+        held at their bound before the correction is computed again, so the
+        output satisfies both the bounds and the conservation constraint
+        whenever the target is reachable within the box.
+
+        The number of cells held at each bound is returned in
+        ``ResampleResults.n_clipped_low`` and ``n_clipped_high``.
 
         NaN handling
         ------------
@@ -718,6 +925,13 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         hval = torch.full_like(x_ref, float("nan"))
         cg_residual_norms = torch.full((1, B), float("nan"), device=self.device, dtype=self.dtype)
         cg_niters = torch.tensor(0, device=self.device)
+        n_clipped_low = n_clipped_high = None
+        if clip is not None:
+            _clip_bounds(clip, y, valid)  # validate the argument even if no row has data
+            if int(max_outer) < 1:
+                raise ValueError(f"max_outer must be at least 1, got {max_outer!r}.")
+            n_clipped_low = torch.zeros(B, dtype=torch.int64, device=self.device)
+            n_clipped_high = torch.zeros(B, dtype=torch.int64, device=self.device)
 
         if bool(row_has_data.any()):
             sel = torch.nonzero(row_has_data, as_tuple=False).reshape(-1)
@@ -725,18 +939,38 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             x_ref_sel = x_ref[sel]
             x0_sel = x0[sel]
 
-            delta, info = least_squares_cg(
-                M=self.M,
-                MT=self.MT,
-                y=y_sel,
-                x_ref=x_ref_sel,
-                x0=x0_sel,
-                max_iter=max_iter,
-                tol=tol,
-                damp=float(lam),
-                verbose=self.verbose,
-                weight=self.cell_weight,
-            )
+            if clip is None:
+                delta, info = least_squares_cg(
+                    M=self.M,
+                    MT=self.MT,
+                    y=y_sel,
+                    x_ref=x_ref_sel,
+                    x0=x0_sel,
+                    max_iter=max_iter,
+                    tol=tol,
+                    damp=float(lam),
+                    verbose=self.verbose,
+                    weight=self.cell_weight,
+                )
+            else:
+                # bounds on hval, per row (S,1), turned into bounds on delta (S,K)
+                lo_sel, hi_sel = _clip_bounds(clip, y[sel], valid[sel])
+                delta, info = bounded_least_squares_cg(
+                    M=self.M,
+                    MT=self.MT,
+                    y=y_sel,
+                    x_ref=x_ref_sel,
+                    x0=x0_sel,
+                    lower=lo_sel - x_ref_sel,
+                    upper=hi_sel - x_ref_sel,
+                    max_iter=max_iter,
+                    tol=tol,
+                    damp=float(lam),
+                    max_outer=max_outer,
+                    verbose=self.verbose,
+                    weight=self.cell_weight,
+                )
+                held_lo, held_hi = info["at_lower"], info["at_upper"]
 
             hval[sel] = delta + x_ref_sel
             cg_residual_norms = info["residual_norms"]  # (iters+1, len(sel)) -- valid rows only
@@ -771,13 +1005,55 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     return (v @ self.MT) @ self.M + float(lam) * v
 
                 dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
-                w, _ = conjugate_gradient(
-                    A_mv=_Hmv, b=dxinv_c, max_iter=max_iter, tol=tol,
-                    verbose=False, weight=self.cell_weight,
-                )                                                                          # (1,K)
+                if clip is None:
+                    w, _ = conjugate_gradient(
+                        A_mv=_Hmv, b=dxinv_c, max_iter=max_iter, tol=tol,
+                        verbose=False, weight=self.cell_weight,
+                    )                                                                      # (1,K)
 
-                mu = (F_target - hval[sel].sum(dim=-1, keepdim=True)) / w.sum()             # (S,1)
-                hval[sel] = hval[sel] + mu * w                                              # (S,K)
+                    mu = (F_target - hval[sel].sum(dim=-1, keepdim=True)) / w.sum()         # (S,1)
+                    hval[sel] = hval[sel] + mu * w                                          # (S,K)
+                else:
+                    # Same correction, restricted to the cells the bounded fit
+                    # left free (the held cells stay at their bound). Free
+                    # cells the correction would take out of the box are held
+                    # at the bound they cross and the correction is computed
+                    # again, so the held set only grows: at most K rounds, in
+                    # practice a few.
+                    base = hval[sel]
+                    for _ in range(self.K + 1):
+                        free_f = (~(held_lo | held_hi)).to(self.dtype)
+
+                        def _Hfree(v: torch.Tensor) -> torch.Tensor:
+                            return free_f * _Hmv(free_f * v)
+
+                        w, _ = conjugate_gradient(
+                            A_mv=_Hfree, b=free_f * dxinv_c, max_iter=max_iter, tol=tol,
+                            verbose=False, weight=self.cell_weight,
+                        )                                                                  # (S,K)
+                        w_sum = w.sum(dim=-1, keepdim=True)
+                        gap = F_target - base.sum(dim=-1, keepdim=True)
+                        mu = torch.where(w_sum != 0, gap / torch.where(w_sum != 0, w_sum, 1.0), 0.0)
+                        cand = base + mu * w
+                        below = (free_f > 0) & (cand < lo_sel)
+                        above = (free_f > 0) & (cand > hi_sel)
+                        if not bool((below | above).any()):
+                            break
+                        held_lo = held_lo | below
+                        held_hi = held_hi | above
+                        base = torch.where(below, lo_sel, torch.where(above, hi_sel, base))
+                    hval[sel] = cand
+
+            if clip is not None:
+                # remove the rounding of x_ref + (bound - x_ref)
+                hval[sel] = torch.minimum(torch.maximum(hval[sel], lo_sel), hi_sel)
+                n_clipped_low = torch.zeros(B, dtype=torch.int64, device=self.device)
+                n_clipped_high = torch.zeros(B, dtype=torch.int64, device=self.device)
+                if self.uncomputable_out_cells is not None and self.uncomputable_out_cells.numel() > 0:
+                    held_lo[:, self.uncomputable_out_cells] = False
+                    held_hi[:, self.uncomputable_out_cells] = False
+                n_clipped_low[sel] = held_lo.sum(dim=-1)
+                n_clipped_high[sel] = held_hi.sum(dim=-1)
 
         # Force nan for output cells flagged as uncomputable at construction
         # time (out_cell_ids-requested cells with too little real kernel
@@ -795,6 +1071,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
         if val is not None and val.ndim == 1:
             hval = hval[0]
+            if n_clipped_low is not None:
+                n_clipped_low, n_clipped_high = n_clipped_low[0], n_clipped_high[0]
 
         cell_ids = self.cell_ids
 
@@ -803,11 +1081,16 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             cell_ids = cell_ids.cpu().numpy()
             cg_residual_norms = cg_residual_norms.cpu().numpy()
             cg_niters = cg_niters.cpu().numpy()
+            if n_clipped_low is not None:
+                n_clipped_low = n_clipped_low.cpu().numpy()
+                n_clipped_high = n_clipped_high.cpu().numpy()
 
         return ResampleResults(
             cell_data=hval,
             cell_ids=cell_ids,
             cg_residual_norms=cg_residual_norms,
-            cg_niters=cg_niters
+            cg_niters=cg_niters,
+            n_clipped_low=n_clipped_low,
+            n_clipped_high=n_clipped_high,
         )
   
