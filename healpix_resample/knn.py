@@ -403,7 +403,14 @@ class KNeighborsResampler(Generic[T_Array]):
             )
             
 
-            if cell_ids.numel() == 0:
+            # With `out_cell_ids`, an empty result is a legitimate outcome: none of
+            # the requested cells has enough support among the samples (e.g. a
+            # chunk at the edge of the input whose nearby samples all lie just
+            # outside it). The operator is then built with K = 0 and every
+            # resampler handles the requested cells as it does any unsupported
+            # cell. Without `out_cell_ids` every sample supports its own cell, so
+            # an empty result means the threshold or the rings are wrong.
+            if cell_ids.numel() == 0 and self.out_cell_ids is None:
                 raise RuntimeError(
                     "No HEALPix cell passed the threshold. "
                     "Lower 'threshold' or increase neighbourhood rings."
