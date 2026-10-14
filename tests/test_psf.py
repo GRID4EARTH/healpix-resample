@@ -333,24 +333,20 @@ def test_large_npt_does_not_orphan_every_cell(grid):
     assert op.K > 0
 
 
-def test_ring_search_max_not_overridden_when_caller_supplies_it(grid):
+def test_ring_search_max_below_ring_search_init_still_searches(grid):
     lon, lat = grid
 
-    # An explicit (too-small) ring_search_max should still be respected, not
-    # silently replaced -- the auto-correction only fills in when the caller
-    # hasn't supplied one at all. With ring_search_max forced back down to 2,
-    # the per-sample KNN search loop can't run at all for Npt=64 (it would
-    # need ring_search_init=5): every sample's `hi` stays -1, every retained
-    # cell then looks unreachable and gets pruned, and K collapses to 0 --
-    # this is the exact broken state the fix above prevents by default; it
-    # documents the caller-override contract (an explicit ring_search_max is
-    # honoured even when it's a bad choice), not desirable behaviour --
-    # don't force ring_search_max down like this in real code.
+    # An explicit ring_search_max below ring_search_init (Npt=64 needs
+    # ring_search_init=5) used to skip the per-sample search entirely: every
+    # sample's `hi` stayed -1, every retained cell was pruned, and K silently
+    # collapsed to 0 (#74). The search now always runs at least once, at
+    # ring_search_init.
     op = PSFResampler(
         lon_deg=lon, lat_deg=lat, level=LEVEL, threshold=0.3, verbose=False,
         Npt=64, ring_search_max=2,
     )
-    assert op.K == 0
+    assert op.K > 0
+    assert (op.hi >= 0).any(dim=1).all()
 
 
 def test_device_accepts_torch_device_object(grid):

@@ -32,7 +32,19 @@ for a chunk at the edge of the input whose nearby samples all lie just outside i
 error: the KNN-based resamplers (`BilinearResampler`, `BicubicResampler`, `PSFResampler`) are built
 with `K = 0` and `resample()` returns an empty result, `cell_ids` of size 0 and `cell_data` of shape
 `(B, 0)`, so a chunked caller simply keeps its fill value for that chunk. `NearestResampler` instead
-fills every requested cell with its nearest sample (its `out_cell_ids` fallback).
+fills every requested cell with its nearest sample (its `out_cell_ids` fallback), unless
+`max_distance_m` is set: then the cells whose nearest sample is farther than that are left out.
+
+### Sparse samples and the neighbour search
+
+Each sample looks for its `Npt` nearest kept cells in HEALPix rings growing from `ring_search_init` up
+to `ring_search_max`. When the samples are much sparser than the cells (coarse input to a fine
+`level`), a sample may not find `Npt` cells within `ring_search_max` rings: it then keeps the cells it
+found, fewer than `Npt`. If no sample reaches any kept cell at all, the constructor raises a
+`RuntimeError` asking for a larger `ring_search_max` or a coarser `level`, instead of returning an
+empty operator.
+
+Longitudes and latitudes can be `float32` or `float64`: the geometry is always computed in `float64`.
 
 Without `out_cell_ids`, every sample supports its own cell, so an empty result means the
 configuration is wrong: the constructor raises `RuntimeError("No HEALPix cell passed the

@@ -61,10 +61,20 @@ class NearestResampler(KNeighborsResampler):
         Number of HEALPix neighbours per source sample used by the KNN.
         Larger values cover more cells at the cost of more memory during
         construction.  Default 9 is a good trade-off for most use cases.
+    max_distance_m : float or None
+        Only used with ``out_cell_ids``. A requested cell that the KNN rings
+        did not reach is filled with its nearest sample only if that sample
+        lies within ``max_distance_m`` metres of the cell centre; otherwise
+        the cell is left out of the result, like the cells the interpolating
+        resamplers cannot compute. ``None`` (default) fills every requested
+        cell, however far its nearest sample is.
     All other parameters are forwarded to ``KNeighborsResampler``.
     """
 
-    def __init__(self, *args, Npt: int = 9, **kwargs):
+    def __init__(self, *args, Npt: int = 9, max_distance_m: Optional[float] = None, **kwargs):
+        if max_distance_m is not None and not max_distance_m > 0:
+            raise ValueError(f"max_distance_m must be None or positive, got {max_distance_m!r}.")
+        self.max_distance_m = max_distance_m
         # Ensure ring_search_max >= ring_search_init(Npt) so the KNN search
         # loop in healpix_weighted_nearest actually executes.
         #
@@ -218,8 +228,21 @@ class NearestResampler(KNeighborsResampler):
         )                                                           # (M, 3)
 
         # ── Nearest source per missing cell — chunked, O(chunk × N) memory ─
-        hi_miss = self._chunked_nearest(xyz_miss, self.xyz_samples)  # (M,)
+        hi_miss, dot_miss = self._chunked_nearest(xyz_miss, self.xyz_samples)  # (M,), (M,)
         del xyz_miss
+
+        # ── Leave out the cells whose nearest sample is too far (#75) ─────
+        if self.max_distance_m is not None:
+            dist_miss = self.radius * torch.acos(dot_miss.clamp(-1.0, 1.0))
+            near = dist_miss <= self.max_distance_m
+            if self.verbose:
+                print(
+                    f"[NearestResampler] {int((~near).sum()):,} of them left out: "
+                    f"nearest sample farther than max_distance_m={self.max_distance_m:g} m"
+                )
+            missing, hi_miss = missing[near], hi_miss[near]
+            if missing.numel() == 0:
+                return
 
         # ── Extend cell_ids and hi_k, then re-sort to match out_cell_ids ──
         self.cell_ids = torch.cat([self.cell_ids, missing])
@@ -235,10 +258,11 @@ class NearestResampler(KNeighborsResampler):
         xyz_query: torch.Tensor,          # (Q, 3)
         xyz_src:   torch.Tensor,          # (N, 3)
         mem_budget_bytes: int = 512 * 1024 * 1024,   # 512 MB
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """argmax dot(query, src) per query row, memory-bounded by budget.
 
-        Returns hi (Q,) — index of nearest source for each query cell.
+        Returns hi (Q,) — index of nearest source for each query cell — and
+        the matching dot product (Q,), the cosine of the angular distance.
         Memory peak = chunk_q × N × bytes_per_element.
         """
         N    = xyz_src.shape[0]
@@ -246,13 +270,14 @@ class NearestResampler(KNeighborsResampler):
         bpe  = xyz_src.element_size()
         chunk_q = max(1, mem_budget_bytes // (N * bpe))
 
-        hi_out = torch.empty(Q, dtype=torch.long, device=xyz_src.device)
+        hi_out  = torch.empty(Q, dtype=torch.long, device=xyz_src.device)
+        dot_out = torch.empty(Q, dtype=xyz_src.dtype, device=xyz_src.device)
         for start in range(0, Q, chunk_q):
-            end               = min(start + chunk_q, Q)
-            dots              = xyz_query[start:end] @ xyz_src.T    # (chunk_q, N)
-            hi_out[start:end] = dots.argmax(dim=1)
+            end                = min(start + chunk_q, Q)
+            dots               = xyz_query[start:end] @ xyz_src.T    # (chunk_q, N)
+            dot_out[start:end], hi_out[start:end] = dots.max(dim=1)
             del dots
-        return hi_out
+        return hi_out, dot_out
 
     # ── resample ─────────────────────────────────────────────────────────────
 

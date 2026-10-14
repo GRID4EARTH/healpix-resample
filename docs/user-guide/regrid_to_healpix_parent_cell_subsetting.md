@@ -127,7 +127,9 @@ if op.K == 0:
 ```
 
 `NearestResampler` behaves differently: its `out_cell_ids` fallback fills every requested cell
-with its nearest sample, however far away that sample is.
+with its nearest sample, however far away that sample is. Pass `max_distance_m` (e.g. a few input
+pixel sizes) to leave out the cells whose nearest sample is farther than that, so that the parts of
+a parent cell outside the input keep your fill value, as with the other resamplers.
 
 ## Resamplers that use `group_by=True`
 
