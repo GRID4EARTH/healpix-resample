@@ -43,6 +43,11 @@ def outside_samples():
     [
         pytest.param(hr.BilinearResampler, {"threshold": 0.05}, id="bilinear"),
         pytest.param(hr.PSFResampler, {"Npt": 9, "threshold": 0.1}, id="psf"),
+        pytest.param(
+            hr.PSFResampler,
+            {"Npt": 9, "threshold": 0.1, "fill_missing_out_cells": True},
+            id="psf-fill-missing",
+        ),
         pytest.param(hr.BicubicResampler, {}, id="bicubic"),
     ],
 )

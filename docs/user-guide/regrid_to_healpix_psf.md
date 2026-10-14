@@ -144,7 +144,11 @@ PSFResampler(
 - **`out_cell_ids`**: restrict the output to a caller-specified subset of `level`-resolution
   cells (e.g. from `subset_for_parent_cell` when processing one coarse region at a time). See
   `fill_missing_out_cells` below for what happens when a requested cell has too little real
-  kernel support.
+  kernel support. If *none* of the requested cells has support (e.g. a chunk at the edge of the
+  input whose nearby samples all lie just outside it), the constructor does not raise: it builds
+  an operator with `K = 0`, and `resample()` returns `cell_ids` of size 0 and `cell_data` of
+  shape `(B, 0)`, with or without `fill_missing_out_cells`. Without `out_cell_ids`, an empty
+  result still raises `RuntimeError("No HEALPix cell passed the threshold ...")`.
 - **`Npt`**: number of neighbouring HEALPix cells used per sample.
 - **`sigma_m`**: Gaussian length scale in meters.
   - If `None`, a default scale based on the HEALPix pixel area is used:

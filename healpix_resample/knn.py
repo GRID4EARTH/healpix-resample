@@ -325,6 +325,19 @@ class KNeighborsResampler(Generic[T_Array]):
             threshold: keep only HEALPix cells whose global weight sum >= threshold
             nest: HEALPix indexing scheme
             dtype/device: torch dtype/device for all matrices and computations
+            out_cell_ids: optional subset of ``level`` cells to restrict the
+                output to (e.g. one chunk or one parent cell). If none of
+                these cells has enough support among the samples, the
+                operator is built with ``K = 0`` instead of raising:
+                ``resample()`` then returns ``cell_ids`` of size 0 and
+                ``cell_data`` of shape ``(B, 0)``, except
+                ``NearestResampler``, whose fallback fills every requested
+                cell with its nearest sample.
+
+        Raises:
+            RuntimeError: without ``out_cell_ids``, when no cell passes
+                ``threshold`` (lower ``threshold`` or widen the neighbourhood
+                rings).
         """
         self.level = int(level)
         self.nside = 2 ** int(level)
