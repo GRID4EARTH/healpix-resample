@@ -34,8 +34,8 @@ def _sigma_level_m(level: int, radius: float = 6371000.0) -> float:
     
 @torch.no_grad()
 def healpix_weighted_nearest(
-    longitude1: torch.Tensor,          # (N,) degrés
-    latitude1: torch.Tensor,           # (N,) degrés
+    longitude1: torch.Tensor,          # (N,) degrees
+    latitude1: torch.Tensor,           # (N,) degrees
     level: int,
     Npt: int,
     *,
@@ -44,44 +44,44 @@ def healpix_weighted_nearest(
     radius: float = 6371000.0,
     ellipsoid: str = "WGS84",
     sigma: float | None = None,
-    # sous-ensemble de pixels de sortie autorisés (en ids healpix au même "level")
+    # allowed subset of output pixels (HEALPix ids at the same "level")
     out_cell_ids: Optional[Union[np.ndarray, torch.Tensor]] = None,
-    # voisinage utilisé pour estimer les poids (construction cell_ids)
+    # neighbourhood used to estimate the weights (builds cell_ids)
     ring_weight: Optional[int] = None,
-    # voisinage utilisé pour trouver Npt voisins parmi les pixels gardés (peut être augmenté automatiquement)
+    # neighbourhood used to find Npt neighbours among the kept pixels (can grow automatically)
     ring_search_init: Optional[int] = None,
     ring_search_max: int = 20,
     num_threads: int = 0,
     device_for_dist: Optional[torch.device] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Retourne:
-      cell_ids: (K,) pixels HEALPix (au level) retenus par le seuil de poids (et éventuellement intersectés avec out_cell_ids)
-      idx_k   : (N, Npt) indices dans cell_ids (0..K-1), -1 si insuffisant
-      dist_k  : (N, Npt) distances (m) vers centres des pixels correspondants, inf si insuffisant
+    Returns:
+      cell_ids: (K,) HEALPix pixels (at level) kept by the weight threshold (and intersected with out_cell_ids, if given)
+      idx_k   : (N, Npt) indices into cell_ids (0..K-1), -1 if not enough neighbours
+      dist_k  : (N, Npt) distances (m) to the centres of those pixels, inf if not enough neighbours
 
     Notes:
-      - On utilise la distance géodésique via angle = acos(dot(xyz)) ; dist = R * angle.
-      - healpix_geo est utilisé pour lonlat_to_healpix, kth_neighbourhood, healpix_to_lonlat.
-      - La précision est très correcte pour du “pixel center matching”.
+      - Geodesic distance from angle = acos(dot(xyz)); dist = R * angle.
+      - healpix_geo is used for lonlat_to_healpix, kth_neighbourhood, healpix_to_lonlat.
+      - The accuracy is good enough for "pixel centre matching".
     """
     assert longitude1.ndim == latitude1.ndim == 1
     N = int(longitude1.numel())
     assert Npt >= 1
     
     
-    # --- choix rings par défaut
-    # ring minimal pour avoir >= Npt candidats dans un carré (2r+1)^2, + marge
+    # --- default rings
+    # smallest ring giving >= Npt candidates in a (2r+1)^2 square, plus a margin
     r_min = int(math.ceil((math.sqrt(Npt) - 1.0) / 2.0))
     if ring_weight is None:
-        ring_weight = max(2, r_min + 2)  # plus large: mieux pour estimer les poids globaux
+        ring_weight = max(2, r_min + 2)  # wider: better estimate of the global weights
     if ring_search_init is None:
         ring_search_init = max(1, r_min + 1)
 
-    # --- distances: on peut les faire sur GPU si dispo
+    # --- distances: computed on the GPU when available
     dev = device_for_dist if device_for_dist is not None else longitude1.device
-    
-    # --- CPU numpy pour healpix_geo
+
+    # --- CPU numpy for healpix_geo
     lon_np = longitude1.detach().cpu().numpy().astype(np.float64)
     lat_np = latitude1.detach().cpu().numpy().astype(np.float64)
 
@@ -107,16 +107,16 @@ def healpix_weighted_nearest(
 
     valid = neigh_u_w >= 0
 
-    # position du dernier valide par ligne
+    # position of the last valid entry in each row
     last_valid_pos = valid[:, ::-1].argmax(axis=1)
     last_valid_pos = (neigh_u_w.shape[1] - 1) - last_valid_pos
     last_valid = neigh_u_w[np.arange(neigh_u_w.shape[0]), last_valid_pos]
 
-    # fallback si toute la ligne est invalide -> centre
+    # fallback when the whole row is invalid -> centre pixel
     all_invalid = ~valid.any(axis=1)
     last_valid[all_invalid] = ipix_u[all_invalid].astype(np.int64, copy=False)
 
-    # remplace les -1 (broadcast explicite)
+    # replace the -1 entries (explicit broadcast)
     mask = neigh_u_w < 0
     neigh_u_w[mask] = np.broadcast_to(last_valid[:, None], neigh_u_w.shape)[mask]
 
@@ -124,7 +124,7 @@ def healpix_weighted_nearest(
     neigh_w = neigh_u_w[inv]
     Kw = neigh_w.shape[1]
 
-    # --- centres lon/lat des pixels du voisinage (Kw*N potentiellement grand) => on unique
+    # --- lon/lat centres of the neighbourhood pixels (Kw*N can be large) => computed on unique pixels
     neigh_w_flat = neigh_w.reshape(-1).astype(np.uint64)
     neigh_w_uniq, back = np.unique(neigh_w_flat, return_inverse=True)
 
@@ -141,7 +141,7 @@ def healpix_weighted_nearest(
     lat_c = torch.deg2rad(torch.from_numpy(np.asarray(lat_c_deg)).to(dev))
     xyz_c = _lonlat_to_xyz(lon_c, lat_c)  # (Kuniq,3)
 
-    # Remap neighbours vers indices uniques (Kuniq)
+    # Remap neighbours to unique indices (Kuniq)
     back_t = torch.from_numpy(back.astype(np.int64)).to(dev)         # (N*Kw,)
     back_t = back_t.view(N, Kw)                                      # (N,Kw)
     xyz_c_n = xyz_c[back_t]                                          # (N,Kw,3)
@@ -151,7 +151,7 @@ def healpix_weighted_nearest(
     ang = torch.acos(dot)
     dist = radius * ang                                              # (N,Kw)
 
-    # --- poids et somme par pixel
+    # --- weights and per-pixel sum
     # Same default as KNeighborsResampler.__init__: when sigma is not supplied,
     # fall back to the HEALPix pixel scale sqrt(4*pi/(12*4**level))*R.
     if sigma is None:
@@ -159,8 +159,8 @@ def healpix_weighted_nearest(
     # w = exp(-2*d^2/sigma^2)
     w = torch.exp((-2.0) * (dist * dist) / (sigma * sigma))          # (N,Kw)
 
-    # scatter_add sur pixels uniques
-    # On accumule w sur chaque pixel (Kuniq)
+    # scatter_add over unique pixels
+    # w is accumulated on each pixel (Kuniq)
     sums = torch.zeros((xyz_c.shape[0],), device=dev, dtype=w.dtype)
     # Thresholding stage:
     # We compute Gaussian weights from each sample to its neighbourhood pixel centers,
@@ -171,28 +171,28 @@ def healpix_weighted_nearest(
 
     keep = sums >= threshold
     if not torch.any(keep):
-        # aucun pixel ne passe le seuil -> on retourne vide + -1/inf
+        # no pixel passes the threshold -> return empty + -1/inf
         cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
         idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
         dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1.dtype)
         return cell_ids, idx_k, dist_k
 
-    # cell_ids retenus (en id healpix)
-    cell_ids_np = neigh_w_uniq  # np.uint64, taille Kuniq
-    keep_idx = torch.nonzero(keep, as_tuple=False).squeeze(1)         # indices dans [0..Kuniq-1]
+    # kept cell_ids (HEALPix ids)
+    cell_ids_np = neigh_w_uniq  # np.uint64, size Kuniq
+    keep_idx = torch.nonzero(keep, as_tuple=False).squeeze(1)         # indices in [0..Kuniq-1]
     cell_ids_keep = torch.from_numpy(cell_ids_np.astype(np.int64)).to(dev)[keep_idx]  # (K,)
 
-    # xyz des pixels retenus (K,3)
+    # xyz of the kept pixels (K,3)
     xyz_keep = xyz_c[keep_idx]
 
 
-    # --- optionnel: restreindre explicitement les pixels de sortie
-    # out_cell_ids peut être une liste/array/torch tensor d'ids HEALPix (au même level).
+    # --- optional: explicitly restrict the output pixels
+    # out_cell_ids can be a list/array/torch tensor of HEALPix ids (at the same level).
     if out_cell_ids is not None:
         out_t = out_cell_ids if isinstance(out_cell_ids, torch.Tensor) else torch.as_tensor(out_cell_ids)
         out_t = out_t.to(device=dev, dtype=torch.long).reshape(-1)
         if out_t.numel() == 0:
-            # sous-ensemble vide demandé -> rien à regriller
+            # empty subset requested -> nothing to regrid
             cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
             idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
             dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1.dtype)
@@ -201,7 +201,7 @@ def healpix_weighted_nearest(
         out_sorted = torch.unique(out_t)
         out_sorted, _ = torch.sort(out_sorted)
 
-        # test d'appartenance robuste via searchsorted (évite dépendre de torch.isin)
+        # robust membership test via searchsorted (avoids depending on torch.isin)
         pos_out = torch.searchsorted(out_sorted, cell_ids_keep)
         pos_out = torch.clamp(pos_out, 0, out_sorted.numel() - 1)
         in_mask = (out_sorted[pos_out] == cell_ids_keep)
@@ -216,9 +216,9 @@ def healpix_weighted_nearest(
         cell_ids_keep = cell_ids_keep[in_mask]
         xyz_keep = xyz_c[keep_idx]
 
-    # --- pour chaque point: trouver Npt pixels retenus les plus proches
-    # Stratégie: voisinage healpix autour du pixel contenant le point, ring qui s’agrandit
-    # On mappe les pixels du voisinage -> indices dans cell_ids_keep via tri+searchsorted.
+    # --- for each point: find the Npt nearest kept pixels
+    # Strategy: HEALPix neighbourhood around the pixel containing the point, with a growing ring.
+    # Neighbourhood pixels are mapped to indices in cell_ids_keep via sort + searchsorted.
     cell_sorted, order = torch.sort(cell_ids_keep)                   # (K,), (K,)
     K = int(cell_ids_keep.numel())
 
@@ -228,8 +228,8 @@ def healpix_weighted_nearest(
     r = ring_search_init
     done = torch.zeros((N,), device=dev, dtype=torch.bool)
 
-    # On travaille côté CPU pour kth_neighbourhood, mais on ne fait ça que pour les rings nécessaires.
-    # On recalcule sur pixels uniques pour limiter les appels.
+    # kth_neighbourhood runs on the CPU, but only for the rings that are needed.
+    # It is computed on unique pixels to limit the number of calls.
     while r <= ring_search_max and not bool(torch.all(done).item()):
         if nest:
             neigh_u = healpix_geo.nested.kth_neighbourhood(ipix_u, level, r, num_threads=num_threads)
@@ -240,13 +240,13 @@ def healpix_weighted_nearest(
         Ks = neigh.shape[1]
         neigh_t = torch.from_numpy(neigh.astype(np.int64)).to(dev)
 
-        # map neigh_t -> index dans cell_ids_keep
+        # map neigh_t -> index in cell_ids_keep
         pos = torch.searchsorted(cell_sorted, neigh_t)
         pos = torch.clamp(pos, 0, K - 1)
         hit = (cell_sorted[pos] == neigh_t)
-        cand_idx_keep = torch.where(hit, order[pos], torch.full_like(pos, -1))  # indices dans cell_ids_keep
+        cand_idx_keep = torch.where(hit, order[pos], torch.full_like(pos, -1))  # indices in cell_ids_keep
 
-        # distances pour candidats valides
+        # distances for the valid candidates
         safe = torch.clamp(cand_idx_keep, 0, K - 1)
         xyz2 = xyz_keep[safe]                                  # (N,Ks,3)
 
@@ -255,12 +255,12 @@ def healpix_weighted_nearest(
         dist2 = radius * torch.acos(dot2)
         dist2 = torch.where(cand_idx_keep >= 0, dist2, torch.full_like(dist2, float("inf")))
 
-        # topk parmi ces candidats
+        # topk among these candidates
         k = min(Npt, Ks)
         d_k, p_k = torch.topk(dist2, k=k, dim=1, largest=False, sorted=True)
         i_k = torch.gather(cand_idx_keep, 1, p_k)
 
-        # pour les points pas encore "done", on accepte si on a au moins Npt valides (i.e. d_k[:, Npt-1] < inf)
+        # points not "done" yet are accepted once they have at least Npt valid neighbours (i.e. d_k[:, Npt-1] < inf)
         valid_enough = (d_k[:, -1] < float("inf"))
         update = (~done) & valid_enough
 
@@ -271,7 +271,7 @@ def healpix_weighted_nearest(
 
         r += 1
 
-    # Si certains points n’ont jamais trouvé Npt pixels gardés, on laisse -1/inf (ou on pourrait rendre moins que Npt)
+    # Points that never found Npt kept pixels keep -1/inf (returning fewer than Npt would be an alternative)
     return cell_ids_keep, idx_out, dist_out
 
 
