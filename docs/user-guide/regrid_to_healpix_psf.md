@@ -320,6 +320,16 @@ cell_ids = op.get_cell_ids()
 - **Use `lam`** to stabilize inversion when sampling is sparse/irregular:
   - `lam = 0` is pure least squares
   - `lam > 0` damps high-frequency or poorly constrained modes
+- **Use `clip`**, not a larger `lam`, to keep the output physical at sharp edges (see
+  "Bounded fit" above):
+  - `lam` reduces the over- and undershoots but also smooths the whole field; `clip` only acts
+    on the cells that leave the box
+  - for a non-negative field, `clip=(0.0, None)` is the natural setting; add an upper bound only
+    when values above it are known to be impossible
+  - check `res.n_clipped_low` / `res.n_clipped_high`: a large count means the fit is strongly
+    constrained, and may call for a larger `sigma_m` or `lam`
+  - each pass of the bounded fit runs one CG solve, so `clip` costs up to `max_outer` times
+    the unconstrained fit
 - The operator only returns a **subset** of HEALPix pixels (`cell_ids`), not the full sky map.
   This is intentional for memory/performance on regional problems.
 

@@ -88,10 +88,14 @@ class ResampleResults(Generic[T_Array]):
         Conjugate gradient residual norms (if any).
     cg_niters : numpy.ndarray or torch.Tensor or None
         Conjugate gradient number of iterations (if any).
-    n_clipped_low, n_clipped_high : numpy.ndarray or torch.Tensor or None
-        Number of output cells held at the lower / upper bound, per batch
-        row, by a bounded fit (``PSFResampler.resample(..., clip=...)``);
-        ``None`` otherwise.
+    n_clipped_low : numpy.ndarray or torch.Tensor or None
+        Number of output cells held at the lower bound, per batch row, by a
+        bounded fit (``PSFResampler.resample(..., clip=...)``); ``None``
+        otherwise.
+    n_clipped_high : numpy.ndarray or torch.Tensor or None
+        Number of output cells held at the upper bound, per batch row, by a
+        bounded fit (``PSFResampler.resample(..., clip=...)``); ``None``
+        otherwise.
     
     """
     cell_data: T_Array

@@ -96,10 +96,11 @@ nitpick_ignore_regex = [
     # CategoricalResampleResults is a `ResampleResults` dataclass subclass
     # (mask.py): autosummary's generated Attributes table tries to
     # cross-reference the inherited fields (cell_data, cell_ids,
-    # cg_residual_norms, cg_niters) as if they were defined directly on
-    # the subclass, which doesn't resolve -- same underlying pattern as
-    # the inherited-methods case above, just for dataclass attributes.
-    (r"py:obj", r"healpix_resample\.CategoricalResampleResults\.(cell_data|cell_ids|cg_residual_norms|cg_niters)"),
+    # cg_residual_norms, cg_niters, n_clipped_low, n_clipped_high) as if
+    # they were defined directly on the subclass, which doesn't resolve --
+    # same underlying pattern as the inherited-methods case above, just for
+    # dataclass attributes.
+    (r"py:obj", r"healpix_resample\.CategoricalResampleResults\.(cell_data|cell_ids|cg_residual_norms|cg_niters|n_clipped_low|n_clipped_high)"),
 ]
 
 # Suppress warnings from napoleon's type-preprocessing trying (and failing) to

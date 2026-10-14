@@ -188,8 +188,11 @@ def bounded_least_squares_cg(M,
         weight: Optional[torch.Tensor] = None,
         ):
     """
-    Same damped weighted least-squares problem as :func:`least_squares_cg`,
+    Same damped weighted least-squares problem as ``least_squares_cg``,
     under the box constraint ``lower <= delta <= upper`` (cell by cell).
+
+    The unconstrained problem is solved by
+    :func:`~healpix_resample.psf.least_squares_cg`.
 
     The bounds are hard constraints of the fit, not a clip of its result.
     An active-set loop around the same weighted CG:
