@@ -30,8 +30,11 @@ definition and the Earth ellipsoid using the **WGS84** reference system.
 `conservative=True` mode that redistributes each sample's value across its cell footprint instead of
 just interpolating, so the global total is preserved exactly — combining smooth interpolation with
 `ConservativeResampler`'s exact-conservation guarantee. `PSFResampler` additionally supports
-`out_cell_ids=` to restrict output to a specific cell subset, and `healpix_resample.subset_for_parent_cell`
-lets you process one coarse HEALPix region at a time for datasets too large to load in full.
+`out_cell_ids=` to restrict output to a specific cell subset, and `resample(..., clip=(lo, hi))` to
+impose hard bounds inside the fit (e.g. `clip=(0.0, None)` for a non-negative field), which removes the
+negative values and overshoots the PSF deconvolution can produce at sharp edges.
+`healpix_resample.subset_for_parent_cell` lets you process one coarse HEALPix region at a time for
+datasets too large to load in full.
 
 Every resampler handles NaN-valued samples consistently (excluded from the computation rather than
 propagated) and accepts both NumPy arrays and PyTorch tensors, returning whichever type you passed in.

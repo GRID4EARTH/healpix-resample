@@ -112,6 +112,59 @@ the full derivation, and `docs/tutorials` for a worked example on real ERA5 data
 
 ---
 
+## Bounded fit: `clip`
+
+Solving for a field sharper than the samples' PSF is a deconvolution: across a sharp,
+high-contrast edge the solution over- and undershoots, which can give negative values for a
+non-negative field (reflectance, concentration, precipitation) and values above the input
+maximum. `lam` damps it but does not remove it.
+
+`clip=(lo, hi)` adds hard bounds to the fit:
+
+```python
+res = op.resample(val, lam=0.1, clip=(0.0, None))          # non-negative field
+res = op.resample(val, lam=0.1, clip=(None, 1.0))          # upper bound only
+res = op.resample(val, lam=0.1, clip=("input", "input"))   # within the input range, per batch row
+```
+
+Each side is `None` (not constrained), a number, or `"input"` (the min, or max, of the row's
+valid samples). The default `clip=None` is the unconstrained fit.
+
+The fit then solves the same weighted least-squares problem under `lo <= h <= hi`:
+
+    minimize || h @ MT - y ||^2_Dy + lam * || h - x_ref ||^2_Dx   subject to   lo <= h <= hi
+
+with an active-set loop around the same weighted CG:
+
+1. a cell at a bound whose gradient points out of the box is **held** at that bound and removed
+   from the free unknowns;
+2. CG solves for the free cells, with the held cells **still in the forward model** `h @ MT`;
+3. cells that step out of the box are clamped and held at the next pass;
+4. a held cell whose gradient points back into the box is released (Karush-Kuhn-Tucker
+   conditions); the loop stops when nothing changes, or after `max_outer` passes (default 10).
+
+Because a held cell still enters the forward model, the samples it can no longer explain leave a
+residual that its free neighbours take up. A cell held at 0 pulls its neighbours down slightly,
+instead of being zeroed after the fact; the result is the minimum of the constrained problem,
+which clipping the unconstrained result is not.
+
+**Lower and upper bounds are not equivalent.** A lower bound such as 0 is usually physical. An
+upper bound is a stronger choice: a bright, sharp feature smoothed by the input PSF is
+legitimately reconstructed above the input values. Capping it at the input maximum spreads the
+energy the capped cells cannot carry over their neighbours, which widens the feature. Bounding
+one side also reduces the ringing on the other side, since the oscillation that follows an
+overshoot is no longer driven.
+
+With `conservative=True`, the conservation correction is computed on the free cells only;
+free cells it would take out of the box are held at their bound and the correction is computed
+again. The output then satisfies both the bounds and the conservation constraint whenever the
+target mean is reachable inside the box.
+
+`ResampleResults.n_clipped_low` and `n_clipped_high` give the number of cells held at each bound
+(per batch row); they are `None` without `clip`.
+
+---
+
 ## Constructor
 
 ```python
@@ -202,7 +255,7 @@ PSFResampler(
 
 ## Methods
 
-### `resample(val, lam=0.0, max_iter=100, tol=1e-8, x0=None, return_info=False, conservative=False)`
+### `resample(val, lam=0.0, max_iter=100, tol=1e-8, x0=None, return_info=False, conservative=False, clip=None, max_outer=10)`
 
 Estimate a HEALPix field from samples.
 
@@ -211,8 +264,11 @@ Estimate a HEALPix field from samples.
   - `lam`: damping / Tikhonov regularization
   - `x0`: optional initial guess for `delta` (shape `(B, K)`)
   - `conservative`: apply the exact minimum-distortion flux-conservation correction (see above)
+  - `clip`: `None` or `(lo, hi)`, hard bounds imposed inside the fit (see "Bounded fit" above)
+  - `max_outer`: maximum number of passes of the bounded fit
 - **Output**: a `ResampleResults` with `cell_data` (`hval`, shape `(K,)` or `(B, K)`), `cell_ids`,
-  and CG diagnostics (`cg_residual_norms`, `cg_niters`)
+  CG diagnostics (`cg_residual_norms`, `cg_niters`) and, with `clip`, the number of cells held at
+  each bound (`n_clipped_low`, `n_clipped_high`)
 
 ### `invert(hval)`
 
@@ -264,6 +320,16 @@ cell_ids = op.get_cell_ids()
 - **Use `lam`** to stabilize inversion when sampling is sparse/irregular:
   - `lam = 0` is pure least squares
   - `lam > 0` damps high-frequency or poorly constrained modes
+- **Use `clip`**, not a larger `lam`, to keep the output physical at sharp edges (see
+  "Bounded fit" above):
+  - `lam` reduces the over- and undershoots but also smooths the whole field; `clip` only acts
+    on the cells that leave the box
+  - for a non-negative field, `clip=(0.0, None)` is the natural setting; add an upper bound only
+    when values above it are known to be impossible
+  - check `res.n_clipped_low` / `res.n_clipped_high`: a large count means the fit is strongly
+    constrained, and may call for a larger `sigma_m` or `lam`
+  - each pass of the bounded fit runs one CG solve, so `clip` costs up to `max_outer` times
+    the unconstrained fit
 - The operator only returns a **subset** of HEALPix pixels (`cell_ids`), not the full sky map.
   This is intentional for memory/performance on regional problems.
 
