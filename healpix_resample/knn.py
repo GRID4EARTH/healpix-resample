@@ -68,8 +68,12 @@ def healpix_weighted_nearest(
     assert longitude1.ndim == latitude1.ndim == 1
     N = int(longitude1.numel())
     assert Npt >= 1
-    
-    
+
+    # The geometry runs in float64: healpix_geo returns float64 cell centres,
+    # and float32 coordinates would mix dtypes in the distance buffers (#73).
+    longitude1 = longitude1.to(torch.float64)
+    latitude1 = latitude1.to(torch.float64)
+
     # --- default rings
     # smallest ring giving >= Npt candidates in a (2r+1)^2 square, plus a margin
     r_min = int(math.ceil((math.sqrt(Npt) - 1.0) / 2.0))
@@ -77,6 +81,8 @@ def healpix_weighted_nearest(
         ring_weight = max(2, r_min + 2)  # wider: better estimate of the global weights
     if ring_search_init is None:
         ring_search_init = max(1, r_min + 1)
+    # the search below must run at least once
+    ring_search_max = max(ring_search_max, ring_search_init)
 
     # --- distances: computed on the GPU when available
     dev = device_for_dist if device_for_dist is not None else longitude1.device
@@ -271,7 +277,15 @@ def healpix_weighted_nearest(
 
         r += 1
 
-    # Points that never found Npt kept pixels keep -1/inf (returning fewer than Npt would be an alternative)
+    # Points that never found Npt kept pixels within ring_search_max rings keep
+    # the ones they found at the last (widest) ring, padded with -1/inf. Dropping
+    # them all instead left every sample without a link when the samples are
+    # much sparser than the cells, and the operator then came out empty (#74).
+    partial = ~done
+    if torch.any(partial):
+        found = torch.isfinite(d_k)
+        idx_out[partial, :k] = torch.where(found, i_k, torch.full_like(i_k, -1))[partial]
+        dist_out[partial, :k] = d_k[partial]
     return cell_ids_keep, idx_out, dist_out
 
 
@@ -317,8 +331,14 @@ class KNeighborsResampler(Generic[T_Array]):
         """Pre-compute sparse operators.
 
         Args:
-            lon_deg, lat_deg: unstructured sample coordinates in degrees, shape (N,)
-            Npt: number of nearest HEALPix cells used per sample
+            lon_deg, lat_deg: unstructured sample coordinates in degrees, shape (N,);
+                float32 or float64, the geometry is computed in float64
+            Npt: number of nearest HEALPix cells used per sample. A sample that
+                does not find Npt kept cells within ``ring_search_max`` rings
+                (samples much sparser than the cells) keeps the ones it found.
+            ring_search_init, ring_search_max: first and last HEALPix ring of
+                the per-sample neighbour search; a ``ring_search_max`` below
+                ``ring_search_init`` is raised to it
             level: HEALPix level, nside = 2**level
             sigma_m: Gaussian length scale (meters). If None, uses the HEALPix pixel scale
                      sigma = sqrt(4*pi/(12*4**level))*R.
@@ -331,13 +351,14 @@ class KNeighborsResampler(Generic[T_Array]):
                 operator is built with ``K = 0`` instead of raising:
                 ``resample()`` then returns ``cell_ids`` of size 0 and
                 ``cell_data`` of shape ``(B, 0)``, except
-                ``NearestResampler``, whose fallback fills every requested
-                cell with its nearest sample.
+                ``NearestResampler``, whose fallback fills the requested
+                cells with their nearest sample (see its ``max_distance_m``).
 
         Raises:
             RuntimeError: without ``out_cell_ids``, when no cell passes
                 ``threshold`` (lower ``threshold`` or widen the neighbourhood
-                rings).
+                rings), or when cells pass it but no sample reaches any of
+                them within ``ring_search_max`` rings.
         """
         self.level = int(level)
         self.nside = 2 ** int(level)
@@ -389,9 +410,10 @@ class KNeighborsResampler(Generic[T_Array]):
             self.cell_ids = cell_ids
             self.hi = hi
             
-        else:  
-            lon_t = lon_t.to(self.device)
-            lat_t = lat_t.to(self.device)
+        else:
+            # float64 geometry, whatever the dtype of the input coordinates (#73)
+            lon_t = lon_t.to(self.device, dtype=torch.float64)
+            lat_t = lat_t.to(self.device, dtype=torch.float64)
             
             if self.out_cell_ids is not None:
                 self.xyz_samples = _lonlat_to_xyz(torch.deg2rad(lon_t),torch.deg2rad(lat_t))  # (N,3)
@@ -490,6 +512,15 @@ class KNeighborsResampler(Generic[T_Array]):
                         self.cell_ids = self.cell_ids[reachable]
                         self.hi = torch.where(
                             self.hi >= 0, new_index[self.hi.clamp(min=0)], self.hi
+                        )
+
+                    # Cells passed the threshold, but no sample reached any of
+                    # them: an empty operator would be returned silently (#74).
+                    if self.cell_ids.numel() == 0:
+                        raise RuntimeError(
+                            f"{K_before:,} HEALPix cell(s) passed the threshold, but no "
+                            f"sample found any of them within ring_search_max rings. "
+                            f"Increase 'ring_search_max' or use a coarser 'level'."
                         )
 
         self.K = int(self.cell_ids.numel())

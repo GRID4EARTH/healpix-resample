@@ -129,17 +129,16 @@ PSFResampler(
     ellipsoid="WGS84",
     dtype=torch.float32,
     device="cpu",
-    ring_weight=None,
-    ring_search_init=None,
-    ring_search_max=20,
-    num_threads=0,
+    # forwarded to KNeighborsResampler through **kwargs (see "ring_* parameters" below):
+    # ring_weight, ring_search_init, ring_search_max, num_threads
     verbose=False,
 )
 ```
 
 ### Key parameters
 
-- **`lon_deg, lat_deg`**: sample coordinates in degrees, shape `(N,)`.
+- **`lon_deg, lat_deg`**: sample coordinates in degrees, shape `(N,)`, `float32` or `float64`
+  (the geometry is computed in `float64`).
 - **`level`**: HEALPix level (`nside = 2**level`).
 - **`out_cell_ids`**: restrict the output to a caller-specified subset of `level`-resolution
   cells (e.g. from `subset_for_parent_cell` when processing one coarse region at a time). See
@@ -175,6 +174,13 @@ PSFResampler(
 - **`nest`**: HEALPix indexing scheme (nested if `True`).
 - **`device`, `dtype`**: PyTorch device and dtype for all matrices and computations.
 - **`ring_*` parameters**: control the local neighbourhood expansion strategy in the geometry helper.
+  `ring_weight` is the neighbourhood used to decide which cells are kept; each sample then looks
+  for its `Npt` nearest kept cells in rings growing from `ring_search_init` to `ring_search_max`
+  (when `None`, `ring_search_max` is `ring_search_init + 2`, and a value below `ring_search_init`
+  is raised to it). A sample that does not find `Npt` cells within `ring_search_max` rings keeps
+  the ones it found; this happens when the samples are much sparser than the cells. If no sample
+  reaches any kept cell, the constructor raises a `RuntimeError` instead of returning an empty
+  operator.
 - **`verbose`**: prints CG progress and area-estimation diagnostics.
 
 ---
