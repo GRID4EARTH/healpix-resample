@@ -137,11 +137,13 @@ class UTMGrid:
     ----------
     crs : pyproj.CRS
         Projected CRS of the grid.
-    x : numpy.ndarray, shape (nx,)
-        Pixel-center eastings (CRS units, metres for UTM), ascending.
-    y : numpy.ndarray, shape (ny,)
-        Pixel-center northings. Descending (north-up, the usual raster
-        convention) when built by `from_bounds` / `from_cell_ids`.
+    x : numpy.ndarray
+        Pixel-center eastings, shape ``(nx,)`` (CRS units, metres for UTM),
+        ascending.
+    y : numpy.ndarray
+        Pixel-center northings, shape ``(ny,)``. Descending (north-up, the
+        usual raster convention) when built by `from_bounds` /
+        `from_cell_ids`.
     """
 
     crs: Any
@@ -281,7 +283,7 @@ class HealpixToUTM:
         Target raster (pixel-center ``x``, ``y`` and CRS of the tile).
     level : int
         HEALPix level of the source data.
-    method : {"bilinear", "nearest", "bicubic", "clough_tocher"} or class
+    method : {"bilinear", "nearest", "bicubic", "clough_tocher"} or type
         Which resampler's ``invert()`` to use -- see the module docstring.
         A resampler class can be passed directly; it must accept
         ``lon_deg, lat_deg, level`` and implement ``invert()``.
@@ -306,16 +308,16 @@ class HealpixToUTM:
     Attributes
     ----------
     grid : UTMGrid
-    cell_ids : numpy.ndarray, int64, shape (K,)
-        The HEALPix cells (at `level`) required to fill the raster, sorted
-        in ascending order. This is the selection to apply to the source
+    cell_ids : numpy.ndarray
+        The HEALPix cells (at `level`) required to fill the raster, int64,
+        shape ``(K,)``, sorted in ascending order. This is the selection to apply to the source
         dataset before calling `resample()`.
     K : int
         ``len(cell_ids)``.
     resampler
         The underlying resampler (built on the padded pixel centers).
-    valid : numpy.ndarray, bool, shape (ny, nx)
-        Pixels the operator can fill when every cell of `cell_ids` carries
+    valid : numpy.ndarray
+        Boolean, shape ``(ny, nx)``: pixels the operator can fill when every cell of `cell_ids` carries
         data. Pixels outside it are NaN in every output (only Clough-Tocher
         can have such pixels: those outside the hull of the cell centers).
     """
@@ -495,19 +497,20 @@ def healpix_to_utm(
     the bounding box of the cells, using `resolution` (default: the HEALPix
     cell size) and `crs` (default: the UTM zone of the cells' centroid).
 
-    Returns
-    -------
-    data : (ny, nx) or (B, ny, nx)
-        Raster values, same array type as `cell_data`. Pixels that depend
-        on a cell absent from `cell_ids` are NaN.
-    grid : UTMGrid
-        The grid the data are defined on (``grid.x``, ``grid.y``,
-        ``grid.crs``).
-
     This wrapper needs `cell_data` and `cell_ids` in memory. For a dataset
     larger than memory, or to apply the same geometry to several fields,
     build a `HealpixToUTM` first, read only its ``cell_ids`` from the
     source, and call its ``resample()``.
+
+    Returns
+    -------
+    data : numpy.ndarray or torch.Tensor
+        Raster values, shape ``(ny, nx)`` or ``(B, ny, nx)``, same array
+        type as `cell_data`. Pixels that depend on a cell absent from
+        `cell_ids` are NaN.
+    grid : UTMGrid
+        The grid the data are defined on (``grid.x``, ``grid.y``,
+        ``grid.crs``).
     """
     if grid is None:
         grid = UTMGrid.from_cell_ids(
