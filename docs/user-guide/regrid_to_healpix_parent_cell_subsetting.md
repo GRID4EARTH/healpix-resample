@@ -111,6 +111,24 @@ fallback interaction, not evidence the margin itself is wrong. The tutorial
 (`docs/tutorials/5parent_cell_subsetting.md`) reports the mismatch rate directly so you can see this
 in practice.
 
+## Parent cells with no supported output cell
+
+At the edge of the input, a parent cell can have samples in its margin but none close enough to
+any of its own fine cells: no requested cell passes `threshold`. This is a legitimate outcome, not
+an error. The KNN-based resamplers (`BilinearResampler`, `BicubicResampler`, `PSFResampler`) are
+then built with `K = 0` and return an empty result (`cell_ids` of size 0, `cell_data` of shape
+`(B, 0)`), so the loop over parent cells carries on and that parent cell keeps your fill value:
+
+```python
+op = PSFResampler(lon_deg=lon[sample_idx], lat_deg=lat[sample_idx], level=level, out_cell_ids=out_ids)
+result = op.resample(val[..., sample_idx])
+if op.K == 0:
+    continue   # nothing to write for this parent cell
+```
+
+`NearestResampler` behaves differently: its `out_cell_ids` fallback fills every requested cell
+with its nearest sample, however far away that sample is.
+
 ## Resamplers that use `group_by=True`
 
 `ConservativeResampler`, `GroupByResampler`, and `CellPointResampler` derive their cells purely from

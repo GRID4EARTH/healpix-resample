@@ -25,6 +25,19 @@ All resamplers return a `ResampleResults` dataclass:
 | `device` | auto | `"cpu"` or `"cuda"`. Auto-detected if not set. |
 | `dtype` | `float64` | PyTorch dtype. Use `float32` for speed, `float64` for precision. |
 
+### When no requested cell has support
+
+With `out_cell_ids`, it can happen that none of the requested cells passes `threshold`, typically
+for a chunk at the edge of the input whose nearby samples all lie just outside it. This is not an
+error: the KNN-based resamplers (`BilinearResampler`, `BicubicResampler`, `PSFResampler`) are built
+with `K = 0` and `resample()` returns an empty result, `cell_ids` of size 0 and `cell_data` of shape
+`(B, 0)`, so a chunked caller simply keeps its fill value for that chunk. `NearestResampler` instead
+fills every requested cell with its nearest sample (its `out_cell_ids` fallback).
+
+Without `out_cell_ids`, every sample supports its own cell, so an empty result means the
+configuration is wrong: the constructor raises `RuntimeError("No HEALPix cell passed the
+threshold ...")`; lower `threshold` or widen the neighbourhood rings.
+
 ## GPU usage
 
 Pass `device="cuda"` to any resampler to run on GPU. The operators `M` and `MT` stay in GPU memory between calls to `resample()`, so the cost is paid only once at construction time.

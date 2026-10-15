@@ -183,9 +183,13 @@ class NearestResampler(KNeighborsResampler):
         cell_sorted, _ = torch.sort(self.cell_ids)
         out_sorted,  _ = torch.sort(out_t)
 
-        pos     = torch.searchsorted(cell_sorted, out_sorted).clamp(0, self.K - 1)
-        present = cell_sorted[pos] == out_sorted
-        missing = out_sorted[~present]                              # (M,)
+        if self.K == 0:
+            # no requested cell passed the KNN threshold: all of them are missing
+            missing = out_sorted
+        else:
+            pos     = torch.searchsorted(cell_sorted, out_sorted).clamp(0, self.K - 1)
+            present = cell_sorted[pos] == out_sorted
+            missing = out_sorted[~present]                          # (M,)
 
         if missing.numel() == 0:
             return

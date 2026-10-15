@@ -521,7 +521,9 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             # uncomputable_out_cells.
             bad_k = torch.nonzero(norm_row_raw <= self.threshold).reshape(-1)
 
-            if bad_k.numel() > 0 and self.fill_missing_out_cells:
+            # With K = 0 (no requested cell has support, see out_cell_ids in
+            # KNeighborsResampler) there is no cell to link a sample to.
+            if bad_k.numel() > 0 and self.fill_missing_out_cells and self.K > 0:
 
                 # Require geometry buffers (unit vectors)
                 if (not hasattr(self, "xyz_samples")) or (not hasattr(self, "xyz_cells")):
