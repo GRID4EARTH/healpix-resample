@@ -63,9 +63,15 @@ Design decisions (do not re-litigate here -- see the planning doc):
   candidate HEALPix cell is only kept in ``self.cell_ids`` if its projected
   center falls inside the Delaunay triangulation
   (``Delaunay.find_simplex(...) != -1``).
-- **``invert()`` is not implemented.** Unlike the KNN-based resamplers
-  (symmetric `M`/`MT` pair), Delaunay/CT has no equally natural closed form
-  from HEALPix cells back to scattered sample locations. See
+- **``invert()`` is a second, reverse Clough-Tocher operator, built
+  lazily.** Unlike the KNN-based resamplers (symmetric `M`/`MT` pair that
+  falls out of one neighbour search), Delaunay/CT only defines a mapping
+  from scattered points to query points. ``invert()`` therefore builds the
+  same construction the other way round on first use: the retained HEALPix
+  cell centers become the triangulated "scattered samples", and the input
+  sample locations become the query points (same gnomonic plane, same
+  helpers). Samples outside the convex hull of the retained cell centers
+  read back as NaN -- no extrapolation, in either direction. See
   ``invert()``'s docstring.
 
 NOTE on implementation risk (transparency, not boilerplate)
@@ -686,6 +692,15 @@ class CloughTocherResampler:
         ``grad_y = Gy @ f`` for any sample-space field `f`.
     M : torch.Tensor
         Sparse CSR ``(N, K)`` -- ``hval = y @ M``.
+    MT : torch.Tensor
+        Sparse CSR ``(K, N)`` -- ``val_hat = hval @ MT``, the reverse
+        Clough-Tocher operator used by `invert()`. Built lazily on first
+        access (it needs its own Delaunay triangulation of the retained
+        cell centers), so a forward-only use never pays for it.
+    invert_valid : torch.Tensor
+        Bool ``(N,)`` -- which input samples fall inside the convex hull of
+        the retained cell centers, i.e. where `invert()` returns a value
+        rather than NaN. Built together with `MT`.
     """
 
     def __init__(
@@ -713,6 +728,9 @@ class CloughTocherResampler:
         self.dtype = dtype
         self.verbose = verbose
         self.out_cell_ids = out_cell_ids
+        self.grad_det_floor_rel = float(grad_det_floor_rel)
+        self._MT = None
+        self._invert_valid = None
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -820,6 +838,9 @@ class CloughTocherResampler:
         simplex_idx = simplex_idx[keep]
         qx_k = qx[keep]
         qy_k = qy[keep]
+        # Retained cell centers in the same gnomonic plane as `points2d` --
+        # the "scattered samples" of the reverse operator (see `invert()`).
+        self.cell_points2d = np.stack([qx_k, qy_k], axis=-1)
 
         # ---- 5. assemble sparse M ---------------------------------------
         self.M = _assemble_M(
@@ -888,28 +909,159 @@ class CloughTocherResampler:
 
         return ResampleResults(cell_data=hval, cell_ids=cell_ids)
 
-    def invert(self, hval: T_Array) -> T_Array:
-        """Not implemented -- see `planning/05_clough_tocher_resampler.md`,
-        "Composing everything into one sparse (N,K) matrix M".
+    # ── reverse operator (HEALPix cells -> samples) ──────────────────────
 
-        Unlike the KNN-based resamplers (which get a natural `MT` "for
-        free" from the same symmetric neighbour search that builds `M`),
-        Delaunay/Clough-Tocher only defines a mapping from scattered samples
-        to arbitrary query points, not the reverse -- a second, independent
-        Delaunay/CT operator built the other way round (retained HEALPix
-        cells as the "scattered samples") would roughly double the
-        implementation for a direction the planning doc explicitly says not
-        to build unless asked. Raises unconditionally.
+    def _build_inverse(self) -> None:
+        """Build the reverse Clough-Tocher operator ``MT`` (K, N).
+
+        Exactly the forward construction with the roles swapped: Delaunay-
+        triangulate the K retained cell centers (`self.cell_points2d`, already
+        in the forward operator's gnomonic plane), estimate vertex gradients
+        on that triangulation, and evaluate the C1 cubic macro-element at
+        the N input sample positions (`self.points2d`). Samples outside the
+        convex hull of the cell centers get an empty column and are flagged
+        in `self.invert_valid`.
         """
-        raise NotImplementedError(
-            "CloughTocherResampler.invert() is not implemented: Delaunay/"
-            "Clough-Tocher has no natural, cheap reverse operator the way "
-            "KNeighborsResampler's M/MT pair does. See "
-            "planning/05_clough_tocher_resampler.md, 'Composing everything "
-            "into one sparse (N,K) matrix M', for why this was deliberately "
-            "left unimplemented rather than building a second, independent "
-            "CT operator in the reverse direction."
+        if self.K < 3:
+            raise RuntimeError(
+                "CloughTocherResampler.invert(): at least 3 retained HEALPix "
+                f"cells are needed to triangulate the reverse operator (K={self.K})."
+            )
+        try:
+            tri_c = Delaunay(self.cell_points2d)
+        except QhullError as exc:
+            raise RuntimeError(
+                "CloughTocherResampler.invert(): scipy.spatial.Delaunay failed "
+                "to triangulate the retained HEALPix cell centers (e.g. all "
+                "cells collinear in the projected plane)."
+            ) from exc
+
+        cells_t = torch.as_tensor(self.cell_points2d, dtype=self.dtype, device=self.device)
+        (
+            _gx,
+            _gy,
+            edges_j,
+            coef_gx_edge,
+            coef_gy_edge,
+            diag_gx,
+            diag_gy,
+            nbr_indptr,
+        ) = _build_gradient_operators(
+            cells_t, tri_c, self.device, self.dtype, det_floor_rel=self.grad_det_floor_rel
         )
+
+        simplex_idx = tri_c.find_simplex(self.points2d)
+        inside = np.nonzero(simplex_idx >= 0)[0]
+        valid = torch.zeros(self.N, dtype=torch.bool, device=self.device)
+
+        if inside.size == 0:
+            MT = torch.sparse_coo_tensor(
+                torch.zeros((2, 0), dtype=torch.long, device=self.device),
+                torch.zeros((0,), dtype=self.dtype, device=self.device),
+                size=(self.K, self.N),
+            ).to_sparse_csr()
+        else:
+            inside_t = torch.as_tensor(inside, dtype=torch.long, device=self.device)
+            valid[inside_t] = True
+            # (K, n_inside): rows = cells (the triangulated points), columns
+            # = the inside samples (the query points).
+            MT_in = _assemble_M(
+                points2d=cells_t,
+                tri=tri_c,
+                simplex_idx=simplex_idx[inside],
+                qx=self.points2d[inside, 0],
+                qy=self.points2d[inside, 1],
+                N=self.K,
+                K=int(inside.size),
+                edges_j=edges_j,
+                coef_gx_edge=coef_gx_edge,
+                coef_gy_edge=coef_gy_edge,
+                diag_gx=diag_gx,
+                diag_gy=diag_gy,
+                nbr_indptr=nbr_indptr,
+                device=self.device,
+                dtype=self.dtype,
+            ).to_sparse_coo().coalesce()
+            # Spread the inside-sample columns back onto the full (N,) axis.
+            idx = MT_in.indices()
+            indices = torch.stack([idx[0], inside_t[idx[1]]], dim=0)
+            MT = torch.sparse_coo_tensor(
+                indices, MT_in.values(), size=(self.K, self.N),
+                device=self.device, dtype=self.dtype,
+            ).coalesce().to_sparse_csr()
+
+        self._MT = MT
+        self._invert_valid = valid
+
+        if self.verbose:
+            print(
+                f"[CloughTocherResampler] reverse operator: K={self.K} cells, "
+                f"{tri_c.simplices.shape[0]} Delaunay triangles, "
+                f"{int(inside.size)}/{self.N} samples inside the cell hull."
+            )
+
+    @property
+    def MT(self) -> torch.Tensor:
+        """Sparse CSR ``(K, N)`` reverse operator (built on first access)."""
+        if self._MT is None:
+            self._build_inverse()
+        return self._MT
+
+    @property
+    def invert_valid(self) -> torch.Tensor:
+        """Bool ``(N,)``: samples inside the convex hull of the retained cells."""
+        if self._invert_valid is None:
+            self._build_inverse()
+        return self._invert_valid
+
+    @torch.no_grad()
+    def invert(self, hval: T_Array) -> T_Array:
+        """Project a HEALPix field back to the sample locations.
+
+        ``val_hat = hval @ self.MT``, where `MT` is a genuine Delaunay /
+        Clough-Tocher C1 cubic interpolant in the reverse direction: the K
+        retained HEALPix cell centers are triangulated, and the interpolant
+        is evaluated at the N input sample positions. It therefore has the
+        same properties as the forward operator -- exact for an affine
+        field, C1 across triangle edges, and **no extrapolation**: samples
+        outside the convex hull of the retained cell centers (see
+        `self.invert_valid`) are returned as NaN. Since cells are only
+        retained inside the hull of the samples, the outermost samples are
+        typically in that case.
+
+        `MT` is not the transpose (nor the inverse) of `M`; it is an
+        independent interpolation operator, so `invert(resample(val))`
+        reproduces `val` up to interpolation error, like the other
+        interpolating resamplers. It is built on the first call and cached.
+
+        NaN in `hval` propagates to every sample whose triangle touches the
+        NaN cell (through the vertex-gradient stencil, this reaches one
+        Delaunay ring further than the triangle itself).
+
+        Args:
+            hval: (K,) or (B, K) values on `self.cell_ids`.
+        Returns:
+            val_hat: (N,) or (B, N), same array type as `hval`.
+        """
+        y = hval if isinstance(hval, torch.Tensor) else torch.as_tensor(hval)
+        y = y.to(self.device, dtype=self.dtype)
+        squeezed = y.ndim == 1
+        if squeezed:
+            y = y[None, :]
+        if y.shape[-1] != self.K:
+            raise ValueError(
+                f"CloughTocherResampler.invert(): expected hval with last "
+                f"dimension K={self.K}, got shape {tuple(y.shape)}."
+            )
+
+        res = y @ self.MT  # (B, N)
+        res[:, ~self.invert_valid] = float("nan")
+
+        if squeezed:
+            res = res[0]
+        if not isinstance(hval, torch.Tensor):
+            res = res.cpu().numpy()
+        return res
 
     def get_cell_ids(self) -> np.ndarray:
         return self.cell_ids.cpu().numpy()

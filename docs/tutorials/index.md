@@ -27,6 +27,12 @@ Compact synthetic examples for every continuous, conservative, categorical, and 
 Process one coarse HEALPix cell at a time and verify the reassembled result matches a global run.
 :::
 
+:::{grid-item-card} HEALPix → UTM
+:link: healpix_to_utm
+:link-type: doc
+Extract a small UTM zone from a large HEALPix dataset: find the cells needed, read only those, resample.
+:::
+
 :::{grid-item-card} Reproduce the paper
 :link: reproduce_paper
 :link-type: doc
@@ -48,6 +54,7 @@ zenodo_resamplers
 quickstart
 4resamplers
 5parent_cell_subsetting
+healpix_to_utm
 reproduce_paper
 throughput_benchmark
 ```

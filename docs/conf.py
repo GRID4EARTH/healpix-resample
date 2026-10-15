@@ -101,6 +101,11 @@ nitpick_ignore_regex = [
     # same underlying pattern as the inherited-methods case above, just for
     # dataclass attributes.
     (r"py:obj", r"healpix_resample\.CategoricalResampleResults\.(cell_data|cell_ids|cg_residual_norms|cg_niters|n_clipped_low|n_clipped_high)"),
+    # Same pattern for the members autosummary lists on the HEALPix -> UTM
+    # classes (utm.py) and on CloughTocherResampler, which get no page of
+    # their own.
+    (r"py:obj", r"healpix_resample\.UTMGrid\.(from_bounds|from_cell_ids|lonlat|padded|shape)"),
+    (r"py:obj", r"healpix_resample\.CloughTocherResampler\.(MT|invert_valid)"),
 ]
 
 # Suppress warnings from napoleon's type-preprocessing trying (and failing) to
@@ -109,6 +114,9 @@ nitpick_ignore_regex = [
 nitpick_ignore = [
     ("py:class", "array-like"),
     ("py:class", "shape (N,)"),
+    # pyproj is an optional dependency (``healpix-resample[utm]``), not in
+    # intersphinx_mapping
+    ("py:class", "pyproj.CRS"),
 ]
 
 napoleon_numpy_docstring = True
