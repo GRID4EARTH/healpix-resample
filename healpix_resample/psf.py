@@ -23,6 +23,18 @@ from healpix_resample.knn import KNeighborsResampler, _sigma_level_m, _lonlat_to
 
 
 @torch.no_grad()
+def _safe_normalize(values: torch.Tensor, sums: torch.Tensor) -> torch.Tensor:
+    """``values / sums`` with 0 (instead of NaN) wherever ``sums`` is 0.
+
+    A zero sum means every weight behind it underflowed to 0 (see
+    ``PSFResampler.comp_matrix``), so the links it normalizes carry no
+    information: a weight of 0 is the only value consistent with the rest of
+    the operator.
+    """
+    nonzero = sums != 0
+    return torch.where(nonzero, values / torch.where(nonzero, sums, torch.ones_like(sums)), torch.zeros_like(values))
+
+
 def conjugate_gradient(
     A_mv: Callable[[torch.Tensor], torch.Tensor],
     b: torch.Tensor,
@@ -535,8 +547,16 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # `threshold`'s meaning ("enough kernel support") doesn't silently
         # rescale with the units/magnitude of `area`.
         norm_col_raw = torch.bincount(flat_hi_v, weights=flat_w_raw_v, minlength=self.K).to(self.dtype)
-        # weight divided by column sum
-        wM = flat_w_v / norm_col[flat_hi_v]
+        # weight divided by column sum.
+        #
+        # A column (or, below, a row) can have a zero sum even though it has
+        # links: every one of its raw Gaussian weights underflowed to 0 -- in
+        # float32 exp(-2 d^2 / sigma^2) is 0 past d ~ 7 sigma, which happens
+        # for a sample whose nearest *requested* cells (out_cell_ids) are all
+        # far away. 0 / 0 would put NaN into M / MT and poison every CG
+        # iteration in resample() (the whole output came back NaN, #77).
+        # Those links carry no information anyway: give them a weight of 0.
+        wM = _safe_normalize(flat_w_v, norm_col[flat_hi_v])
 
         rowsM = idx.reshape(-1)[valid]
         colsM = flat_hi_v
@@ -557,7 +577,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         flat_idx_v = flat_idx[valid]
         norm_row = torch.bincount(flat_idx_v, weights=flat_w_v, minlength=self.N).to(self.dtype)
         norm_row_raw = torch.bincount(flat_idx_v, weights=flat_w_raw_v, minlength=self.N).to(self.dtype)
-        wMT = flat_w_v / norm_row[flat_idx_v]
+        wMT = _safe_normalize(flat_w_v, norm_row[flat_idx_v])
             
         indicesMT = torch.stack([colsM, rowsM], dim=0)  # (hi, idx)
         MT_coo = torch.sparse_coo_tensor(
