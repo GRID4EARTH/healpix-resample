@@ -105,3 +105,34 @@ def test_without_out_cell_ids_an_impossible_threshold_still_raises(outside_sampl
             verbose=False,
             threshold=1e9,
         )
+
+
+@pytest.mark.parametrize(
+    ["cls", "kwargs"],
+    [
+        pytest.param(hr.BilinearResampler, {"threshold": 0.05}, id="bilinear"),
+        pytest.param(hr.PSFResampler, {"Npt": 9, "threshold": 0.1}, id="psf"),
+        pytest.param(hr.NearestResampler, {}, id="nearest"),
+        pytest.param(
+            hr.NearestResampler, {"max_distance_m": 100.0}, id="nearest-max-distance"
+        ),
+    ],
+)
+def test_no_sample_at_all(outside_samples, cls, kwargs):
+    # a chunk without any input point: nothing to fill, no cell, no error (#79)
+    _, _, out_cells = outside_samples
+    op = cls(
+        lon_deg=np.array([], dtype="float64"),
+        lat_deg=np.array([], dtype="float64"),
+        level=LEVEL,
+        out_cell_ids=out_cells,
+        nest=True,
+        ellipsoid="WGS84",
+        verbose=False,
+        **kwargs,
+    )
+    res = op.resample(np.zeros((2, 0)))
+
+    cell_ids, cell_data = np.asarray(res.cell_ids), np.asarray(res.cell_data)
+    assert cell_ids.size == 0
+    assert cell_data.shape == (2, 0)

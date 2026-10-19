@@ -204,6 +204,11 @@ class NearestResampler(KNeighborsResampler):
         if missing.numel() == 0:
             return
 
+        if self.N == 0:
+            # no sample to fill them from: they stay out of the result, like
+            # the cells the interpolating resamplers cannot compute (#79)
+            return
+
         if self.verbose:
             print(
                 f"[NearestResampler] {missing.numel():,} out_cell_ids not covered "
