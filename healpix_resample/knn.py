@@ -53,6 +53,8 @@ def healpix_weighted_nearest(
     ring_search_max: int = 20,
     num_threads: int = 0,
     device_for_dist: Optional[torch.device] = None,
+    # process the samples in batches of this size (None: all at once)
+    batch_size: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Returns:
@@ -64,6 +66,13 @@ def healpix_weighted_nearest(
       - Geodesic distance from angle = acos(dot(xyz)); dist = R * angle.
       - healpix_geo is used for lonlat_to_healpix, kth_neighbourhood, healpix_to_lonlat.
       - The accuracy is good enough for "pixel centre matching".
+      - ``batch_size``: the weight accumulation and the Npt-nearest search
+        allocate about ``(2*ring+1)**2 * 100`` bytes per sample (the
+        neighbourhood ids, centre coordinates, distances and weights of every
+        sample at once). With ``batch_size`` set, the samples are processed in
+        slices of that size, so this temporary memory is bounded by the batch
+        and not by N; the per-cell weight sums and the per-sample results are
+        the same (see :func:`_healpix_weighted_nearest_batched`).
     """
     assert longitude1.ndim == latitude1.ndim == 1
     N = int(longitude1.numel())
@@ -86,6 +95,28 @@ def healpix_weighted_nearest(
 
     # --- distances: computed on the GPU when available
     dev = device_for_dist if device_for_dist is not None else longitude1.device
+
+    if batch_size is not None and Npt > 1:
+        if int(batch_size) < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        return _healpix_weighted_nearest_batched(
+            longitude1,
+            latitude1,
+            level=level,
+            Npt=Npt,
+            nest=nest,
+            threshold=threshold,
+            radius=radius,
+            ellipsoid=ellipsoid,
+            sigma=sigma,
+            out_cell_ids=out_cell_ids,
+            ring_weight=ring_weight,
+            ring_search_init=ring_search_init,
+            ring_search_max=ring_search_max,
+            num_threads=num_threads,
+            dev=dev,
+            batch_size=int(batch_size),
+        )
 
     # --- CPU numpy for healpix_geo
     lon_np = longitude1.detach().cpu().numpy().astype(np.float64)
@@ -289,6 +320,227 @@ def healpix_weighted_nearest(
     return cell_ids_keep, idx_out, dist_out
 
 
+def _fill_invalid_neighbours(neigh: np.ndarray, centre: np.ndarray) -> np.ndarray:
+    """Replace the -1 entries of a ``kth_neighbourhood`` result (rows = pixels
+    ``centre``) by the last valid neighbour of the row, or by the centre pixel
+    when the whole row is invalid: the same rule as the unbatched search, so
+    the arrays stay dense and duplicates are handled by the weight sums."""
+    neigh = neigh.astype(np.int64, copy=False)
+    valid = neigh >= 0
+    last_valid_pos = valid[:, ::-1].argmax(axis=1)
+    last_valid_pos = (neigh.shape[1] - 1) - last_valid_pos
+    last_valid = neigh[np.arange(neigh.shape[0]), last_valid_pos]
+    all_invalid = ~valid.any(axis=1)
+    last_valid[all_invalid] = centre[all_invalid].astype(np.int64, copy=False)
+    mask = neigh < 0
+    neigh[mask] = np.broadcast_to(last_valid[:, None], neigh.shape)[mask]
+    return neigh
+
+
+@torch.no_grad()
+def _healpix_weighted_nearest_batched(
+    longitude1: torch.Tensor,
+    latitude1: torch.Tensor,
+    *,
+    level: int,
+    Npt: int,
+    nest: bool,
+    threshold: float,
+    radius: float,
+    ellipsoid: str,
+    sigma: float | None,
+    out_cell_ids,
+    ring_weight: int,
+    ring_search_init: int,
+    ring_search_max: int,
+    num_threads: int,
+    dev: torch.device,
+    batch_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Batched version of :func:`healpix_weighted_nearest` (same arguments,
+    after the defaults have been resolved; ``Npt > 1``).
+
+    The unbatched function holds, for every sample at once, the
+    ``(2*ring_weight+1)**2`` neighbourhood pixels with their centre
+    coordinates, distances and weights, and then the ``(2*r+1)**2``
+    candidates of the nearest search: about 1.5-2 kB per sample, so a
+    healpix-convert chunk of 32 million samples needs more than 100 GiB.
+    Here the samples are processed in slices of ``batch_size``:
+
+    1. the set of neighbourhood pixels (the candidates for ``cell_ids``) is
+       built from the unique sample pixels, in slices;
+    2. the per-pixel weight sums used by ``threshold`` are accumulated slice
+       by slice into one global array (``scatter_add_`` in sample order, so
+       each pixel receives the same contributions in the same order as in
+       the unbatched function);
+    3. the ``Npt``-nearest search runs slice by slice, with the ring growing
+       until every sample of the slice is served (as before, a sample is
+       served at the first ring where it finds ``Npt`` kept pixels, so the
+       result of a sample does not depend on the other samples of its
+       slice).
+
+    Steps 2 and 3 therefore give the same ``cell_ids``, ``idx_k`` and
+    ``dist_k`` as the unbatched function; the only possible difference is the
+    floating point summation order inside ``scatter_add_``, which does not
+    change the ``threshold`` decision except for a pixel whose weight sum is
+    within rounding of ``threshold``. The memory of the temporaries is then
+    about ``2 kB * batch_size`` plus the global arrays (``O(N * Npt)`` for the
+    results and ``O(K)`` for the candidate pixels).
+    """
+    N = int(longitude1.numel())
+    hp = healpix_geo.nested if nest else healpix_geo.ring
+
+    # --- CPU numpy for healpix_geo
+    lon_np = longitude1.detach().cpu().numpy().astype(np.float64)
+    lat_np = latitude1.detach().cpu().numpy().astype(np.float64)
+
+    ipix1 = hp.lonlat_to_healpix(lon_np, lat_np, level, num_threads=num_threads, ellipsoid=ellipsoid)
+    ipix1 = ipix1.astype(np.uint64, copy=False)
+    ipix_u = np.unique(ipix1)
+
+    # --- 1. candidate pixels: the union of the ring_weight neighbourhoods of the
+    # unique sample pixels, built in slices of the (sorted, hence spatially
+    # grouped) unique pixels so that no (U, Kw) array is ever allocated.
+    parts = []
+    for s in range(0, ipix_u.size, batch_size):
+        u = ipix_u[s : s + batch_size]
+        neigh = hp.kth_neighbourhood(u, level, ring_weight, num_threads=num_threads)
+        neigh = neigh.astype(np.int64, copy=False)
+        parts.append(np.unique(neigh[neigh >= 0]).astype(np.uint64))
+        parts.append(u)  # fallback of all-invalid rows
+    neigh_w_uniq = np.unique(np.concatenate(parts))  # sorted uint64, size Kuniq
+    del parts
+    Kuniq = int(neigh_w_uniq.size)
+
+    lon_c_deg, lat_c_deg = hp.healpix_to_lonlat(neigh_w_uniq, level, ellipsoid=ellipsoid)
+    lon_c = torch.deg2rad(torch.from_numpy(np.asarray(lon_c_deg)).to(dev))
+    lat_c = torch.deg2rad(torch.from_numpy(np.asarray(lat_c_deg)).to(dev))
+    xyz_c = _lonlat_to_xyz(lon_c, lat_c)  # (Kuniq,3)
+
+    if sigma is None:
+        sigma = _sigma_level_m(level, radius=radius)
+
+    lon1_all = torch.deg2rad(longitude1.to(dev))
+    lat1_all = torch.deg2rad(latitude1.to(dev))
+
+    # --- 2. per-pixel weight sums, accumulated over the slices
+    sums = torch.zeros((Kuniq,), device=dev, dtype=torch.float64)
+    for s in range(0, N, batch_size):
+        e = min(N, s + batch_size)
+        ipu_b, inv_b = np.unique(ipix1[s:e], return_inverse=True)
+        neigh_u_w = _fill_invalid_neighbours(
+            hp.kth_neighbourhood(ipu_b, level, ring_weight, num_threads=num_threads), ipu_b
+        )
+        neigh_w = neigh_u_w[inv_b]  # (b, Kw)
+        Kw = neigh_w.shape[1]
+        back = np.searchsorted(neigh_w_uniq, neigh_w.reshape(-1).astype(np.uint64))
+        back_t = torch.from_numpy(back.astype(np.int64)).to(dev).view(e - s, Kw)
+        del neigh_u_w, neigh_w, back
+
+        xyz1 = _lonlat_to_xyz(lon1_all[s:e], lat1_all[s:e])  # (b,3)
+        dot = (xyz_c[back_t] * xyz1[:, None, :]).sum(dim=-1)  # (b,Kw)
+        dot = torch.clamp(dot, -1.0, 1.0)
+        dist = radius * torch.acos(dot)
+        w = torch.exp((-2.0) * (dist * dist) / (sigma * sigma))
+        del dot, dist
+        sums.scatter_add_(0, back_t.reshape(-1), w.reshape(-1))
+        del back_t, w, xyz1
+
+    keep = sums >= threshold
+    if not torch.any(keep):
+        cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
+        idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
+        dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1_all.dtype)
+        return cell_ids, idx_k, dist_k
+
+    keep_idx = torch.nonzero(keep, as_tuple=False).squeeze(1)
+    cell_ids_keep = torch.from_numpy(neigh_w_uniq.astype(np.int64)).to(dev)[keep_idx]
+    xyz_keep = xyz_c[keep_idx]
+    del sums, keep
+
+    # --- optional: explicitly restrict the output pixels (same as unbatched)
+    if out_cell_ids is not None:
+        out_t = out_cell_ids if isinstance(out_cell_ids, torch.Tensor) else torch.as_tensor(out_cell_ids)
+        out_t = out_t.to(device=dev, dtype=torch.long).reshape(-1)
+        if out_t.numel() == 0:
+            cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
+            idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
+            dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1_all.dtype)
+            return cell_ids, idx_k, dist_k
+
+        out_sorted = torch.unique(out_t)
+        out_sorted, _ = torch.sort(out_sorted)
+        pos_out = torch.searchsorted(out_sorted, cell_ids_keep)
+        pos_out = torch.clamp(pos_out, 0, out_sorted.numel() - 1)
+        in_mask = (out_sorted[pos_out] == cell_ids_keep)
+        if not torch.any(in_mask):
+            cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
+            idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
+            dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1_all.dtype)
+            return cell_ids, idx_k, dist_k
+        keep_idx = keep_idx[in_mask]
+        cell_ids_keep = cell_ids_keep[in_mask]
+        xyz_keep = xyz_c[keep_idx]
+    del xyz_c
+
+    # --- 3. for each sample: the Npt nearest kept pixels, slice by slice
+    cell_sorted, order = torch.sort(cell_ids_keep)
+    K = int(cell_ids_keep.numel())
+
+    idx_out = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
+    dist_out = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1_all.dtype)
+
+    for s in range(0, N, batch_size):
+        e = min(N, s + batch_size)
+        b = e - s
+        ipu_b, inv_b = np.unique(ipix1[s:e], return_inverse=True)
+        xyz1 = _lonlat_to_xyz(lon1_all[s:e], lat1_all[s:e])  # (b,3)
+        idx_b = idx_out[s:e]
+        dist_b = dist_out[s:e]
+        done = torch.zeros((b,), device=dev, dtype=torch.bool)
+
+        r = ring_search_init
+        while r <= ring_search_max and not bool(torch.all(done).item()):
+            neigh_u = hp.kth_neighbourhood(ipu_b, level, r, num_threads=num_threads)
+            neigh_t = torch.from_numpy(neigh_u[inv_b].astype(np.int64)).to(dev)  # (b, Ks)
+            Ks = neigh_t.shape[1]
+
+            pos = torch.searchsorted(cell_sorted, neigh_t)
+            pos = torch.clamp(pos, 0, K - 1)
+            hit = (cell_sorted[pos] == neigh_t)
+            cand_idx_keep = torch.where(hit, order[pos], torch.full_like(pos, -1))
+            del neigh_t, pos, hit
+
+            safe = torch.clamp(cand_idx_keep, 0, K - 1)
+            dot2 = (xyz_keep[safe] * xyz1[:, None, :]).sum(dim=-1)
+            del safe
+            dot2 = torch.clamp(dot2, -1.0, 1.0)
+            dist2 = radius * torch.acos(dot2)
+            dist2 = torch.where(cand_idx_keep >= 0, dist2, torch.full_like(dist2, float("inf")))
+            del dot2
+
+            k = min(Npt, Ks)
+            d_k, p_k = torch.topk(dist2, k=k, dim=1, largest=False, sorted=True)
+            i_k = torch.gather(cand_idx_keep, 1, p_k)
+            del dist2, cand_idx_keep, p_k
+
+            valid_enough = (d_k[:, -1] < float("inf"))
+            update = (~done) & valid_enough
+            if torch.any(update):
+                idx_b[update] = i_k[update]
+                dist_b[update] = d_k[update]
+                done[update] = True
+            r += 1
+
+        partial = ~done
+        if torch.any(partial):
+            found = torch.isfinite(d_k)
+            idx_b[partial, :k] = torch.where(found, i_k, torch.full_like(i_k, -1))[partial]
+            dist_b[partial, :k] = d_k[partial]
+
+    return cell_ids_keep, idx_out, dist_out
+
+
 class KNeighborsResampler(Generic[T_Array]):
     """GPU-friendly sparse HEALPix regridding via local Gaussian weights + CG deconvolution.
 
@@ -327,6 +579,7 @@ class KNeighborsResampler(Generic[T_Array]):
         verbose: bool = True,
         out_cell_ids: T_Array | None = None,
         group_by: bool = False,
+        batch_size: int | None = None,
     ) -> None:
         """Pre-compute sparse operators.
 
@@ -353,6 +606,12 @@ class KNeighborsResampler(Generic[T_Array]):
                 ``cell_data`` of shape ``(B, 0)``, except
                 ``NearestResampler``, whose fallback fills the requested
                 cells with their nearest sample (see its ``max_distance_m``).
+            batch_size: process the samples in slices of this size when
+                building the operators (see
+                :func:`healpix_weighted_nearest`): the temporary memory of
+                the neighbour search is then about 2 kB per sample of a
+                slice instead of 2 kB per sample. ``None`` (default)
+                processes all samples at once. The result is the same.
 
         Raises:
             RuntimeError: without ``out_cell_ids``, when no cell passes
@@ -384,6 +643,7 @@ class KNeighborsResampler(Generic[T_Array]):
         self.device = torch.device(device)
         self.threshold = float(threshold)
         self.out_cell_ids = out_cell_ids
+        self.batch_size = None if batch_size is None else int(batch_size)
         
         # --- sigma in meters (controls the Gaussian weights used for thresholding)
         sigma = float(_sigma_level_m(level, radius=radius) if sigma_m is None else sigma_m)
@@ -435,6 +695,7 @@ class KNeighborsResampler(Generic[T_Array]):
                 ring_search_max=ring_search_max,
                 num_threads=num_threads,
                 device_for_dist=self.device,
+                batch_size=self.batch_size,
             )
             
 
