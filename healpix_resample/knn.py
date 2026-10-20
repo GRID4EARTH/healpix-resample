@@ -808,60 +808,158 @@ class KNeighborsResampler(Generic[T_Array]):
         if not self.group_by:
             self.comp_matrix()
         
-    def comp_matrix(self):
-        
-        # --- weights per sample->cell link
-        # w = exp(-2*d^2/sigma^2)
-        w = torch.exp((-2.0) * (self.d_m * self.d_m) / (self.sigma_m * self.sigma_m))
+    # ------------------------------------------------------------------
+    # Sparse operators M (N,K), MT (K,N), M_cons (N,K)
+    #
+    # `comp_matrix()` only builds `M`, the operator `resample()` uses, and
+    # builds it in CSC layout: `val @ M` runs over the cells, so torch
+    # transposes a CSR `M` to CSC on every call (a full sort of the N*Npt
+    # links, ~200 B per sample of temporaries, several seconds); stored in
+    # CSC it is a plain spMM. The links come out of the neighbour search
+    # one row per sample, so the per-cell normalisation is a bincount and
+    # the CSC order is one stable argsort of the cell indices -- no
+    # (2, N*Npt) COO index tensor and no `coalesce()`. When every sample has
+    # Npt links (the dense case) the sorted arrays are reused as views and
+    # normalised in place, so the construction holds ~4 arrays of N*Npt.
+    #
+    # `MT` (used by `invert()` and the CG solvers) and `M_cons` (used by
+    # `resample(conservative=True)`) are built on first access and cached,
+    # so a caller that only interpolates never pays for them. All three are
+    # identical, entry by entry, to the former eager COO -> coalesce -> CSR
+    # construction (same links, same values; `M` differs only in layout).
+    #
+    # Subclasses customise the weights through `_link_weights()`,
+    # `_norm_col()` and `_norm_row()` rather than overriding `comp_matrix()`.
+    # ------------------------------------------------------------------
 
-        # Build (N,K) operator M and (K,N) operator MT.
-        # We avoid numpy bincount; use torch.bincount on GPU.
+    def _link_weights(self) -> torch.Tensor:
+        """Raw (unnormalised) weight of every (sample, cell) link, ``(N, Npt)``.
 
-        # idx: (N,Npt) row indices 0..N-1
-        idx = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.N, self.Npt)
+        Entries where ``self.hi < 0`` (sample found fewer than Npt cells)
+        are ignored by the callers. Gaussian ``exp(-2 d^2 / sigma^2)`` here;
+        ``BilinearResampler`` and ``BicubicResampler`` override it.
+        """
+        return torch.exp((-2.0) * (self.d_m * self.d_m) / (self.sigma_m * self.sigma_m))
 
-        # -------- M : (N,K)  (normalized per column / per healpix cell)
-        # norm_col[k] = sum_{i links to k} w[i,k]
+    def _norm_col(self, cols: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """Per-cell weight sum ``(K,)`` that `M`'s columns are divided by."""
+        return torch.bincount(cols, weights=w, minlength=self.K).to(self.dtype)
+
+    def _norm_row(self, rows: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """Per-sample weight sum ``(N,)`` that `MT`'s / `M_cons`'s rows are divided by."""
+        return torch.bincount(rows, weights=w, minlength=self.N).to(self.dtype)
+
+    def _sorted_links(self):
+        """Valid links in row-major order (by sample, cells sorted within a sample).
+
+        Returns ``(cols, w, counts, duplicated)``: cell index and raw weight
+        of every valid link (flat, ``N*Npt`` long when every sample has Npt
+        links -- then views of the sorted ``(N, Npt)`` arrays), the number
+        of valid links per sample ``(N,)`` or ``None`` when all equal Npt,
+        and whether some sample links the same cell twice (then the order is
+        not coalesced and the caller falls back to COO).
+        """
+        hi_s, perm = torch.sort(self.hi, dim=1)
+        w_s = torch.gather(self._link_weights(), 1, perm)
+        del perm
+        valid = hi_s >= 0
+        duplicated = bool(((hi_s[:, 1:] == hi_s[:, :-1]) & valid[:, 1:]).any())
+        if bool(valid.all()):
+            return hi_s.reshape(-1), w_s.reshape(-1), None, duplicated
+        counts = valid.sum(dim=1)
+        cols = hi_s[valid]
+        del hi_s
+        w = w_s[valid]
+        return cols, w, counts, duplicated
+
+    def _flat_links(self):
+        """Valid links in neighbour-search order (``hi.reshape(-1)``), as the
+        eager construction enumerated them: ``(rows, cols, w)``."""
         flat_hi = self.hi.reshape(-1)
-        flat_w = w.reshape(-1)
         valid = flat_hi >= 0
-        flat_hi_v = flat_hi[valid]
-        flat_w_v = flat_w[valid]
+        rows = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.N, self.Npt).reshape(-1)[valid]
+        return rows, flat_hi[valid], self._link_weights().reshape(-1)[valid]
 
-        norm_col = torch.bincount(flat_hi_v, weights=flat_w_v, minlength=self.K).to(self.dtype)
-        # weight divided by column sum
-        wM = flat_w_v / norm_col[flat_hi_v]
+    def _csr_from_coo(self, rows: torch.Tensor, cols: torch.Tensor, vals: torch.Tensor, shape) -> torch.Tensor:
+        return torch.sparse_coo_tensor(
+            torch.stack([rows, cols], dim=0), vals.to(self.dtype),
+            size=shape, device=self.device, dtype=self.dtype,
+        ).coalesce().to_sparse_csr()
 
-        rowsM = idx.reshape(-1)[valid]
-        colsM = flat_hi_v
-        indicesM = torch.stack([rowsM, colsM], dim=0)
-        M_coo = torch.sparse_coo_tensor(
-            indicesM,
-            wM.to(self.dtype),
-            size=(self.N, self.K),
-            device=self.device,
-            dtype=self.dtype,
-        ).coalesce()
+    def comp_matrix(self):
+        """Build ``self.M`` (N,K), sparse CSC: links weighted by `_link_weights()`,
+        normalised per cell (column). ``MT`` and ``M_cons`` are built lazily."""
+        self._MT = None
+        self._M_cons = None
+        cols, w, counts, duplicated = self._sorted_links()
+        if duplicated:
+            # A sample linking the same cell twice: `coalesce()` adds the two
+            # weights; keep that behaviour on this (unseen in practice) path.
+            del cols, w, counts
+            rows, cols, w = self._flat_links()
+            norm_col = self._norm_col(cols, w)
+            self.M = self._csr_from_coo(rows, cols, w / norm_col[cols], (self.N, self.K)).to_sparse_csc()
+            return
+        norm_col = self._norm_col(cols, w)
+        # per-cell normalisation, in place (w is ours: a gathered copy)
+        w = w.to(self.dtype)
+        w /= norm_col[cols]
+        del norm_col
+        ccol = torch.zeros(self.K + 1, dtype=torch.long, device=self.device)
+        torch.cumsum(torch.bincount(cols, minlength=self.K), 0, out=ccol[1:])
+        perm = torch.argsort(cols, stable=True)   # row-major -> column-major
+        del cols
+        vals = w[perm]
+        del w
+        if counts is None:
+            # every sample has Npt links: flat link l belongs to sample l // Npt
+            perm.floor_divide_(self.Npt)
+            rows = perm
+        else:
+            rows = torch.repeat_interleave(
+                torch.arange(self.N, device=self.device, dtype=torch.long), counts
+            )[perm]
+            del perm
+        self.M = torch.sparse_csc_tensor(
+            ccol, rows, vals, size=(self.N, self.K), device=self.device, dtype=self.dtype,
+            check_invariants=False,  # sorted and in range by construction
+        )
 
-        # -------- MT : (K,N) (normalized per row / per input sample)
-        # norm_row[i] = sum_{k links from i} w[i,k]
-        flat_idx = idx.reshape(-1)
-        flat_idx_v = flat_idx[valid]
-        norm_row = torch.bincount(flat_idx_v, weights=flat_w_v, minlength=self.N).to(self.dtype)
-        wMT = flat_w_v / norm_row[flat_idx_v]
+    def _build_MT(self) -> None:
+        # (K,N), normalised per sample (row of M): weights and sums are
+        # computed in the search order like the former eager construction.
+        rows, cols, w = self._flat_links()
+        norm_row = self._norm_row(rows, w)
+        self._MT = self._csr_from_coo(cols, rows, w / norm_row[rows], (self.K, self.N))
 
-        indicesMT = torch.stack([colsM, rowsM], dim=0)  # (hi, idx)
-        MT_coo = torch.sparse_coo_tensor(
-            indicesMT,
-            wMT.to(self.dtype),
-            size=(self.K, self.N),
-            device=self.device,
-            dtype=self.dtype,
-        ).coalesce()
+    def _build_M_cons(self) -> None:
+        # (N,K) CSR, same links as M, normalised per sample (issue #44).
+        rows, cols, w = self._flat_links()
+        norm_row = self._norm_row(rows, w)
+        self._M_cons = self._csr_from_coo(rows, cols, w / norm_row[rows], (self.N, self.K))
 
-        # Convert to CSR for faster spMM (recommended on GPU)
-        self.M  = M_coo.to_sparse_csr()
-        self.MT = MT_coo.to_sparse_csr()
+    @property
+    def MT(self) -> torch.Tensor:
+        """Sparse CSR ``(K, N)`` operator, cells -> samples (``invert()``); built on first access."""
+        if getattr(self, "_MT", None) is None:
+            self._build_MT()
+        return self._MT
+
+    @MT.setter
+    def MT(self, value: torch.Tensor) -> None:
+        self._MT = value
+
+    @property
+    def M_cons(self) -> torch.Tensor:
+        """Sparse CSR ``(N, K)`` conservative operator (``resample(conservative=True)``,
+        same links as ``M``, each sample's weights summing to 1); built on first access."""
+        if getattr(self, "_M_cons", None) is None:
+            self._build_M_cons()
+        return self._M_cons
+
+    @M_cons.setter
+    def M_cons(self, value: torch.Tensor) -> None:
+        self._M_cons = value
 
     @torch.no_grad()
     def invert(self, hval: T_Array) -> T_Array:
