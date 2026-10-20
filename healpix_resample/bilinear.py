@@ -49,77 +49,12 @@ class BilinearResampler(KNeighborsResampler):
                 raise ValueError("area must be non-negative")
         self.area = area_t
 
-    def comp_matrix(self):
-
-        # --- weights per sample->cell link
-        # w = exp(-2*d^2/sigma^2)
-        w = 1/( 1e-6 + self.d_m/self.sigma_m)
-
-        # Build (N,K) operator M and (K,N) operator MT.
-        # We avoid numpy bincount; use torch.bincount on GPU.
-
-        # idx: (N,Npt) row indices 0..N-1
-        idx = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.N, self.Npt)
-
-        # -------- M : (N,K)  (normalized per column / per healpix cell)
-        # norm_col[k] = sum_{i links to k} w[i,k]
-        flat_hi = self.hi.reshape(-1)
-        flat_w = w.reshape(-1)
-        valid = flat_hi >= 0
-        flat_hi_v = flat_hi[valid]
-        flat_w_v = flat_w[valid]
-
-        norm_col = torch.bincount(flat_hi_v, weights=flat_w_v, minlength=self.K).to(self.dtype)
-        # weight divided by column sum
-        wM = flat_w_v / norm_col[flat_hi_v]
-
-        rowsM = idx.reshape(-1)[valid]
-        colsM = flat_hi_v
-        indicesM = torch.stack([rowsM, colsM], dim=0)
-        M_coo = torch.sparse_coo_tensor(
-            indicesM,
-            wM.to(self.dtype),
-            size=(self.N, self.K),
-            device=self.device,
-            dtype=self.dtype,
-        ).coalesce()
-
-        # -------- MT : (K,N) (normalized per row / per input sample)
-        # norm_row[i] = sum_{k links from i} w[i,k]
-        flat_idx = idx.reshape(-1)
-        flat_idx_v = flat_idx[valid]
-        norm_row = torch.bincount(flat_idx_v, weights=flat_w_v, minlength=self.N).to(self.dtype)
-        wMT = flat_w_v / norm_row[flat_idx_v]
-
-        indicesMT = torch.stack([colsM, rowsM], dim=0)  # (hi, idx)
-        MT_coo = torch.sparse_coo_tensor(
-            indicesMT,
-            wMT.to(self.dtype),
-            size=(self.K, self.N),
-            device=self.device,
-            dtype=self.dtype,
-        ).coalesce()
-
-        # -------- M_cons : (N,K) conservative-mode operator (issue #44) ----
-        # Same (sample, cell) links/index layout as M (indicesM), but with
-        # the *per-sample*-normalized weights already computed for MT
-        # (wMT, which by construction sum to exactly 1 across the Npt cells
-        # any given sample links to) instead of M's per-cell-normalized
-        # weights. Used by resample(conservative=True) to redistribute each
-        # sample's own (area-weighted) contribution across its nearest
-        # cells without gain or loss -- see that method's docstring.
-        Mcons_coo = torch.sparse_coo_tensor(
-            indicesM,
-            wMT.to(self.dtype),
-            size=(self.N, self.K),
-            device=self.device,
-            dtype=self.dtype,
-        ).coalesce()
-
-        # Convert to CSR for faster spMM (recommended on GPU)
-        self.M  = M_coo.to_sparse_csr()
-        self.MT = MT_coo.to_sparse_csr()
-        self.M_cons = Mcons_coo.to_sparse_csr()
+    def _link_weights(self) -> torch.Tensor:
+        # inverse-distance weights per sample->cell link (Npt=4); `M`,
+        # `MT` and `M_cons` are assembled by `KNeighborsResampler`
+        # (`M` per-cell normalised; `MT` / `M_cons` per-sample normalised,
+        # built on first access -- see `KNeighborsResampler.comp_matrix`).
+        return 1 / (1e-6 + self.d_m / self.sigma_m)
 
     @torch.no_grad()
     def resample(self, val: T_Array, *, conservative: bool = False, **kwargs) -> ResampleResults[T_Array]:

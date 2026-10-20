@@ -13,7 +13,7 @@ Core idea:
   resampler in this package (see `planning/01_bicubic_resampler.md`).
 - Reuse the exact same normalize-and-sparsify machinery as
   `BilinearResampler`/`KNeighborsResampler.comp_matrix()` — only the weight
-  formula `w` changes.
+  formula `w` (`_link_weights()`) and the normalisation guards change.
 
 This module is designed for large N and batched values (B,N) on CUDA.
 """
@@ -49,7 +49,8 @@ class BicubicResampler(KNeighborsResampler):
     `1 < |u| < 2`, which is exactly what gives cubic convolution its
     sharpening property relative to bilinear.
 
-    Two consequences of the signed kernel, both handled in `comp_matrix()`:
+    Two consequences of the signed kernel, both handled in `_norm_col()` /
+    `_norm_row()`:
 
     - The per-cell/per-sample weight sums used to normalize `M`/`MT` can, in
       principle, be arbitrarily close to zero from cancellation between the
@@ -57,7 +58,7 @@ class BicubicResampler(KNeighborsResampler):
       individual link weight is well-behaved in magnitude. We guard the
       normalizing division with a small floor (relative to the *unsigned*
       accumulated weight for that row/column) rather than dropping or
-      re-flagging affected cells; see the inline comments in `comp_matrix()`.
+      re-flagging affected cells; see the inline comments on `_norm_col()`.
     - `invert()` (inherited from `KNeighborsResampler`, `hval @ self.MT`) can
       genuinely overshoot/ring outside the local sample-value range — this
       is expected cubic-convolution behaviour, not a bug.
@@ -115,9 +116,11 @@ class BicubicResampler(KNeighborsResampler):
                 raise ValueError("area must be non-negative")
         self.area = area_t
 
-    def comp_matrix(self):
-        # --- weights per sample->cell link: Keys' cubic convolution kernel,
-        # evaluated on the radial distance u = d/sigma (a=-0.5).
+    def _link_weights(self) -> torch.Tensor:
+        # Keys' cubic convolution kernel (a=-0.5) on the radial distance
+        # u = d/sigma. `M`, `MT` and `M_cons` are assembled by
+        # `KNeighborsResampler` (`MT` / `M_cons` on first access); the
+        # signed-kernel guards live in `_norm_col()` / `_norm_row()` below.
         a = -0.5
         u = (self.d_m / self.sigma_m).abs()
         u2 = u * u
@@ -126,96 +129,34 @@ class BicubicResampler(KNeighborsResampler):
         w_inner = (a + 2.0) * u3 - (a + 3.0) * u2 + 1.0
         w_outer = a * u3 - 5.0 * a * u2 + 8.0 * a * u - 4.0 * a
         zero = torch.zeros_like(u)
-        w = torch.where(u <= 1.0, w_inner, torch.where(u < 2.0, w_outer, zero))
+        return torch.where(u <= 1.0, w_inner, torch.where(u < 2.0, w_outer, zero))
 
-        # Build (N,K) operator M and (K,N) operator MT.
-        # We avoid numpy bincount; use torch.bincount on GPU.
+    # Unlike the nonnegative Gaussian/IDW weights used by every other
+    # resampler, Keys' kernel is signed, so a per-cell sum norm_col[k] (or a
+    # per-sample sum norm_row[i]) can land close to zero purely from
+    # cancellation between the positive central lobe and the negative outer
+    # lobe (rather than every contributing weight being individually small).
+    # Dividing by such a sum would blow up or flip sign unpredictably. Guard
+    # it with a floor set relative to the *unsigned* accumulated weight
+    # (same area-independent pattern as `norm_col_raw` in
+    # `psf.py:comp_matrix`) -- rather than an absolute epsilon, so the guard
+    # scales correctly across different sigma/threshold configs. This only
+    # clamps the handful of pathologically-cancelled rows/columns;
+    # well-conditioned cells are unaffected (float precision only matters
+    # when the sum is already tiny relative to the unsigned one). Cells this
+    # severe are inherently borderline -- `threshold` (applied upstream
+    # against the unsigned Gaussian weight in `healpix_weighted_nearest`) is
+    # the primary safeguard against weakly-supported cells in the first
+    # place; this is a secondary, purely numerical safety net.
+    def _norm_col(self, cols: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        norm_col = torch.bincount(cols, weights=w, minlength=self.K).to(self.dtype)
+        norm_col_raw = torch.bincount(cols, weights=w.abs(), minlength=self.K).to(self.dtype)
+        return _floor_signed(norm_col, norm_col_raw)
 
-        # idx: (N,Npt) row indices 0..N-1
-        idx = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.N, self.Npt)
-
-        flat_hi = self.hi.reshape(-1)
-        flat_w = w.reshape(-1)
-        valid = flat_hi >= 0
-        flat_hi_v = flat_hi[valid]
-        flat_w_v = flat_w[valid]
-
-        # -------- M : (N,K)  (normalized per column / per healpix cell)
-        # norm_col[k] = sum_{i links to k} w[i,k]
-        #
-        # Unlike the nonnegative Gaussian/IDW weights used by every other
-        # resampler, Keys' kernel is signed, so norm_col[k] can land close to
-        # zero purely from cancellation between the positive central lobe
-        # and the negative outer lobe (rather than every contributing weight
-        # being individually small). Dividing by such a norm_col would blow
-        # up or flip sign unpredictably. Guard it with a floor set relative
-        # to norm_col_raw -- the *unsigned* accumulated weight for that cell
-        # (same area-independent pattern as `norm_col_raw` in
-        # `psf.py:comp_matrix`) -- rather than an absolute epsilon, so the
-        # guard scales correctly across different sigma/threshold configs.
-        # This only clamps the handful of pathologically-cancelled
-        # rows/columns; well-conditioned cells are unaffected (float
-        # precision only matters when norm_col is already tiny relative to
-        # norm_col_raw). Cells this severe are inherently borderline —
-        # `threshold` (applied upstream against the unsigned Gaussian weight
-        # in `healpix_weighted_nearest`) is the primary safeguard against
-        # weakly-supported cells in the first place; this is a secondary,
-        # purely numerical safety net.
-        norm_col = torch.bincount(flat_hi_v, weights=flat_w_v, minlength=self.K).to(self.dtype)
-        norm_col_raw = torch.bincount(flat_hi_v, weights=flat_w_v.abs(), minlength=self.K).to(self.dtype)
-        norm_col_safe = _floor_signed(norm_col, norm_col_raw)
-        wM = flat_w_v / norm_col_safe[flat_hi_v]
-
-        rowsM = idx.reshape(-1)[valid]
-        colsM = flat_hi_v
-        indicesM = torch.stack([rowsM, colsM], dim=0)
-        M_coo = torch.sparse_coo_tensor(
-            indicesM,
-            wM.to(self.dtype),
-            size=(self.N, self.K),
-            device=self.device,
-            dtype=self.dtype,
-        ).coalesce()
-
-        # -------- MT : (K,N) (normalized per row / per input sample)
-        # norm_row[i] = sum_{k links from i} w[i,k]  (same cancellation guard)
-        flat_idx = idx.reshape(-1)
-        flat_idx_v = flat_idx[valid]
-        norm_row = torch.bincount(flat_idx_v, weights=flat_w_v, minlength=self.N).to(self.dtype)
-        norm_row_raw = torch.bincount(flat_idx_v, weights=flat_w_v.abs(), minlength=self.N).to(self.dtype)
-        norm_row_safe = _floor_signed(norm_row, norm_row_raw)
-        wMT = flat_w_v / norm_row_safe[flat_idx_v]
-
-        indicesMT = torch.stack([colsM, rowsM], dim=0)  # (hi, idx)
-        MT_coo = torch.sparse_coo_tensor(
-            indicesMT,
-            wMT.to(self.dtype),
-            size=(self.K, self.N),
-            device=self.device,
-            dtype=self.dtype,
-        ).coalesce()
-
-        # -------- M_cons : (N,K) conservative-mode operator (issue #44) ----
-        # Same (sample, cell) links/index layout as M (indicesM), but with
-        # the per-sample-normalized weights already computed for MT (wMT)
-        # instead of M's per-cell-normalized weights -- see
-        # BilinearResampler.comp_matrix() for the non-signed-kernel version
-        # of this same construction. Because Keys' kernel is signed, wMT's
-        # rows only sum to *exactly* 1 for samples whose norm_row wasn't
-        # floored by `_floor_signed` above; see resample()'s docstring for
-        # the resulting caveat on conservative=True's guarantee.
-        Mcons_coo = torch.sparse_coo_tensor(
-            indicesM,
-            wMT.to(self.dtype),
-            size=(self.N, self.K),
-            device=self.device,
-            dtype=self.dtype,
-        ).coalesce()
-
-        # Convert to CSR for faster spMM (recommended on GPU)
-        self.M  = M_coo.to_sparse_csr()
-        self.MT = MT_coo.to_sparse_csr()
-        self.M_cons = Mcons_coo.to_sparse_csr()
+    def _norm_row(self, rows: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        norm_row = torch.bincount(rows, weights=w, minlength=self.N).to(self.dtype)
+        norm_row_raw = torch.bincount(rows, weights=w.abs(), minlength=self.N).to(self.dtype)
+        return _floor_signed(norm_row, norm_row_raw)
 
     @torch.no_grad()
     def resample(self, val: T_Array, *, conservative: bool = False, **kwargs) -> ResampleResults[T_Array]:
@@ -251,7 +192,7 @@ class BicubicResampler(KNeighborsResampler):
         weights, Keys' cubic kernel is signed, so ``self.M_cons``'s
         per-sample rows only sum to *exactly* 1 for samples whose
         ``norm_row`` wasn't floored by ``_floor_signed`` in
-        ``comp_matrix()`` -- true for the vast majority of well-conditioned
+        ``_norm_row()`` -- true for the vast majority of well-conditioned
         samples. For the rare, pathologically-cancelled sample that does
         hit the floor, that sample's own contribution to the conservation
         identity above is only approximate (to the extent the floor

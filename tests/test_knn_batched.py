@@ -87,7 +87,7 @@ def test_resampler_identical_to_unbatched(dense_grid, cls):
     assert torch.equal(ref.hi, out.hi)
     assert torch.equal(ref.d_m, out.d_m)
     assert torch.equal(ref.M.values(), out.M.values())
-    assert torch.equal(ref.M.col_indices(), out.M.col_indices())
+    assert torch.equal(ref.M.row_indices(), out.M.row_indices())
     r0, r1 = ref.resample(val), out.resample(val)
     np.testing.assert_array_equal(r0.cell_ids, r1.cell_ids)
     np.testing.assert_array_equal(r0.cell_data, r1.cell_data)
