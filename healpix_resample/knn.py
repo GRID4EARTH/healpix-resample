@@ -72,7 +72,7 @@ def healpix_weighted_nearest(
         sample at once). With ``batch_size`` set, the samples are processed in
         slices of that size, so this temporary memory is bounded by the batch
         and not by N; the per-cell weight sums and the per-sample results are
-        the same (see :func:`_healpix_weighted_nearest_batched`).
+        the same (see ``_healpix_weighted_nearest_batched``).
     """
     assert longitude1.ndim == latitude1.ndim == 1
     N = int(longitude1.numel())
@@ -608,7 +608,7 @@ class KNeighborsResampler(Generic[T_Array]):
                 cells with their nearest sample (see its ``max_distance_m``).
             batch_size: process the samples in slices of this size when
                 building the operators (see
-                :func:`healpix_weighted_nearest`): the temporary memory of
+                ``healpix_weighted_nearest``): the temporary memory of
                 the neighbour search is then about 2 kB per sample of a
                 slice instead of 2 kB per sample. ``None`` (default)
                 processes all samples at once. The result is the same.
