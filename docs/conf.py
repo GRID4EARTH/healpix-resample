@@ -106,6 +106,9 @@ nitpick_ignore_regex = [
     # their own.
     (r"py:obj", r"healpix_resample\.UTMGrid\.(from_bounds|from_cell_ids|lonlat|padded|shape)"),
     (r"py:obj", r"healpix_resample\.CloughTocherResampler\.(MT|invert_valid)"),
+    # MT and M_cons are properties of KNeighborsResampler (built on first
+    # access), listed on every resampler's page without a page of their own.
+    (r"py:obj", r"healpix_resample\.(\w+\.)*\w+\.(MT|M_cons)"),
 ]
 
 # Suppress warnings from napoleon's type-preprocessing trying (and failing) to
