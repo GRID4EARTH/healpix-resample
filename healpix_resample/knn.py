@@ -28,6 +28,19 @@ def _lonlat_to_xyz(lon_rad: torch.Tensor, lat_rad: torch.Tensor) -> torch.Tensor
                         clat * torch.sin(lon_rad),
                         torch.sin(lat_rad)], dim=-1)  # (...,3)
 
+@torch.no_grad()
+def _safe_normalize(values: torch.Tensor, sums: torch.Tensor) -> torch.Tensor:
+    """``values / sums`` with 0 (instead of NaN) wherever ``sums`` is 0.
+
+    A zero sum means every weight behind it underflowed to 0 (float32 weights
+    of samples far from every kept cell, #77), so the links it normalizes
+    carry no information: a weight of 0 is the only value consistent with
+    the rest of the operator.
+    """
+    nonzero = sums != 0
+    return torch.where(nonzero, values / torch.where(nonzero, sums, torch.ones_like(sums)), torch.zeros_like(values))
+
+
 def _sigma_level_m(level: int, radius: float = 6371000.0) -> float:
     # sigma = sqrt(4*pi / (12*4**level)) * R
     return math.sqrt(4.0 * math.pi / (12.0 * (4.0 ** level))) * radius
@@ -898,12 +911,11 @@ class KNeighborsResampler(Generic[T_Array]):
             del cols, w, counts
             rows, cols, w = self._flat_links()
             norm_col = self._norm_col(cols, w)
-            self.M = self._csr_from_coo(rows, cols, w / norm_col[cols], (self.N, self.K)).to_sparse_csc()
+            self.M = self._csr_from_coo(rows, cols, _safe_normalize(w, norm_col[cols]), (self.N, self.K)).to_sparse_csc()
             return
         norm_col = self._norm_col(cols, w)
-        # per-cell normalisation, in place (w is ours: a gathered copy)
-        w = w.to(self.dtype)
-        w /= norm_col[cols]
+        # per-cell normalisation (0 where every weight of the cell underflowed)
+        w = _safe_normalize(w.to(self.dtype), norm_col[cols])
         del norm_col
         ccol = torch.zeros(self.K + 1, dtype=torch.long, device=self.device)
         torch.cumsum(torch.bincount(cols, minlength=self.K), 0, out=ccol[1:])
@@ -928,15 +940,17 @@ class KNeighborsResampler(Generic[T_Array]):
     def _build_MT(self) -> None:
         # (K,N), normalised per sample (row of M): weights and sums are
         # computed in the search order like the former eager construction.
+        # A sample whose weights all underflowed (float32, far from every
+        # kept cell: #77) has norm_row 0; its links get 0, not 0/0 = NaN.
         rows, cols, w = self._flat_links()
         norm_row = self._norm_row(rows, w)
-        self._MT = self._csr_from_coo(cols, rows, w / norm_row[rows], (self.K, self.N))
+        self._MT = self._csr_from_coo(cols, rows, _safe_normalize(w, norm_row[rows]), (self.K, self.N))
 
     def _build_M_cons(self) -> None:
         # (N,K) CSR, same links as M, normalised per sample (issue #44).
         rows, cols, w = self._flat_links()
         norm_row = self._norm_row(rows, w)
-        self._M_cons = self._csr_from_coo(rows, cols, w / norm_row[rows], (self.N, self.K))
+        self._M_cons = self._csr_from_coo(rows, cols, _safe_normalize(w, norm_row[rows]), (self.N, self.K))
 
     @property
     def MT(self) -> torch.Tensor:

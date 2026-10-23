@@ -19,20 +19,7 @@ import numpy as np
 import torch
 
 from healpix_resample.base import ResampleResults, T_Array, estimate_pixel_area
-from healpix_resample.knn import KNeighborsResampler, _sigma_level_m, _lonlat_to_xyz
-
-
-@torch.no_grad()
-def _safe_normalize(values: torch.Tensor, sums: torch.Tensor) -> torch.Tensor:
-    """``values / sums`` with 0 (instead of NaN) wherever ``sums`` is 0.
-
-    A zero sum means every weight behind it underflowed to 0 (see
-    ``PSFResampler.comp_matrix``), so the links it normalizes carry no
-    information: a weight of 0 is the only value consistent with the rest of
-    the operator.
-    """
-    nonzero = sums != 0
-    return torch.where(nonzero, values / torch.where(nonzero, sums, torch.ones_like(sums)), torch.zeros_like(values))
+from healpix_resample.knn import KNeighborsResampler, _safe_normalize, _sigma_level_m, _lonlat_to_xyz
 
 
 def conjugate_gradient(
