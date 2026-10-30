@@ -9,6 +9,7 @@ Resamplers
 
    healpix_resample.NearestResampler
    healpix_resample.BilinearResampler
+   healpix_resample.GridBilinearResampler
    healpix_resample.BicubicResampler
    healpix_resample.CloughTocherResampler
    healpix_resample.PSFResampler
