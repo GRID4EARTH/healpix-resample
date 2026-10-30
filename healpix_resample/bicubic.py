@@ -38,7 +38,7 @@ class BicubicResampler(KNeighborsResampler):
     ----------------
     Keys' cubic convolution kernel with `a = -0.5` (the common default,
     matching `PIL`/`cv2`), applied to the radial distance
-    `u = self.d_m / self.sigma_m` in place of a structured pixel offset::
+    `u = self.d_m / s` in place of a structured pixel offset::
 
         w(u) = (a+2)|u|^3 - (a+3)|u|^2 + 1        for |u| <= 1
              = a|u|^3 - 5a|u|^2 + 8a|u| - 4a       for 1 < |u| < 2
@@ -49,16 +49,26 @@ class BicubicResampler(KNeighborsResampler):
     `1 < |u| < 2`, which is exactly what gives cubic convolution its
     sharpening property relative to bilinear.
 
-    Two consequences of the signed kernel, both handled in `_norm_col()` /
-    `_norm_row()`:
+    Kernel scale
+    ------------
+    Keys' kernel is defined in units of the *input* grid spacing: its
+    negative lobe `1 < |u| < 2` must fall on the second ring of samples. The
+    scale of each link is therefore `s = max(sigma_m, h)`, where `h` is the
+    spacing of the link's sample (``sample_spacing_m`` below). When the
+    samples are finer than the cells (downsampling) `sigma_m` wins, as
+    before. When they are coarser (upsampling), scaling by the output cell
+    size alone put the nearest samples in the negative lobe: the weights of
+    a cell then cancelled, and the normalisation amplified them up to
+    thousands of times, which gave values far outside the input range.
 
-    - The per-cell/per-sample weight sums used to normalize `M`/`MT` can, in
-      principle, be arbitrarily close to zero from cancellation between the
-      positive central lobe and the negative outer lobe — even when every
-      individual link weight is well-behaved in magnitude. We guard the
-      normalizing division with a small floor (relative to the *unsigned*
-      accumulated weight for that row/column) rather than dropping or
-      re-flagging affected cells; see the inline comments on `_norm_col()`.
+    Two further consequences of the signed kernel:
+
+    - A cell whose links still cancel strongly (`sum|w| > 3 |sum w|`, e.g.
+      on scattered samples) uses only the positive lobe of its links (their
+      absolute values if it has no positive weight), so its value stays a
+      weighted average of its samples. `_norm_col()` / `_norm_row()` keep a
+      last floor on the normalising sums (relative to the *unsigned*
+      accumulated weight), see the inline comments on `_norm_col()`.
     - `invert()` (inherited from `KNeighborsResampler`, `hval @ self.MT`) can
       genuinely overshoot/ring outside the local sample-value range — this
       is expected cubic-convolution behaviour, not a bug.
@@ -81,9 +91,39 @@ class BicubicResampler(KNeighborsResampler):
         interpolation path. Defaults to ``1.0`` for every sample. See
         ``resample()``'s docstring for the conservation guarantee and its
         one caveat specific to this class's signed kernel.
+    sample_spacing_m : float, array-like or None
+        Spacing of the input samples in metres, a scalar or one value per
+        sample ``(N,)``; sets the kernel scale ``max(sigma_m, h)`` (see
+        "Kernel scale"). ``None`` (default) estimates it as the distance of
+        each sample to its nearest other sample (a ``scipy`` k-d tree on the
+        unit vectors, queried in slices of ``batch_size`` when given). On a
+        regular grid that is the grid spacing; pass it explicitly to skip
+        the estimate on very large inputs.
     """
 
-    def __init__(self, *args, Npt: int = 16, area: Optional[T_Array] = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        Npt: int = 16,
+        area: Optional[T_Array] = None,
+        sample_spacing_m=None,
+        **kwargs,
+    ):
+        lon_deg = kwargs["lon_deg"] if "lon_deg" in kwargs else args[0]
+        lat_deg = kwargs["lat_deg"] if "lat_deg" in kwargs else args[1]
+        n = int(lon_deg.numel()) if isinstance(lon_deg, torch.Tensor) else int(np.asarray(lon_deg).size)
+        if sample_spacing_m is None:
+            spacing = _nearest_sample_distance_m(
+                lon_deg, lat_deg,
+                radius=float(kwargs.get("radius", 6371000.0)),
+                batch_size=kwargs.get("batch_size"),
+            )
+        else:
+            spacing = np.broadcast_to(np.asarray(sample_spacing_m, dtype=np.float64).reshape(-1), (n,))
+            if not np.all(np.isfinite(spacing) & (spacing >= 0)):
+                raise ValueError("sample_spacing_m must be finite and non-negative")
+        # read by _link_weights() while super().__init__() builds M
+        self._sample_spacing = np.ascontiguousarray(spacing, dtype=np.float64)
         # Ensure ring_search_max >= ring_search_init(Npt) so the KNN search
         # loop in healpix_weighted_nearest actually executes.
         #
@@ -118,18 +158,44 @@ class BicubicResampler(KNeighborsResampler):
 
     def _link_weights(self) -> torch.Tensor:
         # Keys' cubic convolution kernel (a=-0.5) on the radial distance
-        # u = d/sigma. `M`, `MT` and `M_cons` are assembled by
-        # `KNeighborsResampler` (`MT` / `M_cons` on first access); the
-        # signed-kernel guards live in `_norm_col()` / `_norm_row()` below.
+        # u = d / s, s = max(sigma_m, spacing of the link's sample) (see
+        # "Kernel scale" in the class docstring). `M`, `MT` and `M_cons` are
+        # assembled by `KNeighborsResampler` (`MT` / `M_cons` on first
+        # access) from these weights.
         a = -0.5
-        u = (self.d_m / self.sigma_m).abs()
+        spacing = torch.as_tensor(self._sample_spacing, device=self.d_m.device, dtype=self.d_m.dtype)
+        scale = torch.clamp(spacing, min=self.sigma_m)[:, None]          # (N, 1)
+        u = (self.d_m / scale).abs()
         u2 = u * u
         u3 = u2 * u
 
         w_inner = (a + 2.0) * u3 - (a + 3.0) * u2 + 1.0
         w_outer = a * u3 - 5.0 * a * u2 + 8.0 * a * u - 4.0 * a
         zero = torch.zeros_like(u)
-        return torch.where(u <= 1.0, w_inner, torch.where(u < 2.0, w_outer, zero))
+        w = torch.where(u <= 1.0, w_inner, torch.where(u < 2.0, w_outer, zero))
+        return self._limit_cancellation(w)
+
+    def _limit_cancellation(self, w: torch.Tensor) -> torch.Tensor:
+        # A cell whose signed weights still cancel strongly (sum|w| larger
+        # than _MAX_CANCELLATION times |sum w|) would be amplified by the
+        # per-cell normalisation. Its links use the positive lobe only
+        # (their absolute values if the cell has no positive weight), so
+        # that cell's value is a weighted average of its samples.
+        valid = self.hi >= 0
+        cols = self.hi[valid]
+        wv = w[valid]
+        signed = torch.bincount(cols, weights=wv, minlength=self.K)
+        unsigned = torch.bincount(cols, weights=wv.abs(), minlength=self.K)
+        positive = torch.bincount(cols, weights=wv.clamp(min=0), minlength=self.K)
+        bad_cell = unsigned > _MAX_CANCELLATION * signed.abs()
+        if not bool(bad_cell.any()):
+            return w
+        bad = torch.zeros_like(valid)
+        bad[valid] = bad_cell[cols]
+        has_positive = torch.zeros_like(valid)
+        has_positive[valid] = (positive > 0)[cols]
+        fallback = torch.where(has_positive, w.clamp(min=0), w.abs())
+        return torch.where(bad, fallback, w)
 
     # Unlike the nonnegative Gaussian/IDW weights used by every other
     # resampler, Keys' kernel is signed, so a per-cell sum norm_col[k] (or a
@@ -206,6 +272,47 @@ class BicubicResampler(KNeighborsResampler):
         if not conservative:
             return super().resample(val, **kwargs)
         return _conservative_resample(self, val, self.area)
+
+
+# Largest accepted sum|w| / |sum w| of a cell's Keys weights; see
+# BicubicResampler._limit_cancellation. Well-conditioned cells on a grid stay
+# below it: for Keys' kernel, sum|w| / sum w is at most 1.25 per axis (half a
+# pixel offset), about 1.56 for the 4x4 stencil.
+_MAX_CANCELLATION = 3.0
+
+
+def _nearest_sample_distance_m(lon_deg, lat_deg, *, radius: float, batch_size=None) -> np.ndarray:
+    """Distance (m) from each sample to its nearest other sample, ``(N,)``.
+
+    Chord length between unit vectors (equal to the arc length at these
+    distances) times ``radius``, from a ``scipy`` k-d tree; the query runs in
+    slices of ``batch_size`` samples when given. Duplicated samples get the
+    distance to the nearest *distinct* sample; a single sample gets 0.
+    """
+    from scipy.spatial import cKDTree
+
+    lon = np.radians(np.asarray(lon_deg.cpu() if isinstance(lon_deg, torch.Tensor) else lon_deg, dtype=np.float64).reshape(-1))
+    lat = np.radians(np.asarray(lat_deg.cpu() if isinstance(lat_deg, torch.Tensor) else lat_deg, dtype=np.float64).reshape(-1))
+    n = lon.size
+    out = np.zeros(n, dtype=np.float64)
+    if n < 2:
+        return out
+    xyz = np.stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)], axis=1)
+    tree = cKDTree(xyz)
+    step = n if batch_size is None else max(1, int(batch_size))
+    for s in range(0, n, step):
+        q = xyz[s : s + step]
+        # k=2: the first neighbour is the sample itself (or a duplicate)
+        d, _ = tree.query(q, k=2, workers=-1)
+        nearest = d[:, 1]
+        dup = nearest == 0
+        if dup.any():
+            # duplicates: look further for the first non-zero distance
+            dd, _ = tree.query(q[dup], k=min(n, 16), workers=-1)
+            dd = np.where(dd > 0, dd, np.inf).min(axis=1)
+            nearest[dup] = np.where(np.isfinite(dd), dd, 0.0)
+        out[s : s + step] = nearest
+    return out * radius
 
 
 def _floor_signed(norm: torch.Tensor, norm_raw: torch.Tensor, rel_floor: float = 1e-3) -> torch.Tensor:
