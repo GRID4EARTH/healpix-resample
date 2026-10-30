@@ -137,13 +137,13 @@ def healpix_weighted_nearest(
     """
     Returns:
       cell_ids: (K,) HEALPix pixels (at level) kept by the weight threshold (and intersected with out_cell_ids, if given)
-      idx_k   : (N, Npt + E) indices into cell_ids (0..K-1), -1 if not enough neighbours;
-                the E extra columns hold the cells at the same distance as the
-                Npt-th one (ties, see ``_nearest_with_ties``), -1 elsewhere; E = 0
-                when no sample has a tie
+      idx_k   : (N, Npt + E) indices into cell_ids (0..K-1), -1 if not enough neighbours
       dist_k  : (N, Npt + E) distances (m) to the centres of those pixels, inf if not enough neighbours
 
     Notes:
+      - The E extra columns of idx_k / dist_k hold the cells at the same
+        distance as the Npt-th one (ties, see ``_nearest_with_ties``), -1 / inf
+        for the samples without a tie; E = 0 when no sample has a tie.
       - Geodesic distance from angle = acos(dot(xyz)); dist = R * angle.
       - healpix_geo is used for lonlat_to_healpix, kth_neighbourhood, healpix_to_lonlat.
       - The accuracy is good enough for "pixel centre matching".
