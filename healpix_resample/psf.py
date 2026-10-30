@@ -516,7 +516,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # We avoid numpy bincount; use torch.bincount on GPU.
 
         # idx: (N,Npt) row indices 0..N-1
-        idx = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.N, self.Npt)
+        idx = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.hi.shape)
 
         # -------- M : (N,K)  (normalized per column / per healpix cell)
         # norm_col[k] = sum_{i links to k} w[i,k]

@@ -129,7 +129,7 @@ class NearestResampler(KNeighborsResampler):
         flat_w  = w.reshape(-1)                                     # (N*Npt,)
         flat_n  = (
             torch.arange(self.N, device=self.device, dtype=torch.long)
-            .unsqueeze(1).expand(self.N, self.Npt).reshape(-1)
+            .unsqueeze(1).expand(self.hi.shape).reshape(-1)
         )                                                           # (N*Npt,)
         del w
 

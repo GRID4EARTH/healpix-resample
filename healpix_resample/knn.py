@@ -45,6 +45,71 @@ def _sigma_level_m(level: int, radius: float = 6371000.0) -> float:
     # sigma = sqrt(4*pi / (12*4**level)) * R
     return math.sqrt(4.0 * math.pi / (12.0 * (4.0 ** level))) * radius
     
+# Cells at the same distance as the Npt-th nearest one, up to this tolerance
+# (metres), are all linked to the sample (see `_nearest_with_ties`).
+TIE_TOLERANCE_M = 1e-6
+# at most this many tied cells beyond the Npt-th one
+MAX_TIED_EXTRA = 3
+
+
+def _arc_distance(xyz_a: torch.Tensor, xyz_b: torch.Tensor, radius: float) -> torch.Tensor:
+    """Great-circle distance from the chord. For short distances it resolves
+    about 1e-9 m, where ``radius * acos(dot)`` resolves only ~0.1 mm (the dot
+    product is then within 1e-11 of 1)."""
+    chord = torch.linalg.vector_norm(xyz_a - xyz_b, dim=-1)
+    return radius * 2.0 * torch.asin(torch.clamp(chord / 2.0, max=1.0))
+
+
+def _nearest_with_ties(dist: torch.Tensor, cand: torch.Tensor, k: int):
+    """The ``k`` nearest candidates of each row (as ``torch.topk``), plus the
+    candidates at the same distance as the ``k``-th one, within
+    ``TIE_TOLERANCE_M`` (at most ``MAX_TIED_EXTRA`` of them).
+
+    On some HEALPix rings the cell spacing is commensurate with the spacing of
+    a regular lon/lat input (e.g. 1/2700 degree cells and 1 arc-second
+    inputs at 45.65 N, level 18): whole columns of samples then have their
+    ``k``-th and ``(k+1)``-th nearest cells at exactly the same distance.
+    Keeping only one of them would leave the choice to the order of
+    ``torch.topk`` for equal values or to the last bits of the distances,
+    which differ between platforms. All tied cells are linked instead, so the
+    operator is symmetric and the same everywhere.
+
+    Returns ``(d_k, i_k, d_x, i_x)``: distances and candidate entries of the
+    ``k`` nearest, then of the tied extra ones (``inf`` / ``-1`` where none),
+    sorted by distance.
+    """
+    kk = min(k + MAX_TIED_EXTRA, dist.shape[1])
+    d_s, p_s = torch.topk(dist, k=kk, dim=1, largest=False, sorted=True)
+    i_s = torch.gather(cand, 1, p_s)
+    d_k, i_k = d_s[:, :k], i_s[:, :k]
+    d_x, i_x = d_s[:, k:], i_s[:, k:]
+    tied = torch.isfinite(d_x) & (d_x <= d_k[:, -1:] + TIE_TOLERANCE_M)
+    d_x = torch.where(tied, d_x, torch.full_like(d_x, float("inf")))
+    i_x = torch.where(tied, i_x, torch.full_like(i_x, -1))
+    return d_k, i_k, d_x, i_x
+
+
+def _append_tied(idx_out, dist_out, tied_rows, tied_idx, tied_dist):
+    """Add the tied extra links (lists of row indices and ``(n, E)`` blocks
+    from `_nearest_with_ties`) as extra columns of ``idx_out`` / ``dist_out``
+    (``-1`` / ``inf`` in the rows without ties). Without ties the arrays are
+    returned unchanged, ``(N, Npt)``."""
+    if not tied_rows:
+        return idx_out, dist_out
+    rows = torch.cat(tied_rows)
+    i_x = torch.cat(tied_idx)
+    d_x = torch.cat(tied_dist)
+    n_extra = int((i_x >= 0).sum(dim=1).max())
+    N, Npt = idx_out.shape
+    idx_new = torch.full((N, Npt + n_extra), -1, device=idx_out.device, dtype=idx_out.dtype)
+    dist_new = torch.full((N, Npt + n_extra), float("inf"), device=dist_out.device, dtype=dist_out.dtype)
+    idx_new[:, :Npt] = idx_out
+    dist_new[:, :Npt] = dist_out
+    idx_new[rows, Npt:] = i_x[:, :n_extra]
+    dist_new[rows, Npt:] = d_x[:, :n_extra]
+    return idx_new, dist_new
+
+
 @torch.no_grad()
 def healpix_weighted_nearest(
     longitude1: torch.Tensor,          # (N,) degrees
@@ -72,8 +137,11 @@ def healpix_weighted_nearest(
     """
     Returns:
       cell_ids: (K,) HEALPix pixels (at level) kept by the weight threshold (and intersected with out_cell_ids, if given)
-      idx_k   : (N, Npt) indices into cell_ids (0..K-1), -1 if not enough neighbours
-      dist_k  : (N, Npt) distances (m) to the centres of those pixels, inf if not enough neighbours
+      idx_k   : (N, Npt + E) indices into cell_ids (0..K-1), -1 if not enough neighbours;
+                the E extra columns hold the cells at the same distance as the
+                Npt-th one (ties, see ``_nearest_with_ties``), -1 elsewhere; E = 0
+                when no sample has a tie
+      dist_k  : (N, Npt + E) distances (m) to the centres of those pixels, inf if not enough neighbours
 
     Notes:
       - Geodesic distance from angle = acos(dot(xyz)); dist = R * angle.
@@ -277,6 +345,7 @@ def healpix_weighted_nearest(
 
     r = ring_search_init
     done = torch.zeros((N,), device=dev, dtype=torch.bool)
+    tied_rows, tied_idx, tied_dist = [], [], []
 
     # kth_neighbourhood runs on the CPU, but only for the rings that are needed.
     # It is computed on unique pixels to limit the number of calls.
@@ -300,15 +369,12 @@ def healpix_weighted_nearest(
         safe = torch.clamp(cand_idx_keep, 0, K - 1)
         xyz2 = xyz_keep[safe]                                  # (N,Ks,3)
 
-        dot2 = (xyz2 * xyz1[:, None, :]).sum(dim=-1)
-        dot2 = torch.clamp(dot2, -1.0, 1.0)
-        dist2 = radius * torch.acos(dot2)
+        dist2 = _arc_distance(xyz2, xyz1[:, None, :], radius)
         dist2 = torch.where(cand_idx_keep >= 0, dist2, torch.full_like(dist2, float("inf")))
 
-        # topk among these candidates
+        # the k nearest among these candidates, plus the cells tied with the k-th
         k = min(Npt, Ks)
-        d_k, p_k = torch.topk(dist2, k=k, dim=1, largest=False, sorted=True)
-        i_k = torch.gather(cand_idx_keep, 1, p_k)
+        d_k, i_k, d_x, i_x = _nearest_with_ties(dist2, cand_idx_keep, k)
 
         # points not "done" yet are accepted once they have at least Npt valid neighbours (i.e. d_k[:, Npt-1] < inf)
         valid_enough = (d_k[:, -1] < float("inf"))
@@ -318,6 +384,11 @@ def healpix_weighted_nearest(
             idx_out[update] = i_k[update]
             dist_out[update] = d_k[update]
             done[update] = True
+            rows = torch.nonzero(update & (i_x >= 0).any(dim=1)).squeeze(1)
+            if rows.numel():
+                tied_rows.append(rows)
+                tied_idx.append(i_x[rows])
+                tied_dist.append(d_x[rows])
 
         r += 1
 
@@ -330,6 +401,7 @@ def healpix_weighted_nearest(
         found = torch.isfinite(d_k)
         idx_out[partial, :k] = torch.where(found, i_k, torch.full_like(i_k, -1))[partial]
         dist_out[partial, :k] = d_k[partial]
+    idx_out, dist_out = _append_tied(idx_out, dist_out, tied_rows, tied_idx, tied_dist)
     return cell_ids_keep, idx_out, dist_out
 
 
@@ -502,6 +574,7 @@ def _healpix_weighted_nearest_batched(
 
     idx_out = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
     dist_out = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1_all.dtype)
+    tied_rows, tied_idx, tied_dist = [], [], []
 
     for s in range(0, N, batch_size):
         e = min(N, s + batch_size)
@@ -525,17 +598,13 @@ def _healpix_weighted_nearest_batched(
             del neigh_t, pos, hit
 
             safe = torch.clamp(cand_idx_keep, 0, K - 1)
-            dot2 = (xyz_keep[safe] * xyz1[:, None, :]).sum(dim=-1)
+            dist2 = _arc_distance(xyz_keep[safe], xyz1[:, None, :], radius)
             del safe
-            dot2 = torch.clamp(dot2, -1.0, 1.0)
-            dist2 = radius * torch.acos(dot2)
             dist2 = torch.where(cand_idx_keep >= 0, dist2, torch.full_like(dist2, float("inf")))
-            del dot2
 
             k = min(Npt, Ks)
-            d_k, p_k = torch.topk(dist2, k=k, dim=1, largest=False, sorted=True)
-            i_k = torch.gather(cand_idx_keep, 1, p_k)
-            del dist2, cand_idx_keep, p_k
+            d_k, i_k, d_x, i_x = _nearest_with_ties(dist2, cand_idx_keep, k)
+            del dist2, cand_idx_keep
 
             valid_enough = (d_k[:, -1] < float("inf"))
             update = (~done) & valid_enough
@@ -543,6 +612,11 @@ def _healpix_weighted_nearest_batched(
                 idx_b[update] = i_k[update]
                 dist_b[update] = d_k[update]
                 done[update] = True
+                rows = torch.nonzero(update & (i_x >= 0).any(dim=1)).squeeze(1)
+                if rows.numel():
+                    tied_rows.append(rows + s)
+                    tied_idx.append(i_x[rows])
+                    tied_dist.append(d_x[rows])
             r += 1
 
         partial = ~done
@@ -551,6 +625,7 @@ def _healpix_weighted_nearest_batched(
             idx_b[partial, :k] = torch.where(found, i_k, torch.full_like(i_k, -1))[partial]
             dist_b[partial, :k] = d_k[partial]
 
+    idx_out, dist_out = _append_tied(idx_out, dist_out, tied_rows, tied_idx, tied_dist)
     return cell_ids_keep, idx_out, dist_out
 
 
@@ -727,7 +802,7 @@ class KNeighborsResampler(Generic[T_Array]):
 
             # Store geometry outputs
             self.cell_ids = cell_ids.to(torch.long).to(self.device)   # (K,)
-            self.hi = hi.to(torch.long).to(self.device)               # (N,Npt) indices into cell_ids
+            self.hi = hi.to(torch.long).to(self.device)               # (N,Npt+E) indices into cell_ids (E: tied cells)
             if Npt>1:
                 self.d_m = d.to(self.dtype).to(self.device)               # (N,Npt) meters
 
@@ -890,7 +965,7 @@ class KNeighborsResampler(Generic[T_Array]):
         eager construction enumerated them: ``(rows, cols, w)``."""
         flat_hi = self.hi.reshape(-1)
         valid = flat_hi >= 0
-        rows = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.N, self.Npt).reshape(-1)[valid]
+        rows = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.hi.shape).reshape(-1)[valid]
         return rows, flat_hi[valid], self._link_weights().reshape(-1)[valid]
 
     def _csr_from_coo(self, rows: torch.Tensor, cols: torch.Tensor, vals: torch.Tensor, shape) -> torch.Tensor:
@@ -925,7 +1000,7 @@ class KNeighborsResampler(Generic[T_Array]):
         del w
         if counts is None:
             # every sample has Npt links: flat link l belongs to sample l // Npt
-            perm.floor_divide_(self.Npt)
+            perm.floor_divide_(self.hi.shape[1])  # links per sample
             rows = perm
         else:
             rows = torch.repeat_interleave(

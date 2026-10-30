@@ -26,7 +26,7 @@ def _eager(op, transposed=False, per_sample=False):
     """The former construction: raw weights in search order, COO, coalesce, CSR."""
     flat_hi = op.hi.reshape(-1)
     valid = flat_hi >= 0
-    rows = torch.arange(op.N, dtype=torch.long)[:, None].expand(op.N, op.Npt).reshape(-1)[valid]
+    rows = torch.arange(op.N, dtype=torch.long)[:, None].expand(op.hi.shape).reshape(-1)[valid]
     cols = flat_hi[valid]
     w = op._link_weights().reshape(-1)[valid]
     norm = op._norm_row(rows, w)[rows] if per_sample else op._norm_col(cols, w)[cols]
@@ -101,7 +101,8 @@ def test_duplicate_link_falls_back_to_coalesced_sum(grid):
     assert _same_csr(op.M, _eager(op))
     assert _same_csr(op.MT, _eager(op, transposed=True, per_sample=True))
     assert _same_csr(op.M_cons, _eager(op, per_sample=True))
-    assert int((op.M.row_indices() == 0).sum()) == op.Npt - 1  # sample 0 has one merged entry
+    # sample 0 has one merged entry
+    assert int((op.M.row_indices() == 0).sum()) == int((hi[0] >= 0).sum()) - 1
 
 
 def test_partial_rows_take_the_masked_path(grid):
