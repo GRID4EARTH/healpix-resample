@@ -62,12 +62,12 @@ class GridBilinearResampler:
 
     Parameters
     ----------
-    lon_deg, lat_deg : 1-D array, or sequences of 1-D arrays
-        Longitude and latitude axes of the input grid, in any order
+    lon_deg, lat_deg : array-like
+        1-D longitude and latitude axes of the input grid, in any order
         (ascending, descending, or crossing the antimeridian). Several grids
         ("bands" of rows with their own longitude axis, e.g. the 1" and 1.5"
-        tiles of the Copernicus DEM on both sides of 50°N) are given as
-        sequences of the same length; they must not overlap in latitude.
+        tiles of the Copernicus DEM on both sides of 50°N) are given as two
+        lists of 1-D axes of the same length; they must not overlap in latitude.
         Cells between the last row of a band and the first row of the next
         one are interpolated between those two rows, each along its own
         longitude axis.
@@ -75,7 +75,10 @@ class GridBilinearResampler:
         HEALPix level of the output.
     out_cell_ids : array-like, optional
         Output cells. Default: every cell whose centre is inside the grid.
-    nest, ellipsoid : as for the other resamplers.
+    nest : bool
+        Nested (default) or ring indexing, as for the other resamplers.
+    ellipsoid : str
+        Ellipsoid of the cell centres, as for the other resamplers.
     min_weight : float
         Cells whose valid (non-NaN, inside the grid) corner weights sum to
         less than this are NaN; the others are renormalised over their valid
