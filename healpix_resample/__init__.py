@@ -1,6 +1,7 @@
 
 from healpix_resample.bicubic import BicubicResampler
 from healpix_resample.bilinear import BilinearResampler
+from healpix_resample.grid_bilinear import GridBilinearResampler
 from healpix_resample.clough_tocher import CloughTocherResampler
 from healpix_resample.knn import KNeighborsResampler
 from healpix_resample.nearest import NearestResampler
@@ -14,4 +15,4 @@ from healpix_resample.utm import HealpixToUTM, UTMGrid, healpix_to_utm, utm_crs_
 from healpix_resample.psf_geometry import fwhm_to_scale, scale_to_fwhm, cell_size_m, recommend_npt
 
 
-__all__ = ["BicubicResampler", "BilinearResampler", "CloughTocherResampler", "KNeighborsResampler", "NearestResampler", "PSFResampler", "CellPointResampler", "GroupByResampler", "ConservativeResampler", "OverlapConservativeResampler", "subset_for_parent_cell", "BitmaskResampler", "CategoricalResampler", "CategoricalResampleResults", "fwhm_to_scale", "scale_to_fwhm", "cell_size_m", "recommend_npt", "HealpixToUTM", "UTMGrid", "healpix_to_utm", "utm_crs_from_lonlat"]
+__all__ = ["BicubicResampler", "BilinearResampler", "GridBilinearResampler", "CloughTocherResampler", "KNeighborsResampler", "NearestResampler", "PSFResampler", "CellPointResampler", "GroupByResampler", "ConservativeResampler", "OverlapConservativeResampler", "subset_for_parent_cell", "BitmaskResampler", "CategoricalResampler", "CategoricalResampleResults", "fwhm_to_scale", "scale_to_fwhm", "cell_size_m", "recommend_npt", "HealpixToUTM", "UTMGrid", "healpix_to_utm", "utm_crs_from_lonlat"]
