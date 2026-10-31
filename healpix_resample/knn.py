@@ -160,6 +160,13 @@ def healpix_weighted_nearest(
         slices of that size, so this temporary memory is bounded by the batch
         and not by N; the per-cell weight sums and the per-sample results are
         the same (see ``_healpix_weighted_nearest_batched``).
+      - ``coarse_level_delta`` (nested ids only, ``Npt > 1``): number the
+        cells from their parents that many levels coarser (``c * 4**k + j``
+        ids, centres computed once per cell) and get the neighbourhoods from
+        the face coordinates instead of a global sort and ``kth_neighbourhood``
+        per sample, in batches of ``batch_size`` samples (default 32768).
+        Same result as without it, in less time and memory. See
+        ``_coarse_weighted_nearest``.
 
     The other keyword arguments are those of ``_healpix_weighted_nearest``.
     """
@@ -199,6 +206,9 @@ def _healpix_weighted_nearest(
     device_for_dist: Optional[torch.device] = None,
     # process the samples in batches of this size (None: all at once)
     batch_size: Optional[int] = None,
+    # candidate cells from the cells this many levels coarser (None: the
+    # fine-level neighbourhoods); see `_coarse_weighted_nearest`
+    coarse_level_delta: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """See :func:`healpix_weighted_nearest`. Returns ``(cell_ids, idx_k,
     dist_k, ties)`` with ``(N, Npt)`` arrays and the tied links from
@@ -224,6 +234,32 @@ def _healpix_weighted_nearest(
 
     # --- distances: computed on the GPU when available
     dev = device_for_dist if device_for_dist is not None else longitude1.device
+
+    if coarse_level_delta is not None and Npt > 1:
+        if not nest:
+            raise ValueError("coarse_level_delta needs the nested indexing scheme (nest=True)")
+        if not 1 <= int(coarse_level_delta) <= level:
+            raise ValueError(f"coarse_level_delta must be in [1, level], got {coarse_level_delta}")
+        if batch_size is not None and int(batch_size) < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+        return _coarse_weighted_nearest(
+            longitude1,
+            latitude1,
+            level=level,
+            Npt=Npt,
+            k=int(coarse_level_delta),
+            threshold=threshold,
+            radius=radius,
+            ellipsoid=ellipsoid,
+            sigma=sigma,
+            out_cell_ids=out_cell_ids,
+            ring_weight=ring_weight,
+            ring_search_init=ring_search_init,
+            ring_search_max=ring_search_max,
+            num_threads=num_threads,
+            dev=dev,
+            batch_size=int(batch_size) if batch_size is not None else 1 << 15,
+        )
 
     if batch_size is not None and Npt > 1:
         if int(batch_size) < 1:
@@ -492,6 +528,195 @@ def _healpix_weighted_nearest(
     return cell_ids_keep, idx_out, dist_out, _flatten_ties(tied_rows, tied_idx, tied_dist)
 
 
+def _ring_window(r: int) -> tuple[np.ndarray, np.ndarray]:
+    """Offsets ``(di, dj)`` of the ``(2r+1)**2`` cells within ``r`` rings."""
+    d = np.arange(-r, r + 1)
+    di, dj = np.meshgrid(d, d, indexing="ij")
+    return di.ravel(), dj.ravel()
+
+
+def _coarse_weighted_nearest(
+    longitude1: torch.Tensor,
+    latitude1: torch.Tensor,
+    *,
+    level: int,
+    Npt: int,
+    k: int,
+    threshold: float,
+    radius: float,
+    ellipsoid: str,
+    sigma: float | None,
+    out_cell_ids,
+    ring_weight: int,
+    ring_search_init: int,
+    ring_search_max: int,
+    num_threads: int,
+    dev: torch.device,
+    batch_size: int,
+):
+    """:func:`healpix_weighted_nearest` with the cell table and the
+    neighbourhoods built from the nested structure (``coarse_level_delta``;
+    nested ids only, ``Npt > 1``, arguments after the defaults have been
+    resolved). Same result as the fine search, in less time and memory.
+
+    The fine search calls ``kth_neighbourhood`` for every sample pixel, gathers
+    the ``(N, (2*ring_weight+1)**2)`` neighbour ids and their centres, and
+    numbers the cells with a global ``np.unique`` of all those ids (a sort of
+    ``N * 49`` ids for ``Npt = 9``). Here:
+
+    - the cell table is the union of the cells ``k`` levels coarser around the
+      samples' coarse cells (``kth_neighbourhood`` at the coarse level, on
+      unique coarse cells only). Its fine cells are the descendants
+      ``c * 4**k + j``, so the table index of a fine cell is
+      ``rank(c) * 4**k + (id % 4**k)``: no global sort. The centres are
+      computed once per table cell;
+    - inside a base face, the cells within ``r`` rings of a cell are those at
+      ``(i + di, j + dj)``, ``|di|, |dj| <= r``, in the face coordinates
+      (``healpix_to_base_cell_coordinates``): their ids come from
+      ``base_cell_coordinates_to_healpix``. The pixels within
+      ``max(ring_weight, ring_search_max)`` cells of a face edge keep
+      ``kth_neighbourhood`` (whose rings may cross into other faces);
+    - everything per sample (ids, distances, weights) is computed in batches
+      of ``batch_size`` samples.
+
+    The neighbourhoods, distances, weights, threshold, rings and ties are
+    those of the fine search, so the result is the same.
+
+    Returns ``(cell_ids, idx_k, dist_k, ties)`` as `_healpix_weighted_nearest`.
+    """
+    N = int(longitude1.numel())
+    nside = 1 << level
+    nsub = 4**k
+    R = max(ring_weight, ring_search_max)
+    lon_np = longitude1.detach().cpu().numpy().astype(np.float64)
+    lat_np = latitude1.detach().cpu().numpy().astype(np.float64)
+    ipix = healpix_geo.nested.lonlat_to_healpix(
+        lon_np, lat_np, level, num_threads=num_threads, ellipsoid=ellipsoid
+    ).astype(np.uint64)
+    face, fi, fj = healpix_geo.nested.healpix_to_base_cell_coordinates(ipix, level, num_threads=num_threads)
+    fi, fj = fi.astype(np.int64), fj.astype(np.int64)
+    edge = (np.minimum(fi, fj) < R) | (np.maximum(fi, fj) >= nside - R)
+
+    # --- cell table: the coarse cells within rc coarse rings of the samples'
+    # coarse cells cover every neighbourhood (rc * 2**k >= R + 2**k: the
+    # sample may lie anywhere in its coarse cell; one more ring for the
+    # irregular neighbourhoods at the face corners)
+    coarse = (ipix >> np.uint64(2 * k)).astype(np.int64)
+    uc = np.unique(coarse)
+    rc = -(-R // 2**k) + 1
+    nb = healpix_geo.nested.kth_neighbourhood(uc.astype(np.uint64), level - k, rc, num_threads=num_threads)
+    V = np.unique(nb[nb >= 0].astype(np.int64))                  # sorted coarse cells
+    del nb, uc
+    fine = (V[:, None] * nsub + np.arange(nsub)[None, :]).reshape(-1)  # ascending
+    flon, flat = healpix_geo.nested.healpix_to_lonlat(fine.astype(np.uint64), level, ellipsoid=ellipsoid)
+    xyz_f = _lonlat_to_xyz(
+        torch.deg2rad(torch.from_numpy(np.asarray(flon)).to(dev)),
+        torch.deg2rad(torch.from_numpy(np.asarray(flat)).to(dev)),
+    )
+    del flon, flat
+    V_t = torch.from_numpy(V).to(dev)
+    xyz1 = _lonlat_to_xyz(torch.deg2rad(longitude1.to(dev)), torch.deg2rad(latitude1.to(dev)))
+
+    def table_index(ids: np.ndarray) -> torch.Tensor:
+        """Table index of fine cell ids (-1 stays -1)."""
+        ids_t = torch.from_numpy(ids.astype(np.int64)).to(dev)
+        valid = ids_t >= 0
+        c = torch.where(valid, ids_t >> (2 * k), torch.zeros_like(ids_t))
+        pos = torch.searchsorted(V_t, c)
+        pos_c = torch.clamp(pos, 0, V_t.numel() - 1)
+        if not bool(torch.all(~valid | (V_t[pos_c] == c))):
+            raise RuntimeError("coarse_level_delta: a neighbourhood cell is outside the cell table")
+        return torch.where(valid, pos_c * nsub + (ids_t & (nsub - 1)), torch.full_like(ids_t, -1))
+
+    def window(rows: np.ndarray, r: int) -> np.ndarray:
+        """Ids of the cells within r rings of the pixels of the samples
+        ``rows``, as the fine search gets them (-1: no cell)."""
+        out = np.empty((rows.size, (2 * r + 1) ** 2), dtype=np.int64)
+        e = edge[rows]
+        if (~e).any():
+            ri = rows[~e]
+            di, dj = _ring_window(r)
+            ii = (fi[ri, None] + di[None, :]).astype(np.uint32)
+            jj = (fj[ri, None] + dj[None, :]).astype(np.uint32)
+            ff = np.broadcast_to(face[ri, None], ii.shape).astype(np.uint8)
+            out[~e] = healpix_geo.nested.base_cell_coordinates_to_healpix(
+                ff.ravel(), ii.ravel(), jj.ravel(), level, num_threads=num_threads
+            ).reshape(ii.shape).astype(np.int64)
+        if e.any():
+            out[e] = healpix_geo.nested.kth_neighbourhood(
+                ipix[rows[e]], level, r, num_threads=num_threads
+            ).astype(np.int64)
+        return out
+
+    if sigma is None:
+        sigma = _sigma_level_m(level, radius=radius)
+
+    # --- threshold stage (as the fine search: the -1 entries of a
+    # neighbourhood are replaced by its last valid cell, and counted)
+    sums = torch.zeros(fine.size, device=dev, dtype=torch.float64)
+    for s in range(0, N, batch_size):
+        rows = np.arange(s, min(N, s + batch_size))
+        nbw = _fill_invalid_neighbours(window(rows, ring_weight), ipix[rows])
+        idx = table_index(nbw)
+        dot = torch.clamp((xyz_f[idx] * xyz1[s:s + rows.size, None, :]).sum(dim=-1), -1.0, 1.0)
+        dist = radius * torch.acos(dot)
+        w = torch.exp((-2.0) * (dist * dist) / (sigma * sigma))
+        sums.scatter_add_(0, idx.reshape(-1), w.reshape(-1))
+        del nbw, idx, dot, dist, w
+
+    keep = sums >= threshold
+    del sums
+    if out_cell_ids is not None:
+        out_t = out_cell_ids if isinstance(out_cell_ids, torch.Tensor) else torch.as_tensor(out_cell_ids)
+        out_np = np.unique(out_t.detach().cpu().numpy().astype(np.int64).reshape(-1))
+        keep &= torch.from_numpy(np.isin(fine, out_np)).to(dev)
+    if not torch.any(keep):
+        return (
+            torch.empty((0,), device=dev, dtype=torch.long),
+            torch.full((N, Npt), -1, device=dev, dtype=torch.long),
+            torch.full((N, Npt), float("inf"), device=dev, dtype=torch.float64),
+            None,
+        )
+    cell_ids_keep = torch.from_numpy(fine).to(dev)[keep]               # ascending
+    rank = torch.where(keep, torch.cumsum(keep.to(torch.long), 0) - 1, torch.full_like(keep, -1, dtype=torch.long))
+
+    # --- search stage: growing rings, the unserved samples only (as the fine
+    # search)
+    idx_out = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
+    dist_out = torch.full((N, Npt), float("inf"), device=dev, dtype=torch.float64)
+    tied_rows, tied_idx, tied_dist = [], [], []
+    todo = np.arange(N)
+    r = ring_search_init
+    while r <= ring_search_max and todo.size:
+        served_all = []
+        for s in range(0, todo.size, batch_size):
+            rows = todo[s:s + batch_size]
+            rows_t = torch.from_numpy(rows).to(dev)
+            ti = table_index(window(rows, r))
+            cand = torch.where(ti >= 0, rank[torch.clamp(ti, min=0)], torch.full_like(ti, -1))
+            dist = _arc_distance(xyz_f[torch.clamp(ti, min=0)], xyz1[rows_t, None, :], radius)
+            dist = torch.where(cand >= 0, dist, torch.full_like(dist, float("inf")))
+            kk = min(Npt, cand.shape[1])
+            d_k, i_k, d_x, i_x = _nearest_with_ties(dist, cand, kk)
+            ok = torch.isfinite(d_k[:, -1]) & (kk == Npt)
+            take = ok | (r == ring_search_max)
+            if torch.any(take):
+                found = torch.isfinite(d_k[take])
+                idx_out[rows_t[take], :kk] = torch.where(found, i_k[take], torch.full_like(i_k[take], -1))
+                dist_out[rows_t[take], :kk] = d_k[take]
+                t = torch.nonzero(ok & (i_x >= 0).any(dim=1)).squeeze(1)
+                if t.numel():
+                    tied_rows.append(rows_t[t])
+                    tied_idx.append(i_x[t])
+                    tied_dist.append(d_x[t])
+            served_all.append(take.cpu().numpy())
+            del ti, cand, dist, d_k, i_k, d_x, i_x
+        todo = todo[~np.concatenate(served_all)]
+        r += 1
+
+    return cell_ids_keep, idx_out, dist_out, _flatten_ties(tied_rows, tied_idx, tied_dist)
+
+
 def _fill_invalid_neighbours(neigh: np.ndarray, centre: np.ndarray) -> np.ndarray:
     """Replace the -1 entries of a ``kth_neighbourhood`` result (rows = pixels
     ``centre``) by the last valid neighbour of the row, or by the centre pixel
@@ -754,6 +979,7 @@ class KNeighborsResampler(Generic[T_Array]):
         out_cell_ids: T_Array | None = None,
         group_by: bool = False,
         batch_size: int | None = None,
+        coarse_level_delta: int | None = None,
     ) -> None:
         """Pre-compute sparse operators.
 
@@ -786,6 +1012,11 @@ class KNeighborsResampler(Generic[T_Array]):
                 the neighbour search is then about 2 kB per sample of a
                 slice instead of 2 kB per sample. ``None`` (default)
                 processes all samples at once. The result is the same.
+            coarse_level_delta: number the cells of the neighbour search
+                from their parents this many levels coarser (nested
+                only; see ``healpix_weighted_nearest``): the same cells,
+                neighbours and ties as the fine-level search, in less time
+                and memory. ``None`` (default): the fine-level search.
 
         Raises:
             RuntimeError: without ``out_cell_ids``, when no cell passes
@@ -877,6 +1108,7 @@ class KNeighborsResampler(Generic[T_Array]):
                 num_threads=num_threads,
                 device_for_dist=self.device,
                 batch_size=self.batch_size,
+                coarse_level_delta=coarse_level_delta,
                 return_ties=True,
             )
             
