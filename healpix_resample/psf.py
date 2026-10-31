@@ -527,6 +527,14 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         flat_hi_v = flat_hi[valid]
         flat_w_v = flat_w[valid]
         flat_w_raw_v = flat_w_raw[valid]
+        flat_idx_v = idx.reshape(-1)[valid]
+        # the links to the cells tied with a sample's Npt-th nearest one
+        if self.tie_rows.numel():
+            w_raw_tie = torch.exp((-2.0) * (self.tie_d * self.tie_d) / (self.sigma_m * self.sigma_m))
+            flat_hi_v = torch.cat([flat_hi_v, self.tie_hi])
+            flat_w_v = torch.cat([flat_w_v, w_raw_tie * self.area[self.tie_rows]])
+            flat_w_raw_v = torch.cat([flat_w_raw_v, w_raw_tie])
+            flat_idx_v = torch.cat([flat_idx_v, self.tie_rows])
 
         norm_col = torch.bincount(flat_hi_v, weights=flat_w_v, minlength=self.K).to(self.dtype)
         # norm_col_raw: the *area-independent* accumulated weight per cell --
@@ -545,7 +553,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # Those links carry no information anyway: give them a weight of 0.
         wM = _safe_normalize(flat_w_v, norm_col[flat_hi_v])
 
-        rowsM = idx.reshape(-1)[valid]
+        rowsM = flat_idx_v
         colsM = flat_hi_v
         indicesM = torch.stack([rowsM, colsM], dim=0)
         M_coo = torch.sparse_coo_tensor(
@@ -560,8 +568,6 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
         # -------- MT : (K,N) (normalized per row / per input sample)
         # norm_row[i] = sum_{k links from i} w[i,k]
-        flat_idx = idx.reshape(-1)
-        flat_idx_v = flat_idx[valid]
         norm_row = torch.bincount(flat_idx_v, weights=flat_w_v, minlength=self.N).to(self.dtype)
         norm_row_raw = torch.bincount(flat_idx_v, weights=flat_w_raw_v, minlength=self.N).to(self.dtype)
         wMT = _safe_normalize(flat_w_v, norm_row[flat_idx_v])
