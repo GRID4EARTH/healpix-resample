@@ -160,13 +160,13 @@ def healpix_weighted_nearest(
         slices of that size, so this temporary memory is bounded by the batch
         and not by N; the per-cell weight sums and the per-sample results are
         the same (see ``_healpix_weighted_nearest_batched``).
-      - ``coarse_level_delta`` (nested ids only): take the candidate cells
-        from the cells that many levels coarser instead of enumerating a
-        fine-level neighbourhood per sample (``c * 4**k + j`` ids, centres
-        computed once per coarse cell, pairs in batches of ``batch_size``,
-        default 32768). Same kept cells and neighbours where the fine search
-        finds ``Npt`` kept cells in its first ring; the other samples go
-        through the fine rings as without it. See ``_coarse_weighted_nearest``.
+      - ``coarse_level_delta`` (nested ids only, ``Npt > 1``): number the
+        cells from their parents that many levels coarser (``c * 4**k + j``
+        ids, centres computed once per cell) and get the neighbourhoods from
+        the face coordinates instead of a global sort and ``kth_neighbourhood``
+        per sample, in batches of ``batch_size`` samples (default 32768).
+        Same result as without it, in less time and memory. See
+        ``_coarse_weighted_nearest``.
 
     The other keyword arguments are those of ``_healpix_weighted_nearest``.
     """
@@ -1012,13 +1012,11 @@ class KNeighborsResampler(Generic[T_Array]):
                 the neighbour search is then about 2 kB per sample of a
                 slice instead of 2 kB per sample. ``None`` (default)
                 processes all samples at once. The result is the same.
-            coarse_level_delta: take the candidate cells of the neighbour
-                search from the cells this many levels coarser (nested
-                only; see ``healpix_weighted_nearest``): less time and
-                memory than the fine-level neighbourhoods, the same cells
-                and neighbours wherever the samples find ``Npt`` kept cells
-                in the first search ring. ``None`` (default): the fine-level
-                search.
+            coarse_level_delta: number the cells of the neighbour search
+                from their parents this many levels coarser (nested
+                only; see ``healpix_weighted_nearest``): the same cells,
+                neighbours and ties as the fine-level search, in less time
+                and memory. ``None`` (default): the fine-level search.
 
         Raises:
             RuntimeError: without ``out_cell_ids``, when no cell passes
