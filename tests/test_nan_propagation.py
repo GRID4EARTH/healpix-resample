@@ -57,7 +57,8 @@ RESAMPLER_FACTORIES = {
 @pytest.mark.parametrize("name", list(RESAMPLER_FACTORIES.keys()))
 def test_no_orphaned_cells(grid, name):
     """Every retained cell must be reachable by at least one sample's own
-    KNN link (`self.hi`) -- the root cause fixed in `KNeighborsResampler.__init__`."""
+    KNN link (`self.hi`, or a link to a cell tied with the Npt-th nearest one,
+    `self.tie_hi`) -- the root cause fixed in `KNeighborsResampler.__init__`."""
     lon, lat = grid
     op = RESAMPLER_FACTORIES[name](lon, lat)
 
@@ -65,6 +66,7 @@ def test_no_orphaned_cells(grid, name):
     valid_hi = op.hi[op.hi >= 0]
     if valid_hi.numel() > 0:
         reachable[valid_hi] = True
+    reachable[op.tie_hi] = True
 
     n_orphaned = int((~reachable).sum())
     assert n_orphaned == 0, f"{name}: {n_orphaned}/{op.K} cells have zero real links"

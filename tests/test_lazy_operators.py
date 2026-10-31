@@ -23,12 +23,16 @@ def grid():
 
 
 def _eager(op, transposed=False, per_sample=False):
-    """The former construction: raw weights in search order, COO, coalesce, CSR."""
+    """The former construction: raw weights in search order, COO, coalesce, CSR
+    (plus the links to tied cells, kept apart from `hi`)."""
     flat_hi = op.hi.reshape(-1)
     valid = flat_hi >= 0
     rows = torch.arange(op.N, dtype=torch.long)[:, None].expand(op.N, op.Npt).reshape(-1)[valid]
     cols = flat_hi[valid]
     w = op._link_weights().reshape(-1)[valid]
+    rows = torch.cat([rows, op.tie_rows])
+    cols = torch.cat([cols, op.tie_hi])
+    w = torch.cat([w, op._tie_weights()])
     norm = op._norm_row(rows, w)[rows] if per_sample else op._norm_col(cols, w)[cols]
     idx = torch.stack([cols, rows] if transposed else [rows, cols], dim=0)
     size = (op.K, op.N) if transposed else (op.N, op.K)
@@ -101,7 +105,8 @@ def test_duplicate_link_falls_back_to_coalesced_sum(grid):
     assert _same_csr(op.M, _eager(op))
     assert _same_csr(op.MT, _eager(op, transposed=True, per_sample=True))
     assert _same_csr(op.M_cons, _eager(op, per_sample=True))
-    assert int((op.M.row_indices() == 0).sum()) == op.Npt - 1  # sample 0 has one merged entry
+    # sample 0 has one merged entry
+    assert int((op.M.row_indices() == 0).sum()) == op.Npt - 1 + int((op.tie_rows == 0).sum())
 
 
 def test_partial_rows_take_the_masked_path(grid):
@@ -114,7 +119,7 @@ def test_partial_rows_take_the_masked_path(grid):
     op.hi = hi
     op.comp_matrix()
     assert _same_csr(op.M, _eager(op))
-    assert int(op.M.row_indices().numel()) == int((hi >= 0).sum())
+    assert int(op.M.row_indices().numel()) == int((hi >= 0).sum()) + op.tie_rows.numel()
     assert _same_csr(op.M_cons, _eager(op, per_sample=True))
     val = np.sin(grid[0] * 40)
     out = op.resample(val).cell_data
