@@ -39,43 +39,98 @@ def _ulp_noise(a, seed):
     return a + rng.integers(-2, 3, a.size) * np.spacing(a)
 
 
-def _resample(lat, lon, val, **kw):
+def _resample(lat, lon, val, cls=hr.BilinearResampler, **kw):
     lat2, lon2 = np.meshgrid(lat, lon, indexing="ij")
-    op = hr.BilinearResampler(lon_deg=lon2.ravel(), lat_deg=lat2.ravel(), **{**KW, **kw})
+    op = cls(lon_deg=lon2.ravel(), lat_deg=lat2.ravel(), **{**KW, **kw})
     out = op.resample(val)
     return op, np.asarray(out.cell_ids), np.asarray(out.cell_data)
+
+
+def _eager_M(op):
+    """M from all the links (``hi`` and the tied ones) through COO + coalesce."""
+    valid = op.hi >= 0
+    rows = torch.arange(op.N)[:, None].expand(op.N, op.Npt)[valid]
+    w, w_tie = op._all_link_weights()
+    rows = torch.cat([rows, op.tie_rows])
+    cols = torch.cat([op.hi[valid], op.tie_hi])
+    w = torch.cat([w[valid], w_tie])
+    w = w / op._norm_col(cols, w)[cols]
+    return torch.sparse_coo_tensor(torch.stack([rows, cols]), w.to(op.dtype), size=(op.N, op.K)).coalesce()
 
 
 def test_tied_cells_are_all_linked(tie_grid):
     lat, lon, val = tie_grid
     op, _, _ = _resample(lat, lon, val)
-    assert op.Npt == 4
-    assert op.hi.shape[1] > 4, "the grid should have samples with a tie"
-    tied = op.hi[:, 4] >= 0
+    # the tied links are kept apart: `hi` / `d_m` stay (N, Npt)
+    assert op.hi.shape == (op.N, 4) and op.d_m.shape == (op.N, 4)
+    assert op.tie_rows.numel() > 0, "the grid should have samples with a tie"
     # the extra cell is at the distance of the 4th one
-    assert torch.allclose(op.d_m[tied, 4], op.d_m[tied, 3], rtol=0, atol=1e-6)
-    # samples without a tie keep exactly 4 links
-    assert bool((op.hi[~tied, 4:] < 0).all())
+    torch.testing.assert_close(op.tie_d, op.d_m[op.tie_rows, 3], rtol=0, atol=1e-6)
+    # and it is linked in M
+    M = op.M.to_dense()
+    assert bool((M[op.tie_rows, op.tie_hi] > 0).all())
+
+
+@pytest.mark.parametrize("cls", [hr.BilinearResampler, hr.BicubicResampler], ids=["bilinear", "bicubic"])
+def test_operator_with_ties_equals_coalesced_build(tie_grid, cls):
+    """The tied links inserted into the CSC arrays of M give the same matrix as
+    one COO build of all the links, with sorted rows in every column."""
+    lat, lon, val = tie_grid
+    op, _, _ = _resample(lat, lon, val, cls=cls)
+    assert op.tie_rows.numel() > 0
+    actual = op.M.to_sparse_coo().coalesce()
+    expected = _eager_M(op)
+    torch.testing.assert_close(actual.indices(), expected.indices(), rtol=0, atol=0)
+    torch.testing.assert_close(actual.values(), expected.values())
+    rows, ccol = op.M.row_indices(), op.M.ccol_indices()
+    for a, b in zip(ccol[:-1].tolist(), ccol[1:].tolist()):
+        assert bool((rows[a + 1 : b] > rows[a : b - 1]).all())
 
 
 @pytest.mark.parametrize("batch_size", [None, 1000])
-def test_result_does_not_depend_on_the_last_bits(tie_grid, batch_size):
+@pytest.mark.parametrize("seed", [0, 1, 2])
+@pytest.mark.parametrize(
+    ("cls", "atol"),
+    [
+        pytest.param(hr.BilinearResampler, 1e-6, id="bilinear"),
+        pytest.param(hr.BicubicResampler, 1e-6, id="bicubic"),
+        pytest.param(hr.NearestResampler, 1e-6, id="nearest"),
+        # the conjugate gradient stops at its own tolerance: millimetres here
+        # (on main the PSF result moved by 2.4 m on this grid)
+        pytest.param(hr.PSFResampler, 1e-2, id="psf"),
+    ],
+)
+def test_result_does_not_depend_on_the_last_bits(tie_grid, batch_size, seed, cls, atol):
     lat, lon, val = tie_grid
-    _, c0, v0 = _resample(lat, lon, val, batch_size=batch_size)
-    for seed in range(3):
-        _, c1, v1 = _resample(_ulp_noise(lat, seed), _ulp_noise(lon, seed + 10), val, batch_size=batch_size)
-        np.testing.assert_array_equal(c1, c0)
-        # the weights move with the last bits of the distances (~1e-9 m), not the links
-        np.testing.assert_allclose(v1, v0, rtol=0, atol=1e-6)
+    _, c0, v0 = _resample(lat, lon, val, cls=cls, batch_size=batch_size)
+    _, c1, v1 = _resample(_ulp_noise(lat, seed), _ulp_noise(lon, seed + 10), val, cls=cls, batch_size=batch_size)
+    np.testing.assert_array_equal(c1, c0)
+    # the weights move with the last bits of the distances (~1e-9 m), not the links
+    np.testing.assert_allclose(v1, v0, rtol=0, atol=atol)
 
 
 def test_batched_search_identical_with_ties(tie_grid):
     lat, lon, _ = tie_grid
     lat2, lon2 = np.meshgrid(lat, lon, indexing="ij")
     args = (torch.as_tensor(lon2.ravel()), torch.as_tensor(lat2.ravel()), 18, 4)
-    kw = {"threshold": 0.05, "ring_weight": 2, "ring_search_max": 2}
-    ref = healpix_weighted_nearest(*args, **kw)
-    out = healpix_weighted_nearest(*args, batch_size=777, **kw)
-    assert ref[1].shape[1] > 4
-    for a, b in zip(ref, out):
+    kw = {"threshold": 0.05, "ring_weight": 2, "ring_search_max": 2, "return_ties": True}
+    *ref, ref_ties = healpix_weighted_nearest(*args, **kw)
+    *out, out_ties = healpix_weighted_nearest(*args, batch_size=777, **kw)
+    assert ref_ties[0].numel() > 0
+    for a, b in zip([*ref, *ref_ties], [*out, *out_ties]):
         assert torch.equal(a, b)
+
+
+def test_search_without_return_ties_has_extra_columns(tie_grid):
+    """Called directly, the search returns the tied cells as extra columns."""
+    lat, lon, _ = tie_grid
+    lat2, lon2 = np.meshgrid(lat, lon, indexing="ij")
+    args = (torch.as_tensor(lon2.ravel()), torch.as_tensor(lat2.ravel()), 18, 4)
+    kw = {"threshold": 0.05, "ring_weight": 2}
+    _, idx, dist = healpix_weighted_nearest(*args, **kw)
+    _, idx4, dist4, (rows, tie_idx, tie_dist) = healpix_weighted_nearest(*args, return_ties=True, **kw)
+    assert idx.shape[1] > 4
+    torch.testing.assert_close(idx[:, :4], idx4, rtol=0, atol=0)
+    torch.testing.assert_close(idx[rows, 4], tie_idx, rtol=0, atol=0)
+    torch.testing.assert_close(dist[rows, 4], tie_dist, rtol=0, atol=0)
+    assert bool((idx[:, 4:].ge(0).sum(dim=1) == torch.bincount(rows, minlength=idx.shape[0])).all())

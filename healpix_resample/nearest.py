@@ -129,7 +129,7 @@ class NearestResampler(KNeighborsResampler):
         flat_w  = w.reshape(-1)                                     # (N*Npt,)
         flat_n  = (
             torch.arange(self.N, device=self.device, dtype=torch.long)
-            .unsqueeze(1).expand(self.hi.shape).reshape(-1)
+            .unsqueeze(1).expand(self.N, self.Npt).reshape(-1)
         )                                                           # (N*Npt,)
         del w
 
@@ -139,6 +139,13 @@ class NearestResampler(KNeighborsResampler):
         flat_w_v  = flat_w[valid]
         flat_n_v  = flat_n[valid]
         del flat_hi, flat_w, flat_n
+
+        # the links to the cells tied with a sample's Npt-th nearest one
+        if self.tie_rows.numel():
+            flat_hi_v = torch.cat([flat_hi_v, self.tie_hi])
+            flat_w_v  = torch.cat([flat_w_v, torch.exp(
+                (-2.0) * (self.tie_d * self.tie_d) / (self.sigma_m * self.sigma_m))])
+            flat_n_v  = torch.cat([flat_n_v, self.tie_rows])
 
         # ── Max weight per cell ────────────────────────────────────────────
         max_w = torch.full(

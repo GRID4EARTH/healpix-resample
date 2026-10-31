@@ -101,9 +101,8 @@ def test_default_npt_and_ring_search_max(small_grid):
     # ring_search_max should have been auto-corrected (see nearest.py's
     # identical logic for Npt >= 16) so that, on this reasonably dense
     # synthetic grid, every sample finds all 16 neighbours (no -1 sentinels
-    # left over from an under-sized ring search). Columns beyond Npt hold
-    # the cells tied with the Npt-th one (-1 for the samples without a tie).
-    assert bool((op.hi[:, : op.Npt] >= 0).all())
+    # left over from an under-sized ring search).
+    assert bool((op.hi >= 0).all())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

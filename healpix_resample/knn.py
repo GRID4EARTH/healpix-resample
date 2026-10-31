@@ -89,29 +89,95 @@ def _nearest_with_ties(dist: torch.Tensor, cand: torch.Tensor, k: int):
     return d_k, i_k, d_x, i_x
 
 
-def _append_tied(idx_out, dist_out, tied_rows, tied_idx, tied_dist):
-    """Add the tied extra links (lists of row indices and ``(n, E)`` blocks
-    from `_nearest_with_ties`) as extra columns of ``idx_out`` / ``dist_out``
-    (``-1`` / ``inf`` in the rows without ties). Without ties the arrays are
-    returned unchanged, ``(N, Npt)``."""
+def _flatten_ties(tied_rows, tied_idx, tied_dist):
+    """The tied extra links collected by the searches (lists of row indices and
+    ``(n, E)`` blocks from `_nearest_with_ties`) as flat ``(rows, idx, dist)``
+    tensors, sorted by sample (by distance within a sample); ``None`` without
+    ties. Blocks of different widths (different rings) are fine."""
     if not tied_rows:
+        return None
+    rows = torch.cat([r[:, None].expand_as(i)[i >= 0] for r, i in zip(tied_rows, tied_idx)])
+    idx = torch.cat([i[i >= 0] for i in tied_idx])
+    dist = torch.cat([d[i >= 0] for i, d in zip(tied_idx, tied_dist)])
+    order = torch.argsort(rows, stable=True)
+    return rows[order], idx[order], dist[order]
+
+
+def _append_tied(idx_out, dist_out, ties):
+    """Add the tied links (from `_flatten_ties`) as extra columns of ``idx_out``
+    / ``dist_out`` (``-1`` / ``inf`` in the rows without ties). Without ties
+    the arrays are returned unchanged, ``(N, Npt)``."""
+    if ties is None:
         return idx_out, dist_out
-    rows = torch.cat(tied_rows)
-    i_x = torch.cat(tied_idx)
-    d_x = torch.cat(tied_dist)
-    n_extra = int((i_x >= 0).sum(dim=1).max())
+    rows, idx, dist = ties
+    # position of each tied link among the links of its sample
+    rank = torch.arange(rows.numel(), device=rows.device) - torch.searchsorted(rows, rows)
+    n_extra = int(rank.max()) + 1
     N, Npt = idx_out.shape
     idx_new = torch.full((N, Npt + n_extra), -1, device=idx_out.device, dtype=idx_out.dtype)
     dist_new = torch.full((N, Npt + n_extra), float("inf"), device=dist_out.device, dtype=dist_out.dtype)
     idx_new[:, :Npt] = idx_out
     dist_new[:, :Npt] = dist_out
-    idx_new[rows, Npt:] = i_x[:, :n_extra]
-    dist_new[rows, Npt:] = d_x[:, :n_extra]
+    idx_new[rows, Npt + rank] = idx
+    dist_new[rows, Npt + rank] = dist
     return idx_new, dist_new
 
 
 @torch.no_grad()
 def healpix_weighted_nearest(
+    longitude1: torch.Tensor,
+    latitude1: torch.Tensor,
+    level: int,
+    Npt: int,
+    *,
+    return_ties: bool = False,
+    **kwargs,
+):
+    """
+    Returns:
+      cell_ids: (K,) HEALPix pixels (at level) kept by the weight threshold (and intersected with out_cell_ids, if given)
+      idx_k   : (N, Npt + E) indices into cell_ids (0..K-1), -1 if not enough neighbours
+      dist_k  : (N, Npt + E) distances (m) to the centres of those pixels, inf if not enough neighbours
+
+    With ``return_ties=True``: ``(cell_ids, idx_k, dist_k, ties)``, where
+    ``idx_k`` / ``dist_k`` are ``(N, Npt)`` and ``ties = (rows, idx, dist)``
+    holds the tied links as flat 1-D tensors (empty without ties). This is
+    what ``KNeighborsResampler`` uses: the ties are a few per million samples,
+    so they do not widen the ``(N, Npt)`` arrays.
+
+    Notes:
+      - The E extra columns of idx_k / dist_k hold the cells at the same
+        distance as the Npt-th one (ties, see ``_nearest_with_ties``), -1 / inf
+        for the samples without a tie; E = 0 when no sample has a tie.
+      - Distances: chord-based great-circle distance in the Npt-nearest
+        search (``_arc_distance``), ``R * acos(dot)`` in the threshold stage.
+      - healpix_geo is used for lonlat_to_healpix, kth_neighbourhood, healpix_to_lonlat.
+      - The accuracy is good enough for "pixel centre matching".
+      - ``batch_size``: the weight accumulation and the Npt-nearest search
+        allocate about ``(2*ring+1)**2 * 100`` bytes per sample (the
+        neighbourhood ids, centre coordinates, distances and weights of every
+        sample at once). With ``batch_size`` set, the samples are processed in
+        slices of that size, so this temporary memory is bounded by the batch
+        and not by N; the per-cell weight sums and the per-sample results are
+        the same (see ``_healpix_weighted_nearest_batched``).
+
+    The other keyword arguments are those of ``_healpix_weighted_nearest``.
+    """
+    cell_ids, idx_k, dist_k, ties = _healpix_weighted_nearest(longitude1, latitude1, level, Npt, **kwargs)
+    if not return_ties:
+        idx_k, dist_k = _append_tied(idx_k, dist_k, ties)
+        return cell_ids, idx_k, dist_k
+    if ties is None:
+        dev = cell_ids.device
+        ties = (
+            torch.empty((0,), device=dev, dtype=torch.long),
+            torch.empty((0,), device=dev, dtype=torch.long),
+            torch.empty((0,), device=dev, dtype=torch.float64),
+        )
+    return cell_ids, idx_k, dist_k, ties
+
+
+def _healpix_weighted_nearest(
     longitude1: torch.Tensor,          # (N,) degrees
     latitude1: torch.Tensor,           # (N,) degrees
     level: int,
@@ -134,27 +200,9 @@ def healpix_weighted_nearest(
     # process the samples in batches of this size (None: all at once)
     batch_size: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Returns:
-      cell_ids: (K,) HEALPix pixels (at level) kept by the weight threshold (and intersected with out_cell_ids, if given)
-      idx_k   : (N, Npt + E) indices into cell_ids (0..K-1), -1 if not enough neighbours
-      dist_k  : (N, Npt + E) distances (m) to the centres of those pixels, inf if not enough neighbours
-
-    Notes:
-      - The E extra columns of idx_k / dist_k hold the cells at the same
-        distance as the Npt-th one (ties, see ``_nearest_with_ties``), -1 / inf
-        for the samples without a tie; E = 0 when no sample has a tie.
-      - Geodesic distance from angle = acos(dot(xyz)); dist = R * angle.
-      - healpix_geo is used for lonlat_to_healpix, kth_neighbourhood, healpix_to_lonlat.
-      - The accuracy is good enough for "pixel centre matching".
-      - ``batch_size``: the weight accumulation and the Npt-nearest search
-        allocate about ``(2*ring+1)**2 * 100`` bytes per sample (the
-        neighbourhood ids, centre coordinates, distances and weights of every
-        sample at once). With ``batch_size`` set, the samples are processed in
-        slices of that size, so this temporary memory is bounded by the batch
-        and not by N; the per-cell weight sums and the per-sample results are
-        the same (see ``_healpix_weighted_nearest_batched``).
-    """
+    """See :func:`healpix_weighted_nearest`. Returns ``(cell_ids, idx_k,
+    dist_k, ties)`` with ``(N, Npt)`` arrays and the tied links from
+    `_flatten_ties` (``None`` without ties)."""
     assert longitude1.ndim == latitude1.ndim == 1
     N = int(longitude1.numel())
     assert Npt >= 1
@@ -207,13 +255,13 @@ def healpix_weighted_nearest(
         ipix1 = healpix_geo.nested.lonlat_to_healpix(lon_np, lat_np, level, num_threads=num_threads,ellipsoid=ellipsoid)
         ipix_u, inv = np.unique(ipix1.astype(np.uint64), return_inverse=True)
         if Npt==1:
-            return torch.from_numpy(ipix_u.astype(np.int64)).to(dev), torch.from_numpy(inv.astype(np.int64)).to(dev),0            
+            return torch.from_numpy(ipix_u.astype(np.int64)).to(dev), torch.from_numpy(inv.astype(np.int64)).to(dev), 0, None
         neigh_u_w = healpix_geo.nested.kth_neighbourhood(ipix_u, level, ring_weight, num_threads=num_threads)
     else:
         ipix1 = healpix_geo.ring.lonlat_to_healpix(lon_np, lat_np, level, num_threads=num_threads,ellipsoid=ellipsoid)
         ipix_u, inv = np.unique(ipix1.astype(np.uint64), return_inverse=True)
         if Npt==1:
-            return torch.from_numpy(ipix_u.astype(np.int64)).to(dev), torch.from_numpy(inv.astype(np.int64)).to(dev),0
+            return torch.from_numpy(ipix_u.astype(np.int64)).to(dev), torch.from_numpy(inv.astype(np.int64)).to(dev), 0, None
         neigh_u_w = healpix_geo.ring.kth_neighbourhood(ipix_u, level, ring_weight, num_threads=num_threads)
 
     # healpix_geo.kth_neighbourhood may return -1 for "invalid" neighbours.
@@ -293,7 +341,7 @@ def healpix_weighted_nearest(
         cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
         idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
         dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1.dtype)
-        return cell_ids, idx_k, dist_k
+        return cell_ids, idx_k, dist_k, None
 
     # kept cell_ids (HEALPix ids)
     cell_ids_np = neigh_w_uniq  # np.uint64, size Kuniq
@@ -314,7 +362,7 @@ def healpix_weighted_nearest(
             cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
             idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
             dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1.dtype)
-            return cell_ids, idx_k, dist_k
+            return cell_ids, idx_k, dist_k, None
 
         out_sorted = torch.unique(out_t)
         out_sorted, _ = torch.sort(out_sorted)
@@ -328,7 +376,7 @@ def healpix_weighted_nearest(
             cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
             idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
             dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1.dtype)
-            return cell_ids, idx_k, dist_k
+            return cell_ids, idx_k, dist_k, None
 
         keep_idx = keep_idx[in_mask]
         cell_ids_keep = cell_ids_keep[in_mask]
@@ -401,8 +449,7 @@ def healpix_weighted_nearest(
         found = torch.isfinite(d_k)
         idx_out[partial, :k] = torch.where(found, i_k, torch.full_like(i_k, -1))[partial]
         dist_out[partial, :k] = d_k[partial]
-    idx_out, dist_out = _append_tied(idx_out, dist_out, tied_rows, tied_idx, tied_dist)
-    return cell_ids_keep, idx_out, dist_out
+    return cell_ids_keep, idx_out, dist_out, _flatten_ties(tied_rows, tied_idx, tied_dist)
 
 
 def _fill_invalid_neighbours(neigh: np.ndarray, centre: np.ndarray) -> np.ndarray:
@@ -536,7 +583,7 @@ def _healpix_weighted_nearest_batched(
         cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
         idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
         dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1_all.dtype)
-        return cell_ids, idx_k, dist_k
+        return cell_ids, idx_k, dist_k, None
 
     keep_idx = torch.nonzero(keep, as_tuple=False).squeeze(1)
     cell_ids_keep = torch.from_numpy(neigh_w_uniq.astype(np.int64)).to(dev)[keep_idx]
@@ -551,7 +598,7 @@ def _healpix_weighted_nearest_batched(
             cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
             idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
             dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1_all.dtype)
-            return cell_ids, idx_k, dist_k
+            return cell_ids, idx_k, dist_k, None
 
         out_sorted = torch.unique(out_t)
         out_sorted, _ = torch.sort(out_sorted)
@@ -562,7 +609,7 @@ def _healpix_weighted_nearest_batched(
             cell_ids = torch.empty((0,), device=dev, dtype=torch.long)
             idx_k = torch.full((N, Npt), -1, device=dev, dtype=torch.long)
             dist_k = torch.full((N, Npt), float("inf"), device=dev, dtype=lon1_all.dtype)
-            return cell_ids, idx_k, dist_k
+            return cell_ids, idx_k, dist_k, None
         keep_idx = keep_idx[in_mask]
         cell_ids_keep = cell_ids_keep[in_mask]
         xyz_keep = xyz_c[keep_idx]
@@ -625,8 +672,7 @@ def _healpix_weighted_nearest_batched(
             idx_b[partial, :k] = torch.where(found, i_k, torch.full_like(i_k, -1))[partial]
             dist_b[partial, :k] = d_k[partial]
 
-    idx_out, dist_out = _append_tied(idx_out, dist_out, tied_rows, tied_idx, tied_dist)
-    return cell_ids_keep, idx_out, dist_out
+    return cell_ids_keep, idx_out, dist_out, _flatten_ties(tied_rows, tied_idx, tied_dist)
 
 
 class KNeighborsResampler(Generic[T_Array]):
@@ -741,6 +787,13 @@ class KNeighborsResampler(Generic[T_Array]):
         # --- move lon/lat to torch on target device (but healpix_geo needs CPU numpy internally)
         lon_t = lon_deg if isinstance(lon_deg, torch.Tensor) else torch.as_tensor(lon_deg)
         lat_t = lat_deg if isinstance(lat_deg, torch.Tensor) else torch.as_tensor(lat_deg)
+
+        # Links to the cells tied with a sample's Npt-th nearest one (see
+        # `_nearest_with_ties`): flat sample / cell index / distance, a few per
+        # million samples, kept apart so that `hi` / `d_m` stay (N, Npt).
+        self.tie_rows = torch.empty((0,), dtype=torch.long, device=self.device)
+        self.tie_hi = torch.empty((0,), dtype=torch.long, device=self.device)
+        self.tie_d = torch.empty((0,), dtype=self.dtype, device=self.device)
                 
         if self.group_by:    
             if self.nest:
@@ -767,7 +820,7 @@ class KNeighborsResampler(Generic[T_Array]):
                 self.xyz_samples = _lonlat_to_xyz(torch.deg2rad(lon_t),torch.deg2rad(lat_t))  # (N,3)
             
             # --- get kept healpix cells + per-sample nearest indices + distances
-            cell_ids, hi, d = healpix_weighted_nearest(
+            cell_ids, hi, d, ties = healpix_weighted_nearest(
                 lon_t,
                 lat_t,
                 level=self.level,
@@ -784,6 +837,7 @@ class KNeighborsResampler(Generic[T_Array]):
                 num_threads=num_threads,
                 device_for_dist=self.device,
                 batch_size=self.batch_size,
+                return_ties=True,
             )
             
 
@@ -802,9 +856,12 @@ class KNeighborsResampler(Generic[T_Array]):
 
             # Store geometry outputs
             self.cell_ids = cell_ids.to(torch.long).to(self.device)   # (K,)
-            self.hi = hi.to(torch.long).to(self.device)               # (N,Npt+E) indices into cell_ids (E: tied cells)
+            self.hi = hi.to(torch.long).to(self.device)               # (N,Npt) indices into cell_ids
             if Npt>1:
                 self.d_m = d.to(self.dtype).to(self.device)               # (N,Npt) meters
+                self.tie_rows = ties[0].to(torch.long).to(self.device)
+                self.tie_hi = ties[1].to(torch.long).to(self.device)
+                self.tie_d = ties[2].to(self.dtype).to(self.device)
 
                 # --- prune retained cells with zero actual sample links -----
                 # `healpix_weighted_nearest` decides which cells to *retain*
@@ -842,6 +899,7 @@ class KNeighborsResampler(Generic[T_Array]):
                     valid_hi = self.hi[self.hi >= 0]
                     if valid_hi.numel() > 0:
                         reachable[valid_hi] = True
+                    reachable[self.tie_hi] = True
 
                     n_orphaned = int((~reachable).sum())
                     if n_orphaned > 0:
@@ -862,6 +920,7 @@ class KNeighborsResampler(Generic[T_Array]):
                         self.hi = torch.where(
                             self.hi >= 0, new_index[self.hi.clamp(min=0)], self.hi
                         )
+                        self.tie_hi = new_index[self.tie_hi]
 
                     # Cells passed the threshold, but no sample reached any of
                     # them: an empty operator would be returned silently (#74).
@@ -916,39 +975,73 @@ class KNeighborsResampler(Generic[T_Array]):
     # identical, entry by entry, to the former eager COO -> coalesce -> CSR
     # construction (same links, same values; `M` differs only in layout).
     #
-    # Subclasses customise the weights through `_link_weights()`,
-    # `_norm_col()` and `_norm_row()` rather than overriding `comp_matrix()`.
+    # The links to cells tied with a sample's Npt-th nearest one (`tie_rows`,
+    # `tie_hi`, `tie_d`: a few per million samples) are kept out of the
+    # (N, Npt) arrays, so ties do not change this path: they are added to the
+    # per-cell sums and inserted into the CSC arrays at the end
+    # (`_insert_tied_links`), and appended to the COO links of `MT` / `M_cons`.
+    #
+    # Subclasses customise the weights through `_distance_weights()` (or
+    # `_all_link_weights()`), `_norm_col()` and `_norm_row()` rather than
+    # overriding `comp_matrix()`.
     # ------------------------------------------------------------------
 
+    def _distance_weights(self, d: torch.Tensor, rows: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Raw (unnormalised) weight of links at distances ``d`` (metres).
+
+        ``d`` is either ``self.d_m`` (``(N, Npt)``, ``rows`` None) or the
+        distances of the tied links (``rows``: their samples). Gaussian
+        ``exp(-2 d^2 / sigma^2)`` here; ``BilinearResampler`` and
+        ``BicubicResampler`` override it.
+        """
+        return torch.exp((-2.0) * (d * d) / (self.sigma_m * self.sigma_m))
+
     def _link_weights(self) -> torch.Tensor:
-        """Raw (unnormalised) weight of every (sample, cell) link, ``(N, Npt)``.
+        """Raw (unnormalised) weight of every (sample, cell) link of ``hi``, ``(N, Npt)``.
 
         Entries where ``self.hi < 0`` (sample found fewer than Npt cells)
-        are ignored by the callers. Gaussian ``exp(-2 d^2 / sigma^2)`` here;
-        ``BilinearResampler`` and ``BicubicResampler`` override it.
+        are ignored by the callers.
         """
-        return torch.exp((-2.0) * (self.d_m * self.d_m) / (self.sigma_m * self.sigma_m))
+        return self._distance_weights(self.d_m)
 
-    def _norm_col(self, cols: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-        """Per-cell weight sum ``(K,)`` that `M`'s columns are divided by."""
-        return torch.bincount(cols, weights=w, minlength=self.K).to(self.dtype)
+    def _tie_weights(self) -> torch.Tensor:
+        """Raw weight of every tied link (``tie_rows`` / ``tie_hi``), ``(T,)``."""
+        return self._distance_weights(self.tie_d, self.tie_rows)
+
+    def _all_link_weights(self):
+        """``(_link_weights(), _tie_weights())``; a subclass whose weights depend
+        on all the links of a cell (``BicubicResampler``) overrides this."""
+        return self._link_weights(), self._tie_weights()
+
+    def _norm_col(self, cols: torch.Tensor, w: torch.Tensor,
+                  tie_cols: Optional[torch.Tensor] = None, tie_w: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Per-cell weight sum ``(K,)`` that `M`'s columns are divided by
+        (over the links ``cols`` / ``w`` and, if given, the tied links)."""
+        norm = torch.bincount(cols, weights=w, minlength=self.K)
+        if tie_cols is not None and tie_cols.numel():
+            # added after the other links of the cell, as one pass over all
+            # the links would (same rounding as the eager construction)
+            norm.index_add_(0, tie_cols, tie_w.to(norm.dtype))
+        return norm.to(self.dtype)
 
     def _norm_row(self, rows: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         """Per-sample weight sum ``(N,)`` that `MT`'s / `M_cons`'s rows are divided by."""
         return torch.bincount(rows, weights=w, minlength=self.N).to(self.dtype)
 
-    def _sorted_links(self):
-        """Valid links in row-major order (by sample, cells sorted within a sample).
+    def _sorted_links(self, w: Optional[torch.Tensor] = None):
+        """Valid links of ``hi`` in row-major order (by sample, cells sorted
+        within a sample); ``w``: their raw weights (default `_link_weights()`).
 
         Returns ``(cols, w, counts, duplicated)``: cell index and raw weight
         of every valid link (flat, ``N*Npt`` long when every sample has Npt
         links -- then views of the sorted ``(N, Npt)`` arrays), the number
         of valid links per sample ``(N,)`` or ``None`` when all equal Npt,
         and whether some sample links the same cell twice (then the order is
-        not coalesced and the caller falls back to COO).
+        not coalesced and the caller falls back to COO). The tied links are
+        not included (see `_insert_tied_links`).
         """
         hi_s, perm = torch.sort(self.hi, dim=1)
-        w_s = torch.gather(self._link_weights(), 1, perm)
+        w_s = torch.gather(self._link_weights() if w is None else w, 1, perm)
         del perm
         valid = hi_s >= 0
         duplicated = bool(((hi_s[:, 1:] == hi_s[:, :-1]) & valid[:, 1:]).any())
@@ -962,11 +1055,18 @@ class KNeighborsResampler(Generic[T_Array]):
 
     def _flat_links(self):
         """Valid links in neighbour-search order (``hi.reshape(-1)``), as the
-        eager construction enumerated them: ``(rows, cols, w)``."""
+        eager construction enumerated them, then the tied links:
+        ``(rows, cols, w)``."""
+        w, w_tie = self._all_link_weights()
         flat_hi = self.hi.reshape(-1)
         valid = flat_hi >= 0
         rows = torch.arange(self.N, device=self.device, dtype=torch.long)[:, None].expand(self.hi.shape).reshape(-1)[valid]
-        return rows, flat_hi[valid], self._link_weights().reshape(-1)[valid]
+        cols, w = flat_hi[valid], w.reshape(-1)[valid]
+        if self.tie_rows.numel():
+            rows = torch.cat([rows, self.tie_rows])
+            cols = torch.cat([cols, self.tie_hi])
+            w = torch.cat([w, w_tie])
+        return rows, cols, w
 
     def _csr_from_coo(self, rows: torch.Tensor, cols: torch.Tensor, vals: torch.Tensor, shape) -> torch.Tensor:
         return torch.sparse_coo_tensor(
@@ -974,12 +1074,52 @@ class KNeighborsResampler(Generic[T_Array]):
             size=shape, device=self.device, dtype=self.dtype,
         ).coalesce().to_sparse_csr()
 
+    def _insert_tied_links(self, ccol, rows, vals, tie_vals):
+        """Insert the tied links (``tie_rows`` / ``tie_hi``, values ``tie_vals``)
+        into the CSC arrays ``(ccol, rows, vals)`` built from ``hi``, keeping
+        the rows of every column sorted. Only the few columns with a tied
+        link are searched; the large arrays are copied once."""
+        T = int(self.tie_rows.numel())
+        if T == 0:
+            return ccol, rows, vals
+        N = self.N
+        key = self.tie_hi * N + self.tie_rows            # (column, row) order
+        order = torch.argsort(key)
+        t_cols, t_rows, t_vals, key = self.tie_hi[order], self.tie_rows[order], tie_vals[order], key[order]
+        # the entries of the columns that hold a tied link, as (column, row) keys
+        cols_u = torch.unique(t_cols)
+        lens = ccol[cols_u + 1] - ccol[cols_u]
+        seg_start = torch.repeat_interleave(ccol[cols_u], lens)
+        seg_offset = torch.arange(int(lens.sum()), device=rows.device) - torch.repeat_interleave(
+            torch.cumsum(lens, 0) - lens, lens)
+        seg_keys = torch.repeat_interleave(cols_u, lens) * N + rows[seg_start + seg_offset]
+        # position of each tied link in the old arrays: start of its column plus
+        # the entries of that column with a smaller row
+        before = torch.searchsorted(seg_keys, key) - torch.searchsorted(seg_keys, t_cols * N)
+        pos = ccol[t_cols] + before
+        new_idx = pos + torch.arange(T, device=rows.device)   # ties are in (column, row) order
+        L = rows.numel()
+        keep = torch.ones(L + T, dtype=torch.bool, device=rows.device)
+        keep[new_idx] = False
+        new_rows = torch.empty(L + T, dtype=rows.dtype, device=rows.device)
+        new_vals = torch.empty(L + T, dtype=vals.dtype, device=vals.device)
+        new_rows[keep] = rows
+        new_vals[keep] = vals
+        new_rows[new_idx] = t_rows
+        new_vals[new_idx] = t_vals.to(vals.dtype)
+        new_ccol = ccol.clone()
+        new_ccol[1:] += torch.cumsum(torch.bincount(t_cols, minlength=self.K), 0)
+        return new_ccol, new_rows, new_vals
+
     def comp_matrix(self):
-        """Build ``self.M`` (N,K), sparse CSC: links weighted by `_link_weights()`,
-        normalised per cell (column). ``MT`` and ``M_cons`` are built lazily."""
+        """Build ``self.M`` (N,K), sparse CSC: links weighted by `_link_weights()`
+        (and the tied links by `_tie_weights()`), normalised per cell (column).
+        ``MT`` and ``M_cons`` are built lazily."""
         self._MT = None
         self._M_cons = None
-        cols, w, counts, duplicated = self._sorted_links()
+        w_links, w_tie = self._all_link_weights()
+        cols, w, counts, duplicated = self._sorted_links(w_links)
+        del w_links
         if duplicated:
             # A sample linking the same cell twice: `coalesce()` adds the two
             # weights; keep that behaviour on this (unseen in practice) path.
@@ -988,9 +1128,10 @@ class KNeighborsResampler(Generic[T_Array]):
             norm_col = self._norm_col(cols, w)
             self.M = self._csr_from_coo(rows, cols, _safe_normalize(w, norm_col[cols]), (self.N, self.K)).to_sparse_csc()
             return
-        norm_col = self._norm_col(cols, w)
+        norm_col = self._norm_col(cols, w, self.tie_hi, w_tie)
         # per-cell normalisation (0 where every weight of the cell underflowed)
         w = _safe_normalize(w.to(self.dtype), norm_col[cols])
+        tie_vals = _safe_normalize(w_tie.to(self.dtype), norm_col[self.tie_hi])
         del norm_col
         ccol = torch.zeros(self.K + 1, dtype=torch.long, device=self.device)
         torch.cumsum(torch.bincount(cols, minlength=self.K), 0, out=ccol[1:])
@@ -1000,13 +1141,14 @@ class KNeighborsResampler(Generic[T_Array]):
         del w
         if counts is None:
             # every sample has Npt links: flat link l belongs to sample l // Npt
-            perm.floor_divide_(self.hi.shape[1])  # links per sample
+            perm.floor_divide_(self.hi.shape[1])
             rows = perm
         else:
             rows = torch.repeat_interleave(
                 torch.arange(self.N, device=self.device, dtype=torch.long), counts
             )[perm]
             del perm
+        ccol, rows, vals = self._insert_tied_links(ccol, rows, vals, tie_vals)
         self.M = torch.sparse_csc_tensor(
             ccol, rows, vals, size=(self.N, self.K), device=self.device, dtype=self.dtype,
             check_invariants=False,  # sorted and in range by construction

@@ -156,46 +156,67 @@ class BicubicResampler(KNeighborsResampler):
                 raise ValueError("area must be non-negative")
         self.area = area_t
 
-    def _link_weights(self) -> torch.Tensor:
+    def _distance_weights(self, d: torch.Tensor, rows: Optional[torch.Tensor] = None) -> torch.Tensor:
         # Keys' cubic convolution kernel (a=-0.5) on the radial distance
         # u = d / s, s = max(sigma_m, spacing of the link's sample) (see
-        # "Kernel scale" in the class docstring). `M`, `MT` and `M_cons` are
-        # assembled by `KNeighborsResampler` (`MT` / `M_cons` on first
-        # access) from these weights.
+        # "Kernel scale" in the class docstring), before the cancellation
+        # guard of `_all_link_weights`.
         a = -0.5
-        spacing = torch.as_tensor(self._sample_spacing, device=self.d_m.device, dtype=self.d_m.dtype)
-        scale = torch.clamp(spacing, min=self.sigma_m)[:, None]          # (N, 1)
-        u = (self.d_m / scale).abs()
+        spacing = torch.as_tensor(self._sample_spacing, device=d.device, dtype=d.dtype)
+        scale = torch.clamp(spacing, min=self.sigma_m)
+        scale = scale[:, None] if rows is None else scale[rows]          # (N, 1) or (T,)
+        u = (d / scale).abs()
         u2 = u * u
         u3 = u2 * u
 
         w_inner = (a + 2.0) * u3 - (a + 3.0) * u2 + 1.0
         w_outer = a * u3 - 5.0 * a * u2 + 8.0 * a * u - 4.0 * a
         zero = torch.zeros_like(u)
-        w = torch.where(u <= 1.0, w_inner, torch.where(u < 2.0, w_outer, zero))
-        return self._limit_cancellation(w)
+        return torch.where(u <= 1.0, w_inner, torch.where(u < 2.0, w_outer, zero))
 
-    def _limit_cancellation(self, w: torch.Tensor) -> torch.Tensor:
+    def _link_weights(self) -> torch.Tensor:
+        return self._all_link_weights()[0]
+
+    def _tie_weights(self) -> torch.Tensor:
+        return self._all_link_weights()[1]
+
+    def _all_link_weights(self):
+        # `M`, `MT` and `M_cons` are assembled by `KNeighborsResampler`
+        # (`MT` / `M_cons` on first access) from these weights.
+        return self._limit_cancellation(
+            self._distance_weights(self.d_m), self._distance_weights(self.tie_d, self.tie_rows)
+        )
+
+    def _limit_cancellation(self, w: torch.Tensor, w_tie: torch.Tensor):
         # A cell whose signed weights still cancel strongly (sum|w| larger
         # than _MAX_CANCELLATION times |sum w|) would be amplified by the
         # per-cell normalisation. Its links use the positive lobe only
         # (their absolute values if the cell has no positive weight), so
-        # that cell's value is a weighted average of its samples.
+        # that cell's value is a weighted average of its samples. The tied
+        # links (`tie_hi`, weights `w_tie`) count like the others.
         valid = self.hi >= 0
         cols = self.hi[valid]
         wv = w[valid]
         signed = torch.bincount(cols, weights=wv, minlength=self.K)
         unsigned = torch.bincount(cols, weights=wv.abs(), minlength=self.K)
         positive = torch.bincount(cols, weights=wv.clamp(min=0), minlength=self.K)
+        if self.tie_hi.numel():
+            signed.index_add_(0, self.tie_hi, w_tie.to(signed.dtype))
+            unsigned.index_add_(0, self.tie_hi, w_tie.abs().to(unsigned.dtype))
+            positive.index_add_(0, self.tie_hi, w_tie.clamp(min=0).to(positive.dtype))
         bad_cell = unsigned > _MAX_CANCELLATION * signed.abs()
         if not bool(bad_cell.any()):
-            return w
+            return w, w_tie
+        has_positive_cell = positive > 0
         bad = torch.zeros_like(valid)
         bad[valid] = bad_cell[cols]
         has_positive = torch.zeros_like(valid)
-        has_positive[valid] = (positive > 0)[cols]
+        has_positive[valid] = has_positive_cell[cols]
         fallback = torch.where(has_positive, w.clamp(min=0), w.abs())
-        return torch.where(bad, fallback, w)
+        w = torch.where(bad, fallback, w)
+        fallback_tie = torch.where(has_positive_cell[self.tie_hi], w_tie.clamp(min=0), w_tie.abs())
+        w_tie = torch.where(bad_cell[self.tie_hi], fallback_tie, w_tie)
+        return w, w_tie
 
     # Unlike the nonnegative Gaussian/IDW weights used by every other
     # resampler, Keys' kernel is signed, so a per-cell sum norm_col[k] (or a
@@ -214,10 +235,14 @@ class BicubicResampler(KNeighborsResampler):
     # against the unsigned Gaussian weight in `healpix_weighted_nearest`) is
     # the primary safeguard against weakly-supported cells in the first
     # place; this is a secondary, purely numerical safety net.
-    def _norm_col(self, cols: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-        norm_col = torch.bincount(cols, weights=w, minlength=self.K).to(self.dtype)
-        norm_col_raw = torch.bincount(cols, weights=w.abs(), minlength=self.K).to(self.dtype)
-        return _floor_signed(norm_col, norm_col_raw)
+    def _norm_col(self, cols: torch.Tensor, w: torch.Tensor,
+                  tie_cols: Optional[torch.Tensor] = None, tie_w: Optional[torch.Tensor] = None) -> torch.Tensor:
+        norm_col = torch.bincount(cols, weights=w, minlength=self.K)
+        norm_col_raw = torch.bincount(cols, weights=w.abs(), minlength=self.K)
+        if tie_cols is not None and tie_cols.numel():
+            norm_col.index_add_(0, tie_cols, tie_w.to(norm_col.dtype))
+            norm_col_raw.index_add_(0, tie_cols, tie_w.abs().to(norm_col_raw.dtype))
+        return _floor_signed(norm_col.to(self.dtype), norm_col_raw.to(self.dtype))
 
     def _norm_row(self, rows: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         norm_row = torch.bincount(rows, weights=w, minlength=self.N).to(self.dtype)

@@ -85,8 +85,8 @@ def test_no_sample_reaching_any_kept_cell_raises(sparse_grid, monkeypatch):
     real = knn.healpix_weighted_nearest
 
     def no_links(*args, **kwargs):
-        cell_ids, hi, d = real(*args, **kwargs)
-        return cell_ids, torch.full_like(hi, -1), torch.full_like(d, float("inf"))
+        cell_ids, hi, d, ties = real(*args, **kwargs)
+        return cell_ids, torch.full_like(hi, -1), torch.full_like(d, float("inf")), tuple(t[:0] for t in ties)
 
     monkeypatch.setattr(knn, "healpix_weighted_nearest", no_links)
     with pytest.raises(RuntimeError, match="no sample found any of them"):
