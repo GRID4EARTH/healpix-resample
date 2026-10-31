@@ -61,6 +61,7 @@ def test_antimeridian_window():
     r = GridBilinearResampler(lon, lat, LEVEL, out_cell_ids=cells)
     out = r.resample(f(lat[:, None], lon[None]).ravel()).cell_data
     assert np.isfinite(out).all()
+    # f is not linear: the bilinear error of sin(500 lon) over a 0.01 deg step
     np.testing.assert_allclose(out, f(clat, clon), atol=2e-3)
 
 
@@ -88,6 +89,7 @@ def test_bands_with_different_longitude_steps():
     out = r.resample(val).cell_data
     gap = (clat > latS[-1]) & (clat < latN[0])
     assert gap.any() and np.isfinite(out).all()
+    # exact up to the float64 rounding of values ~6e4
     np.testing.assert_allclose(out, f(clat, clon), atol=1e-6)
 
 
@@ -118,3 +120,59 @@ def test_default_cells_cover_the_grid():
     assert np.all(out.cell_data[inner] == 1.0)
     outer = (clat < 45.0) | (clat > 45.2)
     assert outer.any() and np.isnan(out.cell_data[outer]).all()
+
+
+def test_bands_far_apart_leave_the_gap_nan():
+    # two bands 0.9 deg apart: the cells between them are missing data, not a row step
+    lon = np.arange(6.0, 6.2, 0.01)
+    south, north = np.arange(45.0, 45.1, 0.01), np.arange(46.0, 46.1, 0.01)
+    f = lambda la, lo: 1000 * la + 300 * lo
+    val = np.r_[f(south[:, None], lon[None]).ravel(), f(north[:, None], lon[None]).ravel()]
+    cells = healpix_geo.nested.lonlat_to_healpix(
+        np.full(3, 6.1), np.array([45.05, 45.5, 46.05]), LEVEL, ellipsoid="WGS84"
+    ).astype(np.int64)
+    out = GridBilinearResampler([lon, lon], [south, north], LEVEL, out_cell_ids=cells).resample(val).cell_data
+    assert np.isfinite(out[[0, 2]]).all()
+    assert np.isnan(out[1])
+
+
+@pytest.mark.parametrize("min_weight", [0.5, 1.0])
+def test_float32_keeps_fully_valid_cells(min_weight):
+    # in float32 the 4 corner weights sum to 1 only up to ~1e-7
+    cells, clon, clat = _cells(6.8, 45.8)
+    lat, lon = _axes(clon, clat)
+    val = np.add.outer(lat, lon)
+    kw = {"out_cell_ids": cells, "min_weight": min_weight}
+    expected = GridBilinearResampler(lon, lat, LEVEL, **kw).resample(val.ravel()).cell_data
+    actual = GridBilinearResampler(lon, lat, LEVEL, dtype=torch.float32, **kw).resample(val.ravel()).cell_data
+    assert np.isfinite(expected).all()
+    np.testing.assert_array_equal(np.isnan(actual), np.isnan(expected))
+
+
+@pytest.mark.parametrize("level", [17, 20])
+def test_default_cells_at_levels_finer_than_the_grid(level):
+    lat = np.linspace(45.0, 45.02, 73)  # 1 arc-second
+    lon = np.linspace(6.0, 6.02, 73)
+    r = GridBilinearResampler(lon, lat, level)
+    out = r.resample(np.ones(lat.size * lon.size))
+    # the cells with a centre inside the grid, from their parent at level 12
+    parent = healpix_geo.nested.lonlat_to_healpix(np.array([6.01]), np.array([45.01]), 12, ellipsoid="WGS84")
+    sub = healpix_geo.nested.zoom_to(parent, 12, level)[0]
+    clon, clat = healpix_geo.nested.healpix_to_lonlat(sub, level, ellipsoid="WGS84")
+    inside = sub[(clat > 45.0) & (clat < 45.02) & (clon > 6.0) & (clon < 6.02)].astype(np.int64)
+    assert np.isin(inside, out.cell_ids).all()
+    assert np.all(out.cell_data[np.isin(out.cell_ids, inside)] == 1.0)
+
+
+@pytest.mark.parametrize("lon", [np.arange(-180.0, 180.0001, 0.5), np.arange(0.0, 360.0001, 0.5)], ids=["-180-180", "0-360"])
+def test_global_axis_listing_both_ends(lon):
+    cells, clon, clat = _cells(179.999, 10.0, area_level=9)
+    lat = np.arange(9.0, 11.0, 0.1)
+    val = np.broadcast_to(lat[:, None] * 2.0, (lat.size, lon.size)).ravel()
+    out = GridBilinearResampler(lon, lat, LEVEL, out_cell_ids=cells).resample(val).cell_data
+    np.testing.assert_allclose(out, clat * 2.0, atol=1e-9)
+
+
+def test_unknown_keyword_is_an_error():
+    with pytest.raises(TypeError):
+        GridBilinearResampler(np.arange(3.0), np.arange(3.0), 8, min_wieght=1.0)

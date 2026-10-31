@@ -45,8 +45,16 @@ def _lon_axis(lon: np.ndarray):
     ws = wrapped[order]
     if lon.size == 1:
         return ws, order, False
-    if np.any(np.diff(ws) <= 0):
-        raise ValueError("longitude axis has duplicate values")
+    dup = np.flatnonzero(np.diff(ws) <= 0)
+    if dup.size:
+        # a global axis that lists both ends (-180 and 180, or 0 and 360):
+        # the two columns are the same meridian, the later one is not used
+        a, b = order[dup], order[dup + 1]
+        if dup.size > 1 or not np.isclose(abs(lon[a[0]] - lon[b[0]]), 360.0):
+            raise ValueError("longitude axis has duplicate values")
+        keep = np.ones(ws.size, dtype=bool)
+        keep[dup + (b > a)] = False
+        order, ws = order[keep], ws[keep]
     gaps = np.diff(ws, append=ws[0] + 360.0)
     g = int(np.argmax(gaps))
     order = np.roll(order, -(g + 1))
@@ -70,11 +78,16 @@ class GridBilinearResampler:
         lists of 1-D axes of the same length; they must not overlap in latitude.
         Cells between the last row of a band and the first row of the next
         one are interpolated between those two rows, each along its own
-        longitude axis.
+        longitude axis, when the gap is not wider than 1.5 row steps of the
+        two bands; cells in a wider gap are NaN.
     level : int
-        HEALPix level of the output.
+        HEALPix level of the output. Meant for levels whose cells are not
+        larger than the grid step: each cell takes the value at its centre, so
+        at coarser levels the result aliases (use block means of a finer
+        level, or a conservative resampler, there).
     out_cell_ids : array-like, optional
-        Output cells. Default: every cell whose centre is inside the grid.
+        Output cells. Default: the cells around the grid nodes, which include
+        every cell whose centre is inside the grid (the others are NaN).
     nest : bool
         Nested (default) or ring indexing, as for the other resamplers.
     ellipsoid : str
@@ -103,7 +116,6 @@ class GridBilinearResampler:
         device: str = "cpu",
         dtype: torch.dtype = torch.float64,
         verbose: bool = False,
-        **unused,
     ):
         lons, lats = _as_bands(lon_deg), _as_bands(lat_deg)
         if len(lons) != len(lats):
@@ -121,10 +133,12 @@ class GridBilinearResampler:
         self.N = int(offsets[-1])
         row_lat, row_band, row_index = [], [], []
         self._lon = []
+        band_step = np.zeros(len(lats))  # largest row step of each band
         for b, (la, lo) in enumerate(zip(lats, lons)):
             order = np.argsort(la, kind="stable")
             if np.any(np.diff(la[order]) <= 0):
                 raise ValueError("latitude axis has duplicate values")
+            band_step[b] = np.diff(la[order]).max(initial=0.0)
             row_lat.append(la[order])
             row_band.append(np.full(la.size, b))
             row_index.append(order)
@@ -139,7 +153,7 @@ class GridBilinearResampler:
 
         # --- output cells and their centres
         if out_cell_ids is None:
-            cell_ids = self._cells_in_grid(hp, lats, lons)
+            cell_ids = self._cells_in_grid(lats, lons, band_step)
         else:
             cell_ids = np.asarray(
                 out_cell_ids.cpu().numpy() if isinstance(out_cell_ids, torch.Tensor) else out_cell_ids
@@ -152,6 +166,12 @@ class GridBilinearResampler:
         i = np.searchsorted(row_lat, clat, side="right") - 1
         inside = ((i >= 0) & (i < row_lat.size - 1)) | (clat == row_lat[-1])
         i = np.clip(i, 0, max(row_lat.size - 2, 0))
+        if row_lat.size > 1:
+            # between two bands only across a gap of about one row (the 1" and
+            # 1.5" tiles at 50 N): a wider gap is missing data, not a row step
+            a, b = row_band[i], row_band[i + 1]
+            gap = row_lat[i + 1] - row_lat[i]
+            inside &= (a == b) | (gap <= 1.5 * np.maximum(band_step[a], band_step[b]))
         if row_lat.size > 1:
             s = (clat - row_lat[i]) / (row_lat[i + 1] - row_lat[i])
         else:
@@ -195,16 +215,32 @@ class GridBilinearResampler:
         if verbose:
             print(f"[GridBilinearResampler] {self.N:,} grid nodes -> {K:,} cells, {self.n_links:,} links")
 
-    def _cells_in_grid(self, hp, lats, lons) -> np.ndarray:
-        """Cells whose centre may be inside the grid: cells of the grid nodes and
-        their neighbours (the operator gives NaN to those outside)."""
+    def _cells_in_grid(self, lats, lons, band_step) -> np.ndarray:
+        """Cells whose centre may be inside the grid (the operator gives NaN to
+        those outside): the cells of the grid nodes and their neighbours, at a
+        level whose cells are not smaller than the grid step, then their
+        children at ``level``. Taking them at ``level`` directly would leave
+        holes where the cells are much smaller than the grid step."""
+        step = max(
+            [band_step.max(initial=0.0)]
+            + [np.diff(self._lon[b][0]).max(initial=0.0) for b in range(len(lons))]
+        )
+        coarse = self.level
+        while coarse > 0 and np.degrees(np.sqrt(4 * np.pi / (12 * 4.0**coarse))) < step:
+            coarse -= 1
+        nested = healpix_geo.nested
         ids = []
         for la, lo in zip(lats, lons):
             LA, LO = np.meshgrid(la, lo, indexing="ij")
-            c = np.unique(hp.lonlat_to_healpix(LO.ravel(), LA.ravel(), self.level, ellipsoid=self.ellipsoid))
-            ids.append(np.asarray(hp.kth_neighbourhood(c, self.level, ring=1)).ravel())
+            c = np.unique(nested.lonlat_to_healpix(LO.ravel(), LA.ravel(), coarse, ellipsoid=self.ellipsoid))
+            ids.append(np.asarray(nested.kth_neighbourhood(c, coarse, ring=1)).ravel())
         ids = np.unique(np.concatenate(ids))
-        return ids[ids >= 0].astype(np.int64)
+        ids = ids[ids >= 0].astype(np.uint64)
+        if coarse < self.level:
+            ids = np.asarray(nested.zoom_to(ids, coarse, self.level)).ravel()
+        if not self.nest:
+            ids = np.asarray(nested.to_ring(ids, self.level))
+        return np.unique(ids).astype(np.int64)
 
     @torch.no_grad()
     def resample(self, val: T_Array, **unused) -> ResampleResults[T_Array]:
@@ -225,7 +261,9 @@ class GridBilinearResampler:
         valid = torch.isfinite(y)
         num = torch.where(valid, y, torch.zeros_like(y)) @ self.M
         den = valid.to(self.dtype) @ self.M
-        hval = torch.where(den >= self.min_weight - 1e-9, num / den, torch.full_like(num, float("nan")))
+        # the corner weights of a cell sum to 1 up to the rounding of dtype
+        tol = 8 * torch.finfo(self.dtype).eps
+        hval = torch.where(den >= self.min_weight - tol, num / den, torch.full_like(num, float("nan")))
         cell_ids = self.cell_ids
         if not isinstance(val, torch.Tensor):
             hval = hval.cpu().numpy()
