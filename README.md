@@ -20,6 +20,7 @@ definition and the Earth ellipsoid using the **WGS84** reference system.
 |---|---|---|
 | `NearestResampler` | Single nearest sample per cell | Fast, simple, exact point indexing |
 | `BilinearResampler` | 4 nearest samples, inverse-distance weights | Smoother than nearest, cheap |
+| `GridBilinearResampler` | Bilinear surface through the 4 grid nodes around each cell centre (regular lon/lat grids, 1-D axes) | Exact for linear fields, no neighbour search, fast at the input resolution |
 | `BicubicResampler` | 16 nearest samples, Keys' cubic convolution kernel | Sharper on fields with curvature, still non-iterative |
 | `PSFResampler` | Gaussian PSF kernel + damped least-squares (Conjugate Gradient) | Best reconstruction quality, dense or irregular data |
 | `ConservativeResampler` | Direct binning, area-weighted sum | Exact flux/mass conservation |
