@@ -169,14 +169,22 @@ def healpix_weighted_nearest(
     # replace the -1 entries (explicit broadcast)
     mask = neigh_u_w < 0
     neigh_u_w[mask] = np.broadcast_to(last_valid[:, None], neigh_u_w.shape)[mask]
+    del valid, mask, last_valid, last_valid_pos, all_invalid
 
     # neigh_w : (N, Kw)
+    # Every (N, Kw) temporary of this stage (~100 B per sample and per
+    # neighbourhood pixel each) is dropped as soon as the next one is built:
+    # they used to stay alive until the function returned, under the search
+    # below.
     neigh_w = neigh_u_w[inv]
     Kw = neigh_w.shape[1]
+    del neigh_u_w
 
     # --- lon/lat centres of the neighbourhood pixels (Kw*N can be large) => computed on unique pixels
     neigh_w_flat = neigh_w.reshape(-1).astype(np.uint64)
+    del neigh_w
     neigh_w_uniq, back = np.unique(neigh_w_flat, return_inverse=True)
+    del neigh_w_flat
 
     if nest:
         lon_c_deg, lat_c_deg = healpix_geo.nested.healpix_to_lonlat(neigh_w_uniq, level,ellipsoid=ellipsoid)
@@ -192,14 +200,18 @@ def healpix_weighted_nearest(
     xyz_c = _lonlat_to_xyz(lon_c, lat_c)  # (Kuniq,3)
 
     # Remap neighbours to unique indices (Kuniq)
-    back_t = torch.from_numpy(back.astype(np.int64)).to(dev)         # (N*Kw,)
+    back_t = torch.from_numpy(np.asarray(back, dtype=np.int64)).to(dev)  # (N*Kw,)
+    del back
     back_t = back_t.view(N, Kw)                                      # (N,Kw)
     xyz_c_n = xyz_c[back_t]                                          # (N,Kw,3)
 
     dot = (xyz_c_n * xyz1[:, None, :]).sum(dim=-1)                   # (N,Kw)
+    del xyz_c_n
     dot = torch.clamp(dot, -1.0, 1.0)
     ang = torch.acos(dot)
+    del dot
     dist = radius * ang                                              # (N,Kw)
+    del ang
 
     # --- weights and per-pixel sum
     # Same default as KNeighborsResampler.__init__: when sigma is not supplied,
@@ -208,6 +220,7 @@ def healpix_weighted_nearest(
         sigma = _sigma_level_m(level, radius=radius)
     # w = exp(-2*d^2/sigma^2)
     w = torch.exp((-2.0) * (dist * dist) / (sigma * sigma))          # (N,Kw)
+    del dist
 
     # scatter_add over unique pixels
     # w is accumulated on each pixel (Kuniq)
@@ -218,6 +231,7 @@ def healpix_weighted_nearest(
     # influence exceeds 'threshold' are kept in cell_ids_keep (size K).
 
     sums.scatter_add_(0, back_t.reshape(-1), w.reshape(-1))
+    del w, back_t
 
     keep = sums >= threshold
     if not torch.any(keep):
@@ -277,47 +291,69 @@ def healpix_weighted_nearest(
 
     r = ring_search_init
     done = torch.zeros((N,), device=dev, dtype=torch.bool)
+    # The samples searched at a ring: all of them at the first ring, then only
+    # the ones not served yet (``todo``: their indices). A sample is served at
+    # the first ring where it finds Npt kept pixels, and its result depends on
+    # its own candidates only, so the served samples need not be searched
+    # again at the wider rings. (With ``out_cell_ids``, the few samples next
+    # to the requested cells whose nearest pixels are not requested used to
+    # send every sample through every ring, with (N, (2r+1)**2) temporaries
+    # at each ring, kept alive until the next ring had its own.)
+    todo = None
+    ipix_u64 = ipix1.astype(np.uint64, copy=False)
 
     # kth_neighbourhood runs on the CPU, but only for the rings that are needed.
     # It is computed on unique pixels to limit the number of calls.
     while r <= ring_search_max and not bool(torch.all(done).item()):
-        if nest:
-            neigh_u = healpix_geo.nested.kth_neighbourhood(ipix_u, level, r, num_threads=num_threads)
+        if r == ring_search_init:
+            ipu, inv_r, xyz1_r = ipix_u, inv, xyz1
         else:
-            neigh_u = healpix_geo.ring.kth_neighbourhood(ipix_u, level, r, num_threads=num_threads)
+            todo = torch.nonzero(~done, as_tuple=False).squeeze(1)       # (T,)
+            ipu, inv_r = np.unique(ipix_u64[todo.cpu().numpy()], return_inverse=True)
+            xyz1_r = xyz1[todo]                                          # (T,3)
+        if nest:
+            neigh_u = healpix_geo.nested.kth_neighbourhood(ipu, level, r, num_threads=num_threads)
+        else:
+            neigh_u = healpix_geo.ring.kth_neighbourhood(ipu, level, r, num_threads=num_threads)
 
-        neigh = neigh_u[inv]  # (N, Ks)
+        neigh = neigh_u[inv_r]  # (T, Ks)
         Ks = neigh.shape[1]
         neigh_t = torch.from_numpy(neigh.astype(np.int64)).to(dev)
+        del neigh_u, neigh
 
         # map neigh_t -> index in cell_ids_keep
         pos = torch.searchsorted(cell_sorted, neigh_t)
         pos = torch.clamp(pos, 0, K - 1)
         hit = (cell_sorted[pos] == neigh_t)
         cand_idx_keep = torch.where(hit, order[pos], torch.full_like(pos, -1))  # indices in cell_ids_keep
+        del neigh_t, pos, hit
 
         # distances for the valid candidates
         safe = torch.clamp(cand_idx_keep, 0, K - 1)
-        xyz2 = xyz_keep[safe]                                  # (N,Ks,3)
+        xyz2 = xyz_keep[safe]                                  # (T,Ks,3)
+        del safe
 
-        dot2 = (xyz2 * xyz1[:, None, :]).sum(dim=-1)
+        dot2 = (xyz2 * xyz1_r[:, None, :]).sum(dim=-1)
+        del xyz2
         dot2 = torch.clamp(dot2, -1.0, 1.0)
         dist2 = radius * torch.acos(dot2)
+        del dot2
         dist2 = torch.where(cand_idx_keep >= 0, dist2, torch.full_like(dist2, float("inf")))
 
         # topk among these candidates
         k = min(Npt, Ks)
         d_k, p_k = torch.topk(dist2, k=k, dim=1, largest=False, sorted=True)
         i_k = torch.gather(cand_idx_keep, 1, p_k)
+        del dist2, cand_idx_keep, p_k
 
-        # points not "done" yet are accepted once they have at least Npt valid neighbours (i.e. d_k[:, Npt-1] < inf)
+        # points are accepted once they have at least Npt valid neighbours (i.e. d_k[:, Npt-1] < inf)
         valid_enough = (d_k[:, -1] < float("inf"))
-        update = (~done) & valid_enough
+        served = valid_enough if todo is None else todo[valid_enough]
 
-        if torch.any(update):
-            idx_out[update] = i_k[update]
-            dist_out[update] = d_k[update]
-            done[update] = True
+        if torch.any(valid_enough):
+            idx_out[served] = i_k[valid_enough]
+            dist_out[served] = d_k[valid_enough]
+            done[served] = True
 
         r += 1
 
@@ -325,11 +361,14 @@ def healpix_weighted_nearest(
     # the ones they found at the last (widest) ring, padded with -1/inf. Dropping
     # them all instead left every sample without a link when the samples are
     # much sparser than the cells, and the operator then came out empty (#74).
+    # (d_k, i_k, k and valid_enough are those of the last ring, over the
+    # samples searched at that ring: all of them, or ``todo``.)
     partial = ~done
     if torch.any(partial):
         found = torch.isfinite(d_k)
-        idx_out[partial, :k] = torch.where(found, i_k, torch.full_like(i_k, -1))[partial]
-        dist_out[partial, :k] = d_k[partial]
+        rows = partial if todo is None else ~valid_enough
+        idx_out[partial, :k] = torch.where(found, i_k, torch.full_like(i_k, -1))[rows]
+        dist_out[partial, :k] = d_k[rows]
     return cell_ids_keep, idx_out, dist_out
 
 
