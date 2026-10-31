@@ -95,9 +95,10 @@ def test_operator_with_ties_equals_coalesced_build(tie_grid, cls):
         pytest.param(hr.BilinearResampler, 1e-6, id="bilinear"),
         pytest.param(hr.BicubicResampler, 1e-6, id="bicubic"),
         pytest.param(hr.NearestResampler, 1e-6, id="nearest"),
-        # the conjugate gradient stops at its own tolerance: millimetres here
-        # (on main the PSF result moved by 2.4 m on this grid)
-        pytest.param(hr.PSFResampler, 1e-2, id="psf"),
+        # the conjugate gradient stops at its own tolerance: up to 1 cm here
+        # (3 mm on macOS arm64, 1.0 cm on Linux x86_64; on main the PSF
+        # result moved by 2.4 m on this grid)
+        pytest.param(hr.PSFResampler, 5e-2, id="psf"),
     ],
 )
 def test_result_does_not_depend_on_the_last_bits(tie_grid, batch_size, seed, cls, atol):
