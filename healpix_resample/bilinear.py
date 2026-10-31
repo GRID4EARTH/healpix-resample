@@ -49,12 +49,13 @@ class BilinearResampler(KNeighborsResampler):
                 raise ValueError("area must be non-negative")
         self.area = area_t
 
-    def _link_weights(self) -> torch.Tensor:
-        # inverse-distance weights per sample->cell link (Npt=4); `M`,
-        # `MT` and `M_cons` are assembled by `KNeighborsResampler`
-        # (`M` per-cell normalised; `MT` / `M_cons` per-sample normalised,
-        # built on first access -- see `KNeighborsResampler.comp_matrix`).
-        return 1 / (1e-6 + self.d_m / self.sigma_m)
+    def _distance_weights(self, d: torch.Tensor, rows: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # inverse-distance weights per sample->cell link (Npt=4, and the
+        # tied links); `M`, `MT` and `M_cons` are assembled by
+        # `KNeighborsResampler` (`M` per-cell normalised; `MT` / `M_cons`
+        # per-sample normalised, built on first access -- see
+        # `KNeighborsResampler.comp_matrix`).
+        return 1 / (1e-6 + d / self.sigma_m)
 
     @torch.no_grad()
     def resample(self, val: T_Array, *, conservative: bool = False, **kwargs) -> ResampleResults[T_Array]:
