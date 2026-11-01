@@ -17,7 +17,7 @@ When ``out_cell_ids`` is provided
 ----------------------------------
 ``healpix_weighted_nearest`` already intersects the KNN result with ``out_cell_ids``,
 but cells beyond ``ring_search_max`` rings may be absent.  After the KNN step,
-missing cells are filled via a memory-bounded chunked dot-product fallback.
+missing cells are filled from their nearest sample, found with a KD-tree.
 """
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from typing import Optional
 import healpix_geo
 import numpy as np
 import torch
+from scipy.spatial import cKDTree
 
 from healpix_resample.base import ResampleResults, T_Array
 from healpix_resample.knn import KNeighborsResampler, _lonlat_to_xyz
@@ -187,9 +188,8 @@ class NearestResampler(KNeighborsResampler):
         """Extend cell_ids / hi_k to cover every cell in out_cell_ids.
 
         Cells in ``out_cell_ids`` not returned by ``healpix_weighted_nearest``
-        (i.e., beyond ``ring_search_max`` rings of any source) are handled via
-        a memory-bounded chunked dot-product: the nearest source is found
-        directly from ``self.xyz_samples`` without pair explosion.
+        (i.e., beyond ``ring_search_max`` rings of any source) get their
+        nearest source from a KD-tree of ``self.xyz_samples``.
         """
         out_t = self.out_cell_ids
         if not isinstance(out_t, torch.Tensor):
@@ -219,7 +219,7 @@ class NearestResampler(KNeighborsResampler):
         if self.verbose:
             print(
                 f"[NearestResampler] {missing.numel():,} out_cell_ids not covered "
-                f"by KNN rings → chunked dot-product fallback"
+                f"by KNN rings → nearest sample from a KD-tree"
             )
 
         # ── xyz of missing cell centres ────────────────────────────────────
@@ -240,7 +240,7 @@ class NearestResampler(KNeighborsResampler):
         )                                                           # (M, 3)
 
         # ── Nearest source per missing cell — chunked, O(chunk × N) memory ─
-        hi_miss, dot_miss = self._chunked_nearest(xyz_miss, self.xyz_samples)  # (M,), (M,)
+        hi_miss, dot_miss = self._nearest_source(xyz_miss, self.xyz_samples)  # (M,), (M,)
         del xyz_miss
 
         # ── Leave out the cells whose nearest sample is too far (#75) ─────
@@ -266,30 +266,28 @@ class NearestResampler(KNeighborsResampler):
         self.hi_k     = self.hi_k[order]
 
     @staticmethod
-    def _chunked_nearest(
+    def _nearest_source(
         xyz_query: torch.Tensor,          # (Q, 3)
         xyz_src:   torch.Tensor,          # (N, 3)
-        mem_budget_bytes: int = 512 * 1024 * 1024,   # 512 MB
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """argmax dot(query, src) per query row, memory-bounded by budget.
+        """Nearest source per query point, from a KD-tree of the sources.
 
-        Returns hi (Q,) — index of nearest source for each query cell — and
-        the matching dot product (Q,), the cosine of the angular distance.
-        Memory peak = chunk_q × N × bytes_per_element.
+        Returns hi (Q,) — index of the nearest source for each query cell —
+        and the matching dot product (Q,), the cosine of the angular
+        distance. On the unit sphere the chord ``c`` grows with the angle, so
+        the nearest source by chord is the one of largest dot product, and
+        ``dot = 1 - c**2 / 2``. O((N + Q) log N), where comparing every query
+        to every source took hours for a chunk with millions of cells and
+        samples (Sentinel-2 chunks at the edge of the swath).
         """
-        N    = xyz_src.shape[0]
-        Q    = xyz_query.shape[0]
-        bpe  = xyz_src.element_size()
-        chunk_q = max(1, mem_budget_bytes // (N * bpe))
-
-        hi_out  = torch.empty(Q, dtype=torch.long, device=xyz_src.device)
-        dot_out = torch.empty(Q, dtype=xyz_src.dtype, device=xyz_src.device)
-        for start in range(0, Q, chunk_q):
-            end                = min(start + chunk_q, Q)
-            dots               = xyz_query[start:end] @ xyz_src.T    # (chunk_q, N)
-            dot_out[start:end], hi_out[start:end] = dots.max(dim=1)
-            del dots
-        return hi_out, dot_out
+        src = xyz_src.detach().cpu().numpy().astype(np.float64)
+        query = xyz_query.detach().cpu().numpy().astype(np.float64)
+        chord, hi = cKDTree(src).query(query, k=1)
+        dot = 1.0 - 0.5 * chord * chord
+        return (
+            torch.as_tensor(hi, dtype=torch.long, device=xyz_src.device),
+            torch.as_tensor(dot, dtype=xyz_src.dtype, device=xyz_src.device),
+        )
 
     # ── resample ─────────────────────────────────────────────────────────────
 
