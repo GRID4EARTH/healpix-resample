@@ -118,9 +118,8 @@ def conjugate_gradient(
         # Give it a zero step instead of the 0/0 = nan that would otherwise
         # reach x.
         alpha = torch.where(denom != 0, rs_old / torch.where(denom != 0, denom, 1.0), 0.0)
-        # in place, without the (B, K) temporaries of alpha * p and alpha * Ap
-        x.addcmul_(alpha.reshape(-1, 1), p)
-        r.addcmul_(alpha.reshape(-1, 1), Ap, value=-1.0)
+        x = x + torch.einsum('k,ki->ki',alpha,p)
+        r = r - torch.einsum('k,ki->ki',alpha,Ap)
         rs_new = _wdot(r, r)
 
         residual_norms.append(torch.sqrt(rs_new))
@@ -131,7 +130,7 @@ def conjugate_gradient(
             break
 
         beta = torch.where(rs_old != 0, rs_new / torch.where(rs_old != 0, rs_old, 1.0), 0.0)
-        p.mul_(beta.reshape(-1, 1)).add_(r)
+        p = r + torch.einsum('k,ki->ki',beta,p)
         rs_old = rs_new
         if k%4==0 and verbose:
             # rs_old has one entry per batch row (shape (B,), or 0-d when B==1);
