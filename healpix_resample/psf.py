@@ -22,6 +22,25 @@ from healpix_resample.base import ResampleResults, T_Array, estimate_pixel_area
 from healpix_resample.knn import KNeighborsResampler, _safe_normalize, _sigma_level_m, _lonlat_to_xyz
 
 
+def _csr_transpose(A: torch.Tensor) -> torch.Tensor:
+    """Transpose of the sparse matrix ``A`` (COO or CSR), stored as CSR."""
+    return A.to_sparse_coo().t().coalesce().to_sparse_csr()
+
+
+def _rmatmul(v: torch.Tensor, A: torch.Tensor, A_t: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """``v @ A`` for the row vectors ``v`` (B, n) and the sparse ``A`` (n, m).
+
+    With ``A_t``, the transpose of ``A`` stored as CSR (:func:`_csr_transpose`),
+    it is computed as ``(A_t @ v.T).T``: a CSR x dense product. ``v @ A``
+    makes torch convert ``A`` on every call: on a chunk of 1.65 M samples and
+    4.2 M cells, one Conjugate Gradient step ``(v @ MT) @ M`` takes 2.4 s that
+    way and 0.17 s with the transposes (one thread).
+    """
+    if A_t is None:
+        return v @ A
+    return (A_t @ v.T).T
+
+
 def conjugate_gradient(
     A_mv: Callable[[torch.Tensor], torch.Tensor],
     b: torch.Tensor,
@@ -122,6 +141,8 @@ def least_squares_cg(M,
         damp = 0.0,
         verbose: bool = True,
         weight: Optional[torch.Tensor] = None,
+        M_t: Optional[torch.Tensor] = None,
+        MT_t: Optional[torch.Tensor] = None,
         ):
     """
     Solve for delta in a damped least-squares problem without forming dense matrices.
@@ -157,13 +178,16 @@ def least_squares_cg(M,
         weight : (K,) or None -- Dx, the per-cell weight columns of M were
         normalized by; None falls back to the (formally unjustified)
         Euclidean inner product.
+        M_t, MT_t : optional transposes of ``M`` and ``MT`` stored as CSR
+        (:func:`_csr_transpose`); with them the products run as CSR x dense
+        (see :func:`_rmatmul`), same result, much faster.
     """
 
     # b = M^T y
-    b = (y - x_ref@MT) @ M
+    b = _rmatmul(y - _rmatmul(x_ref, MT, MT_t), M, M_t)
     def A_mv(v: torch.Tensor) -> torch.Tensor:
         # (M^T M + damp I) v
-        return (v@MT) @ M + damp * v
+        return _rmatmul(_rmatmul(v, MT, MT_t), M, M_t) + damp * v
 
     x, info = conjugate_gradient(
         A_mv=A_mv, b=b, x0=x0, max_iter=max_iter, tol=tol, verbose=verbose, weight=weight,
@@ -185,6 +209,8 @@ def bounded_least_squares_cg(M,
         max_outer: int = 10,
         verbose: bool = True,
         weight: Optional[torch.Tensor] = None,
+        M_t: Optional[torch.Tensor] = None,
+        MT_t: Optional[torch.Tensor] = None,
         ):
     """
     Same damped weighted least-squares problem as ``least_squares_cg``,
@@ -220,8 +246,8 @@ def bounded_least_squares_cg(M,
 
     Shapes:
         lower, upper : (B, K), bounds on ``delta`` (``-inf``/``+inf`` where a
-        side is not constrained). Everything else as in
-        :func:`least_squares_cg`.
+        side is not constrained). Everything else (``M_t``, ``MT_t``
+        included) as in :func:`least_squares_cg`.
 
     Returns:
         delta: (B, K)
@@ -229,10 +255,10 @@ def bounded_least_squares_cg(M,
         ``niters`` (their total), ``n_outer`` and the final ``at_lower`` /
         ``at_upper`` masks (B, K) of the cells held at a bound.
     """
-    b = (y - x_ref @ MT) @ M
+    b = _rmatmul(y - _rmatmul(x_ref, MT, MT_t), M, M_t)
 
     def A_mv(v: torch.Tensor) -> torch.Tensor:
-        return (v @ MT) @ M + damp * v
+        return _rmatmul(_rmatmul(v, MT, MT_t), M, M_t) + damp * v
 
     x = torch.minimum(torch.maximum(x0, lower), upper)
     if b.shape[-1] == 0:
@@ -783,6 +809,16 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         self.MT = MT_coo.to_sparse_csr()
         del MT_coo
 
+    def _cg_transposes(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Transposes of ``M`` and ``MT`` stored as CSR, for the Conjugate
+        Gradient products (see :func:`_rmatmul`). Built on the first
+        ``resample()`` and kept while ``M`` and ``MT`` are the same objects."""
+        key = (id(self.M), id(self.MT))
+        if getattr(self, "_cg_t_key", None) != key:
+            self._cg_t = (_csr_transpose(self.M), _csr_transpose(self.MT))
+            self._cg_t_key = key
+        return self._cg_t
+
     @torch.no_grad()
     def resample(
         self,
@@ -950,6 +986,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             n_clipped_high = torch.zeros(B, dtype=torch.int64, device=self.device)
 
         if bool(row_has_data.any()):
+            M_t, MT_t = self._cg_transposes()
             sel = torch.nonzero(row_has_data, as_tuple=False).reshape(-1)
             y_sel = y_filled[sel]
             x_ref_sel = x_ref[sel]
@@ -967,6 +1004,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     damp=float(lam),
                     verbose=self.verbose,
                     weight=self.cell_weight,
+                    M_t=M_t,
+                    MT_t=MT_t,
                 )
             else:
                 # bounds on hval, per row (S,1), turned into bounds on delta (S,K)
@@ -985,6 +1024,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     max_outer=max_outer,
                     verbose=self.verbose,
                     weight=self.cell_weight,
+                    M_t=M_t,
+                    MT_t=MT_t,
                 )
                 held_lo, held_hi = info["at_lower"], info["at_upper"]
 
@@ -1018,7 +1059,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 F_target = target_mean * self.K                                             # (S,1)
 
                 def _Hmv(v: torch.Tensor) -> torch.Tensor:
-                    return (v @ self.MT) @ self.M + float(lam) * v
+                    return _rmatmul(_rmatmul(v, self.MT, MT_t), self.M, M_t) + float(lam) * v
 
                 dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
                 if clip is None:
