@@ -1049,7 +1049,10 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # sample only zeroes its own (normalized) contribution instead of
         # poisoning x_ref with NaN.
         M_t, MT_t = self._cg_transposes()
-        x_ref = _rmatmul(y_filled, None, M_t)
+        # the operators themselves only where no transpose is used
+        M_op = self.M if M_t is None else None
+        MT_op = self.MT if MT_t is None else None
+        x_ref = _rmatmul(y_filled, M_op, M_t)
 
         if x0 is None:
             x0 = torch.zeros_like(x_ref)
@@ -1075,8 +1078,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
             if clip is None:
                 delta, info = least_squares_cg(
-                    M=None,
-                    MT=None,
+                    M=M_op,
+                    MT=MT_op,
                     y=y_sel,
                     x_ref=x_ref_sel,
                     x0=x0_sel,
@@ -1092,8 +1095,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 # bounds on hval, per row (S,1), turned into bounds on delta (S,K)
                 lo_sel, hi_sel = _clip_bounds(clip, y[sel], valid[sel])
                 delta, info = bounded_least_squares_cg(
-                    M=None,
-                    MT=None,
+                    M=M_op,
+                    MT=MT_op,
                     y=y_sel,
                     x_ref=x_ref_sel,
                     x0=x0_sel,
@@ -1140,7 +1143,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 F_target = target_mean * self.K                                             # (S,1)
 
                 def _Hmv(v: torch.Tensor) -> torch.Tensor:
-                    return _rmatmul(_rmatmul(v, None, MT_t), None, M_t) + float(lam) * v
+                    return _rmatmul(_rmatmul(v, MT_op, MT_t), M_op, M_t) + float(lam) * v
 
                 dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
                 if clip is None:
