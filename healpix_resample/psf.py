@@ -179,8 +179,8 @@ def least_squares_cg(M,
         normalized by; None falls back to the (formally unjustified)
         Euclidean inner product.
         M_t, MT_t : optional transposes of ``M`` and ``MT`` stored as CSR
-        (:func:`_csr_transpose`); with them the products run as CSR x dense
-        (see :func:`_rmatmul`), same result, much faster.
+        (``_csr_transpose``); with them the products run as CSR x dense
+        (see ``_rmatmul``), same result, much faster.
     """
 
     # b = M^T y
