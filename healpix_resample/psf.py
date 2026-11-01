@@ -23,8 +23,25 @@ from healpix_resample.knn import KNeighborsResampler, _safe_normalize, _sigma_le
 
 
 def _csr_transpose(A: torch.Tensor) -> torch.Tensor:
-    """Transpose of the sparse matrix ``A`` (COO or CSR), stored as CSR."""
-    return A.to_sparse_coo().t().coalesce().to_sparse_csr()
+    """Transpose of the sparse matrix ``A`` (coalesced COO or CSR), stored as CSR.
+
+    The entries of ``A`` are in row-major order, so a stable sort of their
+    column indices puts them in the row-major order of the transpose: the same
+    CSR as ``A.t().coalesce().to_sparse_csr()``, without sorting both indices.
+    """
+    n_rows, n_cols = A.shape
+    if A.layout == torch.sparse_csr:
+        rows = torch.repeat_interleave(
+            torch.arange(n_rows, device=A.device), torch.diff(A.crow_indices())
+        )
+        cols, vals = A.col_indices(), A.values()
+    else:
+        rows, cols = A.indices()
+        vals = A.values()
+    order = torch.argsort(cols, stable=True)
+    crow = torch.zeros(n_cols + 1, dtype=torch.long, device=A.device)
+    crow[1:] = torch.cumsum(torch.bincount(cols, minlength=n_cols), 0)
+    return torch.sparse_csr_tensor(crow, rows[order], vals[order], size=(n_cols, n_rows))
 
 
 def _rmatmul(v: torch.Tensor, A: torch.Tensor, A_t: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -101,8 +118,9 @@ def conjugate_gradient(
         # Give it a zero step instead of the 0/0 = nan that would otherwise
         # reach x.
         alpha = torch.where(denom != 0, rs_old / torch.where(denom != 0, denom, 1.0), 0.0)
-        x = x + torch.einsum('k,ki->ki',alpha,p)
-        r = r - torch.einsum('k,ki->ki',alpha,Ap)
+        # in place, without the (B, K) temporaries of alpha * p and alpha * Ap
+        x.addcmul_(alpha.reshape(-1, 1), p)
+        r.addcmul_(alpha.reshape(-1, 1), Ap, value=-1.0)
         rs_new = _wdot(r, r)
 
         residual_norms.append(torch.sqrt(rs_new))
@@ -113,7 +131,7 @@ def conjugate_gradient(
             break
 
         beta = torch.where(rs_old != 0, rs_new / torch.where(rs_old != 0, rs_old, 1.0), 0.0)
-        p = r + torch.einsum('k,ki->ki',beta,p)
+        p.mul_(beta.reshape(-1, 1)).add_(r)
         rs_old = rs_new
         if k%4==0 and verbose:
             # rs_old has one entry per batch row (shape (B,), or 0-d when B==1);
