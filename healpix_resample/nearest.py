@@ -69,13 +69,31 @@ class NearestResampler(KNeighborsResampler):
         the cell is left out of the result, like the cells the interpolating
         resamplers cannot compute. ``None`` (default) fills every requested
         cell, however far its nearest sample is.
+    search : {"knn", "kdtree"}
+        How the nearest sample of each cell is found. ``"knn"`` (default):
+        through the ``Npt`` nearest cells of every sample (the KNN links of
+        ``KNeighborsResampler``), the cells they miss from a KD-tree.
+        ``"kdtree"`` (with ``out_cell_ids`` only): every requested cell takes
+        its nearest sample from a KD-tree of the samples, directly: the same
+        sample (the KNN path keeps, per cell, the linked sample of largest
+        Gaussian weight, i.e. the nearest), several times faster on dense
+        inputs, and no KNN links (``neighbours``) to search or keep. Samples
+        exactly as near as each other may be picked differently.
+        ``max_distance_m`` then applies to every requested cell (the KNN
+        path applies it only to the cells its rings did not reach).
     All other parameters are forwarded to ``KNeighborsResampler``.
     """
 
-    def __init__(self, *args, Npt: int = 9, max_distance_m: Optional[float] = None, **kwargs):
+    def __init__(self, *args, Npt: int = 9, max_distance_m: Optional[float] = None,
+                 search: str = "knn", **kwargs):
         if max_distance_m is not None and not max_distance_m > 0:
             raise ValueError(f"max_distance_m must be None or positive, got {max_distance_m!r}.")
+        if search not in ("knn", "kdtree"):
+            raise ValueError(f"search must be 'knn' or 'kdtree', got {search!r}.")
         self.max_distance_m = max_distance_m
+        if search == "kdtree":
+            self._init_kdtree(*args, Npt=Npt, **kwargs)
+            return
         # Ensure ring_search_max >= ring_search_init(Npt) so the KNN search
         # loop in healpix_weighted_nearest actually executes.
         #
@@ -106,6 +124,53 @@ class NearestResampler(KNeighborsResampler):
                     delattr(self, attr)
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
+
+    def _init_kdtree(self, *args, **kwargs) -> None:
+        """``search="kdtree"``: the requested cells and the nearest sample of
+        each, from a KD-tree of the samples (no KNN links, no operator)."""
+        import inspect
+
+        bound = inspect.signature(KNeighborsResampler.__init__).bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        a = bound.arguments
+        if a["out_cell_ids"] is None:
+            raise ValueError("search='kdtree' needs out_cell_ids (the cells to resample onto).")
+        self.level, self.Npt = int(a["level"]), int(a["Npt"])
+        self.nest, self.radius = bool(a["nest"]), float(a["radius"])
+        self.ellipsoid, self.dtype = str(a["ellipsoid"]), a["dtype"]
+        device = a["device"]
+        self.device = torch.device(device if device is not None else "cpu")
+        self.verbose, self.group_by = a["verbose"], False
+        self.out_cell_ids = a["out_cell_ids"]
+        self.threshold = float(a["threshold"])
+        self.neighbours = None
+
+        lon = torch.as_tensor(a["lon_deg"]).to(dtype=torch.float64).reshape(-1)
+        lat = torch.as_tensor(a["lat_deg"]).to(dtype=torch.float64).reshape(-1)
+        self.N = int(lon.numel())
+        out = torch.as_tensor(self.out_cell_ids).to(torch.long).reshape(-1)
+        cells = torch.unique(out)                                   # ascending
+        if self.N == 0 or cells.numel() == 0:
+            self.cell_ids = cells[:0].to(self.device)
+            self.hi_k = torch.empty((0,), dtype=torch.long, device=self.device)
+            self.K = 0
+            return
+
+        hp = healpix_geo.nested if self.nest else healpix_geo.ring
+        lon_c, lat_c = hp.healpix_to_lonlat(cells.numpy().astype(np.uint64), self.level,
+                                            ellipsoid=self.ellipsoid)
+        xyz_cells = _lonlat_to_xyz(
+            torch.deg2rad(torch.as_tensor(np.asarray(lon_c), dtype=torch.float64)),
+            torch.deg2rad(torch.as_tensor(np.asarray(lat_c), dtype=torch.float64)),
+        )
+        xyz_samples = _lonlat_to_xyz(torch.deg2rad(lon), torch.deg2rad(lat))
+        hi, dot = self._nearest_source(xyz_cells, xyz_samples)
+        if self.max_distance_m is not None:
+            near = self.radius * torch.acos(dot.clamp(-1.0, 1.0)) <= self.max_distance_m
+            cells, hi = cells[near], hi[near]
+        self.cell_ids = cells.to(self.device)
+        self.hi_k = hi.to(self.device)
+        self.K = int(self.cell_ids.numel())
 
     # ── comp_matrix: scatter_reduce instead of sparse M / MT ─────────────────
 

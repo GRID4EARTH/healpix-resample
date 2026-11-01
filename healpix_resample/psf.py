@@ -90,9 +90,16 @@ def conjugate_gradient(
     tol: float = 1e-6,
     verbose: bool = True,
     weight: Optional[torch.Tensor] = None,
+    preconditioner: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     """
     Solve A x = b with Conjugate Gradient, using only matvec A_mv(v).
+
+    ``preconditioner``, if given, is the inverse of a positive diagonal (K,)
+    (e.g. of ``A`` itself: Jacobi). A diagonal is self-adjoint in the weighted
+    inner product as well, so the preconditioned iteration keeps the weighted
+    Conjugate Gradient's guarantees; it stops on the same weighted residual
+    ``tol * |b|``. Without it, the iteration is the plain one, unchanged.
     No autograd (uses torch.no_grad).
 
     ``A_mv`` (as built by :func:`least_squares_cg` for :class:`PSFResampler`) is
@@ -121,8 +128,10 @@ def conjugate_gradient(
         x = x0.clone()
 
     r = b - A_mv(x)          # residual
-    p = r.clone()
+    z = r if preconditioner is None else r * preconditioner
+    p = z.clone()
     rs_old = _wdot(r, r)
+    rz_old = rs_old if preconditioner is None else _wdot(r, z)
 
     b_norm = torch.sqrt(torch.sum(_wdot(b, b)))
     if b_norm == 0:
@@ -142,7 +151,7 @@ def conjugate_gradient(
         # whose cells are all held at a bound): its denominator is then 0.
         # Give it a zero step instead of the 0/0 = nan that would otherwise
         # reach x.
-        alpha = torch.where(denom != 0, rs_old / torch.where(denom != 0, denom, 1.0), 0.0)
+        alpha = torch.where(denom != 0, rz_old / torch.where(denom != 0, denom, 1.0), 0.0)
         # in place, without the (B, K) temporaries of alpha * p and alpha * Ap
         x.addcmul_(alpha.reshape(-1, 1), p)
         r.addcmul_(alpha.reshape(-1, 1), Ap, value=-1.0)
@@ -155,9 +164,15 @@ def conjugate_gradient(
             rs_old = rs_new
             break
 
-        beta = torch.where(rs_old != 0, rs_new / torch.where(rs_old != 0, rs_old, 1.0), 0.0)
-        p.mul_(beta.reshape(-1, 1)).add_(r)
+        if preconditioner is None:
+            z, rz_new = r, rs_new
+        else:
+            z = r * preconditioner
+            rz_new = _wdot(r, z)
+        beta = torch.where(rz_old != 0, rz_new / torch.where(rz_old != 0, rz_old, 1.0), 0.0)
+        p.mul_(beta.reshape(-1, 1)).add_(z)
         rs_old = rs_new
+        rz_old = rz_new
         if k%4==0 and verbose:
             # rs_old has one entry per batch row (shape (B,), or 0-d when B==1);
             # print the worst-case (max) row so this works for both unbatched and
@@ -186,6 +201,7 @@ def least_squares_cg(M,
         weight: Optional[torch.Tensor] = None,
         M_t: Optional[torch.Tensor] = None,
         MT_t: Optional[torch.Tensor] = None,
+        preconditioner: Optional[torch.Tensor] = None,
         ):
     """
     Solve for delta in a damped least-squares problem without forming dense matrices.
@@ -234,6 +250,7 @@ def least_squares_cg(M,
 
     x, info = conjugate_gradient(
         A_mv=A_mv, b=b, x0=x0, max_iter=max_iter, tol=tol, verbose=verbose, weight=weight,
+        preconditioner=preconditioner,
     )
     return x, info
 
@@ -254,6 +271,7 @@ def bounded_least_squares_cg(M,
         weight: Optional[torch.Tensor] = None,
         M_t: Optional[torch.Tensor] = None,
         MT_t: Optional[torch.Tensor] = None,
+        preconditioner: Optional[torch.Tensor] = None,
         ):
     """
     Same damped weighted least-squares problem as ``least_squares_cg``,
@@ -335,7 +353,7 @@ def bounded_least_squares_cg(M,
 
         d, info = conjugate_gradient(
             A_mv=A_free, b=free_f * r, max_iter=max_iter, tol=tol,
-            verbose=verbose, weight=weight,
+            verbose=verbose, weight=weight, preconditioner=preconditioner,
         )
         residual_norms.append(info["residual_norms"].reshape(-1, b.shape[0]))
         niters = niters + info["niters"]
@@ -900,6 +918,33 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             self._cg_t_key = key
         return self._cg_t
 
+    def _cg_diagonal(self) -> torch.Tensor:
+        """Diagonal of the Conjugate Gradient operator without damping,
+        ``v -> (v @ MT) @ M``: ``d_k = sum_n MT[k, n] M[n, k]`` (K,). Built once."""
+        if getattr(self, "_cg_diag", None) is None:
+            import scipy.sparse
+
+            M_t, MT_t = (
+                self._M_t if getattr(self, "_M_t", None) is not None else _csr_transpose(self.M),
+                self._MT_t if getattr(self, "_MT_t", None) is not None else _csr_transpose(self.MT),
+            )
+
+            def sp(A):
+                return scipy.sparse.csr_matrix(
+                    (A.values().cpu().numpy(), A.col_indices().cpu().numpy(),
+                     A.crow_indices().cpu().numpy()),
+                    shape=tuple(A.shape),
+                )
+
+            d = np.asarray(sp(M_t).multiply(sp(MT_t).T).sum(axis=1)).reshape(-1)
+            self._cg_diag = torch.as_tensor(d, dtype=self.dtype, device=self.device)
+        return self._cg_diag
+
+    def _jacobi(self, lam: float) -> torch.Tensor:
+        """Inverse diagonal of ``MT M + lam`` (1 where it is 0)."""
+        d = self._cg_diagonal() + lam
+        return torch.where(d > 0, 1.0 / torch.where(d > 0, d, 1.0), 1.0)
+
     @torch.no_grad()
     def resample(
         self,
@@ -913,6 +958,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         conservative: bool = False,
         clip=None,
         max_outer: int = 10,
+        jacobi: bool = False,
     ) -> ResampleResults[T_Array]:
         """Estimate the HEALPix field from unstructured samples.
 
@@ -920,6 +966,10 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             val: (B,N) or (N,) values at lon/lat sample points
             lam: Tikhonov regularization strength (damping) used in CG
             max_iter, tol: CG parameters
+            jacobi: precondition the Conjugate Gradient with the inverse
+                diagonal of its operator (``MT M + lam``, see
+                `_cg_diagonal`): fewer iterations to the same ``tol``
+                (the result agrees to that tolerance, not bit for bit)
             x0: optional initial guess for the *delta* around x_ref, shape (B,K)
             return_info: whether to return CG diagnostics
             conservative: if True, apply an exact linear-equality correction
@@ -1071,6 +1121,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             n_clipped_high = torch.zeros(B, dtype=torch.int64, device=self.device)
 
         if bool(row_has_data.any()):
+            pinv = self._jacobi(float(lam)) if jacobi else None
             sel = torch.nonzero(row_has_data, as_tuple=False).reshape(-1)
             y_sel = y_filled[sel]
             x_ref_sel = x_ref[sel]
@@ -1090,6 +1141,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     weight=self.cell_weight,
                     M_t=M_t,
                     MT_t=MT_t,
+                    preconditioner=pinv,
                 )
             else:
                 # bounds on hval, per row (S,1), turned into bounds on delta (S,K)
@@ -1110,6 +1162,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     weight=self.cell_weight,
                     M_t=M_t,
                     MT_t=MT_t,
+                    preconditioner=pinv,
                 )
                 held_lo, held_hi = info["at_lower"], info["at_upper"]
 
