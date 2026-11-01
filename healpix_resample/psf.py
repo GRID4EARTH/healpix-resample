@@ -55,7 +55,31 @@ def _rmatmul(v: torch.Tensor, A: torch.Tensor, A_t: Optional[torch.Tensor] = Non
     """
     if A_t is None:
         return v @ A
+    if isinstance(A_t, _ScipyCSR):
+        return A_t.rmatmul(v)
     return (A_t @ v.T).T
+
+
+class _ScipyCSR:
+    """A CPU CSR matrix (a transpose from :func:`_csr_transpose`) whose
+    products with dense torch tensors run in scipy, without copies of the
+    operands. scipy's CSR x dense kernel is several times faster than torch's
+    on CPU (one 10 m Sentinel-2 chunk, one thread: 0.04 s instead of 0.17 s
+    for one vector); the sums are the same, in another order."""
+
+    def __init__(self, A: torch.Tensor):
+        import scipy.sparse
+
+        self.dtype = A.dtype
+        self.matrix = scipy.sparse.csr_matrix(
+            (A.values().numpy(), A.col_indices().numpy(), A.crow_indices().numpy()),
+            shape=tuple(A.shape),
+        )
+
+    def rmatmul(self, v: torch.Tensor) -> torch.Tensor:
+        """``(A @ v.T).T`` for the row vectors ``v`` (B, n)."""
+        out = self.matrix @ v.detach().numpy().T
+        return torch.from_numpy(np.ascontiguousarray(out.T)).to(self.dtype)
 
 
 def conjugate_gradient(
@@ -87,8 +111,9 @@ def conjugate_gradient(
     """
     def _wdot(u: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         # <u, v>_weight = sum_k u_k v_k weight_k, reduced over the last (K) axis, kept per batch row
-        uv = u * v if weight is None else u * v * weight
-        return torch.sum(uv, dim=-1)
+        # one temporary and a matrix-vector product
+        uv = u * v
+        return torch.sum(uv, dim=-1) if weight is None else uv @ weight
 
     if x0 is None:
         x = torch.zeros_like(b)
@@ -118,8 +143,9 @@ def conjugate_gradient(
         # Give it a zero step instead of the 0/0 = nan that would otherwise
         # reach x.
         alpha = torch.where(denom != 0, rs_old / torch.where(denom != 0, denom, 1.0), 0.0)
-        x = x + torch.einsum('k,ki->ki',alpha,p)
-        r = r - torch.einsum('k,ki->ki',alpha,Ap)
+        # in place, without the (B, K) temporaries of alpha * p and alpha * Ap
+        x.addcmul_(alpha.reshape(-1, 1), p)
+        r.addcmul_(alpha.reshape(-1, 1), Ap, value=-1.0)
         rs_new = _wdot(r, r)
 
         residual_norms.append(torch.sqrt(rs_new))
@@ -130,7 +156,7 @@ def conjugate_gradient(
             break
 
         beta = torch.where(rs_old != 0, rs_new / torch.where(rs_old != 0, rs_old, 1.0), 0.0)
-        p = r + torch.einsum('k,ki->ki',beta,p)
+        p.mul_(beta.reshape(-1, 1)).add_(r)
         rs_old = rs_new
         if k%4==0 and verbose:
             # rs_old has one entry per batch row (shape (B,), or 0-d when B==1);
@@ -832,7 +858,10 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         ``resample()`` and kept while ``M`` and ``MT`` are the same objects."""
         key = (id(self.M), id(self.MT))
         if getattr(self, "_cg_t_key", None) != key:
-            self._cg_t = (_csr_transpose(self.M), _csr_transpose(self.MT))
+            transposes = (_csr_transpose(self.M), _csr_transpose(self.MT))
+            if self.device.type == "cpu":
+                transposes = tuple(_ScipyCSR(A) for A in transposes)
+            self._cg_t = transposes
             self._cg_t_key = key
         return self._cg_t
 
