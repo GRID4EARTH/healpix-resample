@@ -46,6 +46,16 @@ def test_same_samples_as_the_knn_search(chunk, part, max_distance_m):
     kw = dict(level=LEVEL, out_cell_ids=out, max_distance_m=max_distance_m, verbose=False)
     knn = NearestResampler(lon, lat, **kw)
     kd = NearestResampler(lon, lat, search="kdtree", **kw)
+    if max_distance_m is not None:
+        # the KD-tree drops every cell farther than max_distance_m from its
+        # nearest sample, the KNN path only the cells its rings did not reach:
+        # the cells both keep have the same sample
+        common, i_kd, i_knn = np.intersect1d(
+            np.asarray(kd.cell_ids), np.asarray(knn.cell_ids), return_indices=True
+        )
+        assert common.size == kd.K > 0
+        np.testing.assert_array_equal(np.asarray(kd.hi_k)[i_kd], np.asarray(knn.hi_k)[i_knn])
+        return
     np.testing.assert_array_equal(np.asarray(kd.cell_ids), np.asarray(knn.cell_ids))
     np.testing.assert_array_equal(np.asarray(kd.hi_k), np.asarray(knn.hi_k))
     val = np.arange(lon.size, dtype=np.float64)

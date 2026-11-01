@@ -79,6 +79,8 @@ class NearestResampler(KNeighborsResampler):
         Gaussian weight, i.e. the nearest), several times faster on dense
         inputs, and no KNN links (``neighbours``) to search or keep. Samples
         exactly as near as each other may be picked differently.
+        ``max_distance_m`` then applies to every requested cell (the KNN
+        path applies it only to the cells its rings did not reach).
     All other parameters are forwarded to ``KNeighborsResampler``.
     """
 
