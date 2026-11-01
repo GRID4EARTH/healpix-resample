@@ -12,7 +12,7 @@ Core ideas:
 This module is designed for large N and batched values (B,N) on CUDA.
 """
 
-from typing import Callable, Generic, Optional, Tuple, Dict
+from typing import Any, Callable, Generic, Optional, Tuple, Dict
 
 import math
 import numpy as np
@@ -846,19 +846,54 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # in -- see conjugate_gradient()/least_squares_cg() docstrings.
         self.cell_weight = norm_col
 
-        # Convert to CSR for faster spMM (recommended on GPU)
-        self.M  = M_coo #.to_sparse_csr()
+        # Only the transposes of M and MT, as CSR, are kept: the Conjugate
+        # Gradient and the reference field use them (see _rmatmul). M (COO)
+        # and MT (CSR) are built from them on first access.
+        self._M_t = _csr_transpose(M_coo)
         del M_coo
-        self.MT = MT_coo.to_sparse_csr()
+        self._MT_t = _csr_transpose(MT_coo)
         del MT_coo
+        self._M = None
+        self._MT = None
 
-    def _cg_transposes(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    @property
+    def M(self) -> torch.Tensor:
+        """Sparse COO ``(N, K)`` operator, samples -> cells; built on first
+        access from its transpose."""
+        if getattr(self, "_M", None) is None and getattr(self, "_M_t", None) is not None:
+            self._M = _csr_transpose(self._M_t).to_sparse_coo().coalesce()
+        return self._M
+
+    @M.setter
+    def M(self, value: torch.Tensor) -> None:
+        self._M = value
+        self._M_t = None
+
+    @property
+    def MT(self) -> torch.Tensor:
+        """Sparse CSR ``(K, N)`` operator, cells -> samples (``invert()``);
+        built on first access from its transpose."""
+        if getattr(self, "_MT", None) is None and getattr(self, "_MT_t", None) is not None:
+            self._MT = _csr_transpose(self._MT_t)
+        return self._MT
+
+    @MT.setter
+    def MT(self, value: torch.Tensor) -> None:
+        self._MT = value
+        self._MT_t = None
+
+    def _cg_transposes(self) -> Tuple[Any, Any]:
         """Transposes of ``M`` and ``MT`` stored as CSR, for the Conjugate
-        Gradient products (see :func:`_rmatmul`). Built on the first
-        ``resample()`` and kept while ``M`` and ``MT`` are the same objects."""
-        key = (id(self.M), id(self.MT))
+        Gradient products (see :func:`_rmatmul`): the ones ``comp_matrix``
+        keeps, or computed again after ``M`` / ``MT`` were set; wrapped for
+        scipy on CPU."""
+        if getattr(self, "_M_t", None) is None:
+            self._M_t = _csr_transpose(self.M)
+        if getattr(self, "_MT_t", None) is None:
+            self._MT_t = _csr_transpose(self.MT)
+        key = (id(self._M_t), id(self._MT_t))
         if getattr(self, "_cg_t_key", None) != key:
-            transposes = (_csr_transpose(self.M), _csr_transpose(self.MT))
+            transposes = (self._M_t, self._MT_t)
             if self.device.type == "cpu":
                 transposes = tuple(_ScipyCSR(A) for A in transposes)
             self._cg_t = transposes
@@ -1013,7 +1048,11 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # reference field (B,K) -- from the NaN-filled input, so a bad
         # sample only zeroes its own (normalized) contribution instead of
         # poisoning x_ref with NaN.
-        x_ref = y_filled @ self.M
+        M_t, MT_t = self._cg_transposes()
+        # the operators themselves only where no transpose is used
+        M_op = self.M if M_t is None else None
+        MT_op = self.MT if MT_t is None else None
+        x_ref = _rmatmul(y_filled, M_op, M_t)
 
         if x0 is None:
             x0 = torch.zeros_like(x_ref)
@@ -1032,7 +1071,6 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             n_clipped_high = torch.zeros(B, dtype=torch.int64, device=self.device)
 
         if bool(row_has_data.any()):
-            M_t, MT_t = self._cg_transposes()
             sel = torch.nonzero(row_has_data, as_tuple=False).reshape(-1)
             y_sel = y_filled[sel]
             x_ref_sel = x_ref[sel]
@@ -1040,8 +1078,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
             if clip is None:
                 delta, info = least_squares_cg(
-                    M=self.M,
-                    MT=self.MT,
+                    M=M_op,
+                    MT=MT_op,
                     y=y_sel,
                     x_ref=x_ref_sel,
                     x0=x0_sel,
@@ -1057,8 +1095,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 # bounds on hval, per row (S,1), turned into bounds on delta (S,K)
                 lo_sel, hi_sel = _clip_bounds(clip, y[sel], valid[sel])
                 delta, info = bounded_least_squares_cg(
-                    M=self.M,
-                    MT=self.MT,
+                    M=M_op,
+                    MT=MT_op,
                     y=y_sel,
                     x_ref=x_ref_sel,
                     x0=x0_sel,
@@ -1105,7 +1143,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 F_target = target_mean * self.K                                             # (S,1)
 
                 def _Hmv(v: torch.Tensor) -> torch.Tensor:
-                    return _rmatmul(_rmatmul(v, self.MT, MT_t), self.M, M_t) + float(lam) * v
+                    return _rmatmul(_rmatmul(v, MT_op, MT_t), M_op, M_t) + float(lam) * v
 
                 dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
                 if clip is None:
