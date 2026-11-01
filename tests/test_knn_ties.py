@@ -39,10 +39,10 @@ def _ulp_noise(a, seed):
     return a + rng.integers(-2, 3, a.size) * np.spacing(a)
 
 
-def _resample(lat, lon, val, cls=hr.BilinearResampler, **kw):
+def _resample(lat, lon, val, cls=hr.BilinearResampler, resample_kw=None, **kw):
     lat2, lon2 = np.meshgrid(lat, lon, indexing="ij")
     op = cls(lon_deg=lon2.ravel(), lat_deg=lat2.ravel(), **{**KW, **kw})
-    out = op.resample(val)
+    out = op.resample(val, **(resample_kw or {}))
     return op, np.asarray(out.cell_ids), np.asarray(out.cell_data)
 
 
@@ -90,21 +90,27 @@ def test_operator_with_ties_equals_coalesced_build(tie_grid, cls):
 @pytest.mark.parametrize("batch_size", [None, 1000])
 @pytest.mark.parametrize("seed", [0, 1, 2])
 @pytest.mark.parametrize(
-    ("cls", "atol"),
+    ("cls", "atol", "resample_kw"),
     [
-        pytest.param(hr.BilinearResampler, 1e-6, id="bilinear"),
-        pytest.param(hr.BicubicResampler, 1e-6, id="bicubic"),
-        pytest.param(hr.NearestResampler, 1e-6, id="nearest"),
-        # the conjugate gradient stops at its own tolerance: up to 1 cm here
-        # (3 mm on macOS arm64, 1.0 cm on Linux x86_64; on main the PSF
-        # result moved by 2.4 m on this grid)
-        pytest.param(hr.PSFResampler, 5e-2, id="psf"),
+        pytest.param(hr.BilinearResampler, 1e-6, None, id="bilinear"),
+        pytest.param(hr.BicubicResampler, 1e-6, None, id="bicubic"),
+        pytest.param(hr.NearestResampler, 1e-6, None, id="nearest"),
+        # the PSF fit with the damping of the Sentinel-2 settings (lam=0.1):
+        # without damping (lam=0, the default) the normal equations of this
+        # grid are ill-conditioned, and the conjugate gradient amplifies any
+        # change of the last bits (of the inputs, or of the order of its sums)
+        # up to several centimetres; the damping is what makes the fit stable.
+        # The conjugate gradient stops at its own tolerance.
+        pytest.param(hr.PSFResampler, 5e-2, {"lam": 0.1}, id="psf"),
     ],
 )
-def test_result_does_not_depend_on_the_last_bits(tie_grid, batch_size, seed, cls, atol):
+def test_result_does_not_depend_on_the_last_bits(tie_grid, batch_size, seed, cls, atol, resample_kw):
     lat, lon, val = tie_grid
-    _, c0, v0 = _resample(lat, lon, val, cls=cls, batch_size=batch_size)
-    _, c1, v1 = _resample(_ulp_noise(lat, seed), _ulp_noise(lon, seed + 10), val, cls=cls, batch_size=batch_size)
+    _, c0, v0 = _resample(lat, lon, val, cls=cls, batch_size=batch_size, resample_kw=resample_kw)
+    _, c1, v1 = _resample(
+        _ulp_noise(lat, seed), _ulp_noise(lon, seed + 10), val, cls=cls, batch_size=batch_size,
+        resample_kw=resample_kw,
+    )
     np.testing.assert_array_equal(c1, c0)
     # the weights move with the last bits of the distances (~1e-9 m), not the links
     np.testing.assert_allclose(v1, v0, rtol=0, atol=atol)
