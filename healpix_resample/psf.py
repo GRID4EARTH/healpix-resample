@@ -23,8 +23,25 @@ from healpix_resample.knn import KNeighborsResampler, _safe_normalize, _sigma_le
 
 
 def _csr_transpose(A: torch.Tensor) -> torch.Tensor:
-    """Transpose of the sparse matrix ``A`` (COO or CSR), stored as CSR."""
-    return A.to_sparse_coo().t().coalesce().to_sparse_csr()
+    """Transpose of the sparse matrix ``A`` (coalesced COO or CSR), stored as CSR.
+
+    The entries of ``A`` are in row-major order, so a stable sort of their
+    column indices puts them in the row-major order of the transpose: the same
+    CSR as ``A.t().coalesce().to_sparse_csr()``, without sorting both indices.
+    """
+    n_rows, n_cols = A.shape
+    if A.layout == torch.sparse_csr:
+        rows = torch.repeat_interleave(
+            torch.arange(n_rows, device=A.device), torch.diff(A.crow_indices())
+        )
+        cols, vals = A.col_indices(), A.values()
+    else:
+        rows, cols = A.indices()
+        vals = A.values()
+    order = torch.argsort(cols, stable=True)
+    crow = torch.zeros(n_cols + 1, dtype=torch.long, device=A.device)
+    crow[1:] = torch.cumsum(torch.bincount(cols, minlength=n_cols), 0)
+    return torch.sparse_csr_tensor(crow, rows[order], vals[order], size=(n_cols, n_rows))
 
 
 def _rmatmul(v: torch.Tensor, A: torch.Tensor, A_t: Optional[torch.Tensor] = None) -> torch.Tensor:
