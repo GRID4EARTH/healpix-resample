@@ -13,6 +13,7 @@ This module is designed for large N and batched values (B,N) on CUDA.
 """
 
 import math
+from dataclasses import dataclass
 from typing import Generic, Tuple, Optional, Union
 
 import healpix_geo
@@ -121,6 +122,72 @@ def _append_tied(idx_out, dist_out, ties):
     idx_new[rows, Npt + rank] = idx
     dist_new[rows, Npt + rank] = dist
     return idx_new, dist_new
+
+
+@dataclass
+class NeighbourLinks:
+    """The links found by the neighbour search of a `KNeighborsResampler`
+    (``healpix_weighted_nearest``), without their distances.
+
+    They depend only on the geometry (the sample coordinates, the level, the
+    search parameters), not on the values: they can be kept and given back to
+    a resampler built on the same geometry (``neighbours=``), which then skips
+    the search. The distances are computed again from the coordinates, with
+    the same operations as the search (`link_distances`), so the resampler is
+    the same, bit for bit.
+
+    Attributes
+    ----------
+    cell_ids : (K,) long
+        The cells kept by the search, before the resampler prunes the cells
+        no sample links to.
+    hi : (N, Npt) long
+        Index in ``cell_ids`` of the ``Npt`` nearest kept cells of each
+        sample (``-1``: none).
+    tie_rows, tie_hi : (T,) long
+        The links to the cells tied with a sample's ``Npt``-th nearest one.
+    """
+
+    cell_ids: torch.Tensor
+    hi: torch.Tensor
+    tie_rows: torch.Tensor
+    tie_hi: torch.Tensor
+
+
+@torch.no_grad()
+def link_distances(
+    lon_deg: torch.Tensor,
+    lat_deg: torch.Tensor,
+    links: NeighbourLinks,
+    *,
+    level: int,
+    nest: bool,
+    ellipsoid: str,
+    radius: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Distances (metres) of the links of ``links``, as the neighbour search
+    computes them: `_arc_distance` between the unit vectors of the cell
+    centres and of the samples (float64). Returns ``(d, tie_d)``: ``(N, Npt)``
+    (``inf`` where ``hi`` is ``-1``) and ``(T,)``."""
+    dev = links.hi.device
+    cells = links.cell_ids.detach().cpu().numpy().astype(np.uint64)
+    hp = healpix_geo.nested if nest else healpix_geo.ring
+    lon_c, lat_c = hp.healpix_to_lonlat(cells, level, ellipsoid=ellipsoid)
+    xyz_c = _lonlat_to_xyz(
+        torch.deg2rad(torch.as_tensor(np.asarray(lon_c), dtype=torch.float64, device=dev)),
+        torch.deg2rad(torch.as_tensor(np.asarray(lat_c), dtype=torch.float64, device=dev)),
+    )
+    xyz1 = _lonlat_to_xyz(
+        torch.deg2rad(lon_deg.to(dev, dtype=torch.float64)),
+        torch.deg2rad(lat_deg.to(dev, dtype=torch.float64)),
+    )
+    if xyz_c.shape[0] == 0:
+        d = torch.full(links.hi.shape, float("inf"), dtype=torch.float64, device=dev)
+        return d, torch.empty((0,), dtype=torch.float64, device=dev)
+    d = _arc_distance(xyz_c[links.hi.clamp(min=0)], xyz1[:, None, :], radius)
+    d = torch.where(links.hi >= 0, d, torch.full_like(d, float("inf")))
+    tie_d = _arc_distance(xyz_c[links.tie_hi], xyz1[links.tie_rows], radius)
+    return d, tie_d
 
 
 @torch.no_grad()
@@ -980,6 +1047,7 @@ class KNeighborsResampler(Generic[T_Array]):
         group_by: bool = False,
         batch_size: int | None = None,
         coarse_level_delta: int | None = None,
+        neighbours: Optional["NeighbourLinks"] = None,
     ) -> None:
         """Pre-compute sparse operators.
 
@@ -1017,6 +1085,11 @@ class KNeighborsResampler(Generic[T_Array]):
                 only; see ``healpix_weighted_nearest``): the same cells,
                 neighbours and ties as the fine-level search, in less time
                 and memory. ``None`` (default): the fine-level search.
+            neighbours: the links (`NeighbourLinks`) of an earlier resampler
+                on the same samples, level and search parameters (its
+                ``neighbours`` attribute): the neighbour search is skipped
+                and the distances computed again, so the resampler is the
+                same, bit for bit. With ``Npt=1`` it is ignored.
 
         Raises:
             RuntimeError: without ``out_cell_ids``, when no cell passes
@@ -1091,27 +1164,44 @@ class KNeighborsResampler(Generic[T_Array]):
                 self.xyz_samples = _lonlat_to_xyz(torch.deg2rad(lon_t),torch.deg2rad(lat_t))  # (N,3)
             
             # --- get kept healpix cells + per-sample nearest indices + distances
-            cell_ids, hi, d, ties = healpix_weighted_nearest(
-                lon_t,
-                lat_t,
-                level=self.level,
-                Npt=self.Npt,
-                nest=self.nest,
-                threshold=self.threshold,
-                radius=self.radius,
-                ellipsoid=self.ellipsoid,
-                sigma=self.sigma_m,
-                out_cell_ids=self.out_cell_ids,
-                ring_weight=ring_weight,
-                ring_search_init=ring_search_init,
-                ring_search_max=ring_search_max,
-                num_threads=num_threads,
-                device_for_dist=self.device,
-                batch_size=self.batch_size,
-                coarse_level_delta=coarse_level_delta,
-                return_ties=True,
-            )
-            
+            if neighbours is not None and Npt > 1:
+                # the links of an earlier search on the same geometry: only
+                # their distances are computed (as the search does)
+                if neighbours.hi.shape != (lon_t.numel(), self.Npt):
+                    raise ValueError(
+                        f"neighbours: links of {tuple(neighbours.hi.shape)} for "
+                        f"{lon_t.numel()} samples and Npt={self.Npt}"
+                    )
+                cell_ids = neighbours.cell_ids.to(self.device)
+                hi = neighbours.hi.to(self.device)
+                d, tie_d = link_distances(
+                    lon_t, lat_t, neighbours, level=self.level, nest=self.nest,
+                    ellipsoid=self.ellipsoid, radius=self.radius,
+                )
+                ties = (neighbours.tie_rows.to(self.device), neighbours.tie_hi.to(self.device), tie_d)
+            else:
+                cell_ids, hi, d, ties = healpix_weighted_nearest(
+                    lon_t,
+                    lat_t,
+                    level=self.level,
+                    Npt=self.Npt,
+                    nest=self.nest,
+                    threshold=self.threshold,
+                    radius=self.radius,
+                    ellipsoid=self.ellipsoid,
+                    sigma=self.sigma_m,
+                    out_cell_ids=self.out_cell_ids,
+                    ring_weight=ring_weight,
+                    ring_search_init=ring_search_init,
+                    ring_search_max=ring_search_max,
+                    num_threads=num_threads,
+                    device_for_dist=self.device,
+                    batch_size=self.batch_size,
+                    coarse_level_delta=coarse_level_delta,
+                    return_ties=True,
+                )
+            if Npt > 1:
+                self.neighbours = NeighbourLinks(cell_ids, hi, ties[0], ties[1])
 
             # With `out_cell_ids`, an empty result is a legitimate outcome: none of
             # the requested cells has enough support among the samples (e.g. a
