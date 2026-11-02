@@ -80,7 +80,7 @@ class NearestResampler(KNeighborsResampler):
         inputs, and no KNN links (``neighbours``) to search or keep. Samples
         exactly as near as each other may be picked differently. On a CUDA
         device (nested cells), the search runs on the GPU from HEALPix
-        buckets of the samples (see :meth:`_nearest_source_buckets`): the
+        buckets of the samples (``_nearest_source_buckets``): the
         same samples as the KD-tree, ties apart.
         ``max_distance_m`` then applies to every requested cell (the KNN
         path applies it only to the cells its rings did not reach).
