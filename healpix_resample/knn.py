@@ -184,8 +184,14 @@ def link_distances(
     if xyz_c.shape[0] == 0:
         d = torch.full(links.hi.shape, float("inf"), dtype=torch.float64, device=dev)
         return d, torch.empty((0,), dtype=torch.float64, device=dev)
-    d = _arc_distance(xyz_c[links.hi.clamp(min=0)], xyz1[:, None, :], radius)
-    d = torch.where(links.hi >= 0, d, torch.full_like(d, float("inf")))
+    # in batches of samples: the (n, Npt, 3) gathers of a whole 10 m chunk
+    # would take GBs (each distance is computed alone: same values)
+    d = torch.empty(links.hi.shape, dtype=torch.float64, device=dev)
+    step = 1 << 18
+    for s in range(0, links.hi.shape[0], step):
+        hi = links.hi[s : s + step]
+        dd = _arc_distance(xyz_c[hi.clamp(min=0)], xyz1[s : s + step, None, :], radius)
+        d[s : s + step] = torch.where(hi >= 0, dd, torch.full_like(dd, float("inf")))
     tie_d = _arc_distance(xyz_c[links.tie_hi], xyz1[links.tie_rows], radius)
     return d, tie_d
 

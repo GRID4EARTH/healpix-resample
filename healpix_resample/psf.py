@@ -640,6 +640,15 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # Those links carry no information anyway: give them a weight of 0.
         wM = _safe_normalize(flat_w_v, norm_col[flat_hi_v])
 
+        cell_out_ids = getattr(self, "cell_out_ids", None)
+        if cell_out_ids is None:
+            cell_out_ids = getattr(self, "out_cell_ids", None)
+        if cell_out_ids is None or not self.fill_missing_out_cells:
+            if self._comp_transposes_directly(
+                flat_idx_v, flat_hi_v, flat_w_v, wM, norm_col, norm_col_raw, cell_out_ids
+            ):
+                return
+
         rowsM = flat_idx_v
         colsM = flat_hi_v
         indicesM = torch.stack([rowsM, colsM], dim=0)
@@ -873,6 +882,54 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         del MT_coo
         self._M = None
         self._MT = None
+
+    def _comp_transposes_directly(
+        self, rows, cols, w, wM, norm_col, norm_col_raw, cell_out_ids
+    ) -> bool:
+        """The CSR transposes of M and MT (what the Conjugate Gradient uses)
+        built straight from the links (rows: samples, cols: cells), without
+        the COO matrices and their sorts: entry by entry the transposes
+        ``comp_matrix`` builds through ``coalesce`` and ``_csr_transpose``,
+        with far fewer temporaries (the peak memory of a 10 m Sentinel-2
+        chunk). False, and nothing set, if a link appears twice (the COO path
+        then sums them)."""
+        N, K = self.N, self.K
+        # (cell, sample) order: the rows of M.T; (sample, cell) order: the rows of MT.T
+        key = cols * N + rows
+        order_kn = torch.argsort(key, stable=True)
+        sorted_key = key[order_kn]
+        del key
+        if sorted_key.numel() > 1 and bool((sorted_key[1:] == sorted_key[:-1]).any()):
+            return False
+        del sorted_key
+        crow = torch.zeros(K + 1, dtype=torch.long, device=self.device)
+        crow[1:] = torch.cumsum(torch.bincount(cols, minlength=K), 0)
+        self._M_t = torch.sparse_csr_tensor(
+            crow, rows[order_kn], wM.to(self.dtype)[order_kn], size=(K, N)
+        )
+        del order_kn, crow
+
+        norm_row = torch.bincount(rows, weights=w, minlength=N).to(self.dtype)
+        wMT = _safe_normalize(w, norm_row[rows])
+        del norm_row
+        order_nk = torch.argsort(rows * K + cols, stable=True)
+        crow = torch.zeros(N + 1, dtype=torch.long, device=self.device)
+        crow[1:] = torch.cumsum(torch.bincount(rows, minlength=N), 0)
+        self._MT_t = torch.sparse_csr_tensor(
+            crow, cols[order_nk], wMT.to(self.dtype)[order_nk], size=(N, K)
+        )
+        del order_nk, crow, wMT
+
+        # as comp_matrix: the requested cells with too little kernel support
+        self.uncomputable_out_cells = None
+        if cell_out_ids is not None:
+            bad_k = torch.nonzero(norm_col_raw <= self.threshold).reshape(-1)
+            if bad_k.numel() > 0 and not self.fill_missing_out_cells:
+                self.uncomputable_out_cells = bad_k.clone()
+        self.cell_weight = norm_col
+        self._M = None
+        self._MT = None
+        return True
 
     @property
     def M(self) -> torch.Tensor:
