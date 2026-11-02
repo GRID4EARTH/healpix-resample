@@ -413,6 +413,8 @@ class NearestResampler(KNeighborsResampler):
         hi = torch.full((Q,), -1, dtype=torch.long, device=dev)
         best = torch.full((Q,), math.inf, dtype=torch.float64, device=dev)
         if mmax:
+            # about 16 M candidate pairs per batch (~0.4 GB of float64 differences)
+            batch = max(1024, min(batch, (1 << 24) // (9 * mmax)))
             ar = torch.arange(mmax, device=dev)
             none = torch.iinfo(torch.long).max
             for b0 in range(0, Q, batch):
