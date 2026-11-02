@@ -74,3 +74,39 @@ def test_unknown_search(chunk):
     lon, lat, out = chunk
     with pytest.raises(ValueError, match="search"):
         NearestResampler(lon, lat, level=LEVEL, out_cell_ids=out, search="brute")
+
+
+def _bucket_search(lon, lat, out, device):
+    import torch
+
+    from healpix_resample.knn import _lonlat_to_xyz
+
+    cells = torch.unique(torch.as_tensor(out.astype(np.int64)))
+    clon, clat = healpix_geo.nested.healpix_to_lonlat(cells.numpy().astype(np.uint64), LEVEL)
+    xyz_cells = _lonlat_to_xyz(torch.deg2rad(torch.as_tensor(np.asarray(clon), dtype=torch.float64)),
+                               torch.deg2rad(torch.as_tensor(np.asarray(clat), dtype=torch.float64)))
+    lon_t = torch.as_tensor(lon, dtype=torch.float64)
+    lat_t = torch.as_tensor(lat, dtype=torch.float64)
+    xyz_src = _lonlat_to_xyz(torch.deg2rad(lon_t), torch.deg2rad(lat_t))
+    kd = NearestResampler._nearest_source(xyz_cells, xyz_src)
+    bk = NearestResampler._nearest_source_buckets(
+        cells, LEVEL, lon_t, lat_t, xyz_cells, xyz_src, ellipsoid="WGS84", device=device)
+    return kd, bk
+
+
+@pytest.mark.parametrize("part", ["full", "partial"])
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_bucket_search_same_samples_as_the_kdtree(chunk, part, device):
+    """The bucket search (used on CUDA devices) picks the KD-tree's samples,
+    also for the cells outside the samples' extent (they go to the KD-tree)."""
+    import torch
+
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    lon, lat, out = chunk
+    if part == "partial":
+        keep = lon < np.quantile(lon, 0.3)
+        lon, lat = lon[keep], lat[keep]
+    (hi_kd, dot_kd), (hi_bk, dot_bk) = _bucket_search(lon, lat, out, device)
+    np.testing.assert_array_equal(hi_bk.numpy(), hi_kd.numpy())
+    np.testing.assert_allclose(dot_bk.numpy(), dot_kd.numpy(), rtol=0, atol=1e-15)
