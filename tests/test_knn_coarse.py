@@ -208,3 +208,39 @@ def test_nested_ids_in_torch_same_as_healpix_geo(level):
     ).astype(np.int64)
     got = _base_cell_coordinates_to_nested(torch.from_numpy(f), torch.from_numpy(i), torch.from_numpy(j), level)
     np.testing.assert_array_equal(got.numpy(), ref)
+
+
+def _to_cpu(x):
+    if isinstance(x, torch.Tensor):
+        return x.cpu()
+    return type(x)(_to_cpu(v) for v in x)
+
+
+def _by_id(cells, idx, dist):
+    """Per sample: its neighbour cell ids sorted by id, and their distances."""
+    ids = torch.where(idx >= 0, cells[torch.clamp(idx, min=0)], torch.full_like(idx, -1)).numpy()
+    order = np.argsort(ids, axis=1, kind="stable")
+    return np.take_along_axis(ids, order, 1), np.take_along_axis(dist.numpy(), order, 1)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="no CUDA device")
+@pytest.mark.parametrize("k", [1, 2])
+@pytest.mark.parametrize("grid", ["dense_grid", "s2_like_grid"])
+def test_coarse_search_on_cuda_same_as_cpu(request, grid, k):
+    """On a CUDA device the coarse search builds the neighbourhoods inside
+    the faces in torch: the same cells and the same links (neighbour cells of
+    every sample, tied links) as on the CPU. The distances are computed on
+    the device, so they agree to rounding, not bit for bit."""
+    lon, lat = request.getfixturevalue(grid)
+    level = 13 if grid == "dense_grid" else 20
+    ref = _search(lon, lat, level, 4, coarse_level_delta=k, **SEARCH)
+    out = _to_cpu(_search(lon, lat, level, 4, coarse_level_delta=k,
+                          device_for_dist=torch.device("cuda"), **SEARCH))
+    assert torch.equal(ref[0], out[0])
+    ids_r, d_r = _by_id(*ref[:3])
+    ids_o, d_o = _by_id(*out[:3])
+    np.testing.assert_array_equal(ids_o, ids_r)
+    np.testing.assert_allclose(d_o, d_r, rtol=1e-9, atol=1e-9)
+    tie_r = sorted(zip(ref[3][0].tolist(), ref[0][ref[3][1]].tolist()))
+    tie_o = sorted(zip(out[3][0].tolist(), out[0][out[3][1]].tolist()))
+    assert tie_o == tie_r
