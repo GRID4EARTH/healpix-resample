@@ -7,7 +7,18 @@ import pytest
 import torch
 
 import healpix_resample as hr
-from healpix_resample.knn import healpix_weighted_nearest
+import healpix_geo
+
+from healpix_resample import knn
+from healpix_resample.knn import _base_cell_coordinates_to_nested, healpix_weighted_nearest
+
+
+@pytest.fixture(autouse=True, params=["healpix_geo", "torch"])
+def neighbourhoods(request, monkeypatch):
+    """Every test runs with the neighbourhoods inside the faces from
+    ``healpix_geo`` (CPU) and from torch (the CUDA path, here on the CPU)."""
+    if request.param == "torch":
+        monkeypatch.setattr(knn, "_on_device", lambda dev: True)
 
 KW = {"nest": True, "ellipsoid": "WGS84", "verbose": False}
 SEARCH = {"threshold": 0.05, "ring_weight": 2, "ring_search_max": 2}
@@ -186,3 +197,14 @@ def test_coarse_level_delta_range(dense_grid, k):
     lon, lat = dense_grid
     with pytest.raises(ValueError, match="coarse_level_delta"):
         _search(lon, lat, 13, 4, coarse_level_delta=k, **SEARCH)
+
+
+@pytest.mark.parametrize("level", [1, 7, 14, 20, 29])
+def test_nested_ids_in_torch_same_as_healpix_geo(level):
+    rng = np.random.default_rng(level)
+    f, i, j = rng.integers(0, 12, 5000), rng.integers(0, 2**level, 5000), rng.integers(0, 2**level, 5000)
+    ref = healpix_geo.nested.base_cell_coordinates_to_healpix(
+        f.astype(np.uint8), i.astype(np.uint32), j.astype(np.uint32), level
+    ).astype(np.int64)
+    got = _base_cell_coordinates_to_nested(torch.from_numpy(f), torch.from_numpy(i), torch.from_numpy(j), level)
+    np.testing.assert_array_equal(got.numpy(), ref)

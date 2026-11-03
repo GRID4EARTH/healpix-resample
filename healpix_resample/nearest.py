@@ -375,6 +375,7 @@ class NearestResampler(KNeighborsResampler):
         device: torch.device,
         delta: int = 2,
         batch: int = 1 << 18,
+        max_pairs: int = 1 << 24,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """:meth:`_nearest_source` on ``device`` (a GPU), for nested cells.
 
@@ -387,6 +388,11 @@ class NearestResampler(KNeighborsResampler):
         is not closer than 0.4 of the nominal bucket width (or that has no
         candidate, e.g. outside the swath) takes its nearest sample from the
         KD-tree instead. So the picks are the KD-tree's, ties apart.
+
+        A batch compares at most ``max_pairs`` candidate pairs (about 0.4 GB
+        of float64 differences for the default) and holds at least 1024
+        cells: when a bucket holds more samples than that allows (cells much
+        coarser than the samples), the whole search goes to the KD-tree.
 
         Returns hi (Q,) and the dot product (Q,), on the CPU, like
         :meth:`_nearest_source`.
@@ -407,14 +413,18 @@ class NearestResampler(KNeighborsResampler):
         count[nb < 0] = 0
         del q_bucket, s_bucket, ub, nb, sb
         mmax = int(count.max()) if count.numel() else 0
+        if 1024 * 9 * mmax > max_pairs:
+            # too many samples per bucket for a batch of 1024 cells
+            hi, dot = NearestResampler._nearest_source(xyz_query.cpu(), xyz_src.cpu())
+            return hi.cpu(), dot.cpu()
 
         xq, xs = xyz_query.to(dev, torch.float64), xyz_src.to(dev, torch.float64)
         Q = xq.shape[0]
         hi = torch.full((Q,), -1, dtype=torch.long, device=dev)
         best = torch.full((Q,), math.inf, dtype=torch.float64, device=dev)
         if mmax:
-            # about 16 M candidate pairs per batch (~0.4 GB of float64 differences)
-            batch = max(1024, min(batch, (1 << 24) // (9 * mmax)))
+            # at most max_pairs candidate pairs per batch
+            batch = max(1024, min(batch, max_pairs // (9 * mmax)))
             ar = torch.arange(mmax, device=dev)
             none = torch.iinfo(torch.long).max
             for b0 in range(0, Q, batch):

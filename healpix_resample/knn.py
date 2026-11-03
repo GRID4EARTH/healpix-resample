@@ -618,6 +618,12 @@ def _spread_bits(v: torch.Tensor) -> torch.Tensor:
     return (v | (v << 1)) & 0x5555555555555555
 
 
+def _on_device(dev: torch.device) -> bool:
+    """Whether the coarse search builds the neighbourhoods inside the faces
+    on ``dev`` (CUDA) rather than with ``healpix_geo`` on the CPU."""
+    return dev.type == "cuda"
+
+
 def _base_cell_coordinates_to_nested(
     face: torch.Tensor, i: torch.Tensor, j: torch.Tensor, level: int
 ) -> torch.Tensor:
@@ -690,7 +696,7 @@ def _coarse_weighted_nearest(
     edge = (np.minimum(fi, fj) < R) | (np.maximum(fi, fj) >= nside - R)
     # on a GPU, the neighbourhoods inside the faces are computed there (the
     # same ids as healpix_geo's)
-    on_dev = dev.type != "cpu"
+    on_dev = _on_device(dev)
     if on_dev:
         face_t = torch.from_numpy(face.astype(np.int64)).to(dev)
         fi_t, fj_t = torch.from_numpy(fi).to(dev), torch.from_numpy(fj).to(dev)
