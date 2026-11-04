@@ -71,7 +71,7 @@ def test_constant_field_is_reproduced(step_m):
 
 def test_no_cell_amplifies_its_weights(coarse_samples):
     lon, lat = coarse_samples
-    op = hr.BicubicResampler(lon_deg=lon, lat_deg=lat, **KW)
+    op = hr.BicubicResampler(lon_deg=lon, lat_deg=lat, device="cpu", **KW)
     m = op.M.to_sparse_coo().coalesce()
     cols, vals = m.indices()[1], m.values()
     unsigned = torch.zeros(op.K, dtype=vals.dtype).index_add_(0, cols, vals.abs())

@@ -124,7 +124,7 @@ def test_bitmask_recovers_independent_flags_deep_inside_regions(grid):
 
 def test_bitmask_numpy_torch_symmetry(grid):
     lon, lat = grid
-    op = BitmaskResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, n_bits=2)
+    op = BitmaskResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, n_bits=2, device="cpu")
     mask_np = ((lon > SPAN / 2).astype(np.int64)) | ((lat > SPAN / 2).astype(np.int64) << 1)
 
     res_np = op.resample(mask_np)
@@ -229,7 +229,7 @@ def test_categorical_without_return_scores_has_no_extra_fields(grid):
 
 def test_categorical_numpy_torch_symmetry(grid):
     lon, lat = grid
-    op = CategoricalResampler(lon_deg=lon, lat_deg=lat, level=LEVEL)
+    op = CategoricalResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, device="cpu")
     edges = np.quantile(lon, [0.5])
     mask_np = np.digitize(lon, edges).astype(np.int64)
 

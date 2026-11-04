@@ -76,7 +76,7 @@ def test_operator_with_ties_equals_coalesced_build(tie_grid, cls):
     """The tied links inserted into the CSC arrays of M give the same matrix as
     one COO build of all the links, with sorted rows in every column."""
     lat, lon, val = tie_grid
-    op, _, _ = _resample(lat, lon, val, cls=cls)
+    op, _, _ = _resample(lat, lon, val, cls=cls, device="cpu")
     assert op.tie_rows.numel() > 0
     actual = op.M.to_sparse_coo().coalesce()
     expected = _eager_M(op)

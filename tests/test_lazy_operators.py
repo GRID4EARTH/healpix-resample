@@ -52,7 +52,7 @@ def _same_csr(a, b):
 @pytest.mark.parametrize("name", list(CLASSES))
 def test_operators_identical_to_eager_construction(grid, name):
     cls, extra = CLASSES[name]
-    op = cls(lon_deg=grid[0], lat_deg=grid[1], **extra, **KW)
+    op = cls(lon_deg=grid[0], lat_deg=grid[1], device="cpu", **extra, **KW)
     assert op.M.layout == torch.sparse_csc
     assert _same_csr(op.M, _eager(op))
     assert _same_csr(op.MT, _eager(op, transposed=True, per_sample=True))
@@ -86,7 +86,7 @@ def test_setters_keep_subclass_assignment_working(grid):
 
 
 def test_M_columns_sum_to_one_and_cons_rows_sum_to_one(grid):
-    op = hr.BilinearResampler(lon_deg=grid[0], lat_deg=grid[1], **KW)
+    op = hr.BilinearResampler(lon_deg=grid[0], lat_deg=grid[1], device="cpu", **KW)
     ones = torch.ones(1, op.N, dtype=op.dtype)
     torch.testing.assert_close(ones @ op.M, torch.ones(1, op.K, dtype=op.dtype))
     row_sums = torch.ones(1, op.K, dtype=op.dtype) @ op.M_cons.to_dense().T
@@ -97,7 +97,7 @@ def test_M_columns_sum_to_one_and_cons_rows_sum_to_one(grid):
 def test_duplicate_link_falls_back_to_coalesced_sum(grid):
     """A sample linking the same cell twice is not produced by the search,
     but the direct CSR build must still match coalesce (weights added)."""
-    op = hr.BilinearResampler(lon_deg=grid[0], lat_deg=grid[1], **KW)
+    op = hr.BilinearResampler(lon_deg=grid[0], lat_deg=grid[1], device="cpu", **KW)
     hi = op.hi.clone()
     hi[0, 1] = hi[0, 0]  # duplicate the first link of sample 0
     op.hi = hi
@@ -112,7 +112,7 @@ def test_duplicate_link_falls_back_to_coalesced_sum(grid):
 def test_partial_rows_take_the_masked_path(grid):
     """Samples with fewer than Npt links (hi == -1) use the masked (counts)
     path of `comp_matrix()`; the result must still equal the eager build."""
-    op = hr.BilinearResampler(lon_deg=grid[0], lat_deg=grid[1], **KW)
+    op = hr.BilinearResampler(lon_deg=grid[0], lat_deg=grid[1], device="cpu", **KW)
     hi = op.hi.clone()
     hi[::7, 3] = -1
     hi[5, 1:] = -1
