@@ -29,7 +29,6 @@ dependencies = [
   "numpy",
   "torch",
   "healpix-geo",
-  "healpix-plot",
   "scipy",
 ]
 
@@ -38,6 +37,9 @@ dependencies = [
 # pyproj. In a conda/pixi environment, install pyproj from conda-forge
 # instead (see REPRODUCING.md on not mixing a PyPI pyproj with conda's PROJ).
 utm = ["pyproj"]
+# notebooks/real_groundtruth_downscale.ipynb plots with healpix-plot; the
+# package itself does not import it.
+notebooks = ["healpix-plot"]
 
 [tool.setuptools.packages.find]
 include = [
