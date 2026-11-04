@@ -4,7 +4,7 @@ tests/test_nearest_fill_kdtree.py
 `NearestResampler` with ``out_cell_ids`` fills the requested cells beyond the
 KNN rings from their nearest sample. That sample comes from a KD-tree
 (`_nearest_source`): same sample and distance as comparing every cell with
-every sample, which took hours on a Sentinel-2 chunk at the edge of the swath
+every sample, which took hours on a chunk at the edge of a satellite swath
 (millions of empty cells and of samples).
 
 CPU-only.
