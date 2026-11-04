@@ -43,7 +43,7 @@ def test_same_samples_as_the_knn_search(chunk, part, max_distance_m):
     if part == "partial":
         keep = lon < np.quantile(lon, 0.3)
         lon, lat = lon[keep], lat[keep]
-    kw = dict(level=LEVEL, out_cell_ids=out, max_distance_m=max_distance_m, verbose=False)
+    kw = dict(level=LEVEL, out_cell_ids=out, max_distance_m=max_distance_m, verbose=False, device="cpu")
     knn = NearestResampler(lon, lat, **kw)
     kd = NearestResampler(lon, lat, search="kdtree", **kw)
     if max_distance_m is not None:

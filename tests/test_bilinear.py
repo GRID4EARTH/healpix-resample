@@ -116,7 +116,7 @@ def test_all_nan_input_on_finite_data_is_not_silently_zero(grid):
 
 def test_single_nan_sample_only_affects_its_own_cells(grid):
     lon, lat = grid
-    op = BilinearResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False)
+    op = BilinearResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False, device="cpu")
 
     bad_idx = len(lon) // 2
     val = np.zeros(lon.shape)

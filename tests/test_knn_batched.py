@@ -80,8 +80,8 @@ def test_resampler_identical_to_unbatched(dense_grid, cls):
     lon, lat = dense_grid
     val = (np.sin(lon * 40) + np.cos(lat * 60)).astype(np.float32)
     extra = {"Npt": 4} if cls is hr.KNeighborsResampler else {}
-    ref = cls(lon_deg=lon, lat_deg=lat, level=13, threshold=0.05, ring_weight=2, **extra, **KW)
-    out = cls(lon_deg=lon, lat_deg=lat, level=13, threshold=0.05, ring_weight=2, batch_size=1000, **extra, **KW)
+    ref = cls(lon_deg=lon, lat_deg=lat, level=13, threshold=0.05, ring_weight=2, device="cpu", **extra, **KW)
+    out = cls(lon_deg=lon, lat_deg=lat, level=13, threshold=0.05, ring_weight=2, batch_size=1000, device="cpu", **extra, **KW)
     assert out.batch_size == 1000 and ref.batch_size is None
     assert torch.equal(ref.cell_ids, out.cell_ids)
     assert torch.equal(ref.hi, out.hi)

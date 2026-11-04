@@ -11,8 +11,9 @@ adopted here, for consistency with whichever other task files add their own
 
 - One file per resampler module.
 - Small, fast, synthetic fixtures (no real datasets).
-- CPU-only by default (`device` left at its default, which falls back to CPU
-  when CUDA is unavailable). Anything that specifically needs a GPU should
+- `device` left at its default (CUDA when a device is visible, else the CPU),
+  except in tests that compare with CPU tensors or numpy arrays: those pass
+  `device="cpu"`. Anything that specifically needs a GPU should
   be marked with `@pytest.mark.skipif(not torch.cuda.is_available())` --
   none of the tests below need one.
 """
@@ -261,7 +262,7 @@ def test_no_nan_or_inf_in_operators(small_grid):
 def test_conservative_false_is_default_and_unchanged(small_grid):
     lon, lat = small_grid
     val = lon
-    op = BicubicResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False)
+    op = BicubicResampler(lon_deg=lon, lat_deg=lat, level=LEVEL, verbose=False, device="cpu")
 
     res_default = op.resample(val)
     res_explicit = op.resample(val, conservative=False)
