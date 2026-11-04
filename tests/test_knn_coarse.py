@@ -35,7 +35,7 @@ def dense_grid():
 @pytest.fixture(scope="module")
 def s2_like_grid():
     """About one sample per cell (10 m samples, level-20 cells ~6 m): the
-    Sentinel-2 case, Npt = 9 with the default rings."""
+    case of high-resolution imagery, Npt = 9 with the default rings."""
     lon, lat = np.meshgrid(
         np.linspace(-5.990, -5.975, 130), np.linspace(37.290, 37.300, 110)
     )

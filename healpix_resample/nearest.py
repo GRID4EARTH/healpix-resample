@@ -351,7 +351,7 @@ class NearestResampler(KNeighborsResampler):
         the nearest source by chord is the one of largest dot product, and
         ``dot = 1 - c**2 / 2``. O((N + Q) log N), where comparing every query
         to every source took hours for a chunk with millions of cells and
-        samples (Sentinel-2 chunks at the edge of the swath).
+        samples (chunks at the edge of a satellite swath).
         """
         src = xyz_src.detach().cpu().numpy().astype(np.float64)
         query = xyz_query.detach().cpu().numpy().astype(np.float64)

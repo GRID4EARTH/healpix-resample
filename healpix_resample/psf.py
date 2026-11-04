@@ -900,8 +900,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         built straight from the links (rows: samples, cols: cells), without
         the COO matrices and their sorts: entry by entry the transposes
         ``comp_matrix`` builds through ``coalesce`` and ``_csr_transpose``,
-        with far fewer temporaries (the peak memory of a 10 m Sentinel-2
-        chunk). False, and nothing set, if a link appears twice (the COO path
+        with far fewer temporaries (the peak memory of a chunk of a few
+        million samples). False, and nothing set, if a link appears twice (the COO path
         then sums them)."""
         N, K = self.N, self.K
         # (cell, sample) order: the rows of M.T; (sample, cell) order: the rows of MT.T
