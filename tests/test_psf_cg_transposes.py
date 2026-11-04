@@ -86,3 +86,28 @@ def test_scipy_operator_shares_the_transpose(op):
         assert np.shares_memory(s.matrix.indices, t.col_indices().numpy())
         assert np.shares_memory(s.matrix.indptr, t.crow_indices().numpy())
     assert op.M.indices().dtype == torch.int64
+
+
+def test_cg_diagonal_is_the_diagonal_of_the_operator(op):
+    """``_cg_diagonal`` (for ``jacobi=True``) is the diagonal of ``MT @ M``."""
+    dense = (op.MT.to_dense().to(torch.float64) @ op.M.to_dense().to(torch.float64)).diagonal()
+    np.testing.assert_allclose(op._cg_diagonal().to(torch.float64).numpy(), dense.numpy(),
+                               rtol=1e-6 if op.dtype == torch.float32 else 1e-12, atol=0)
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"lam": 0.1},
+    {"lam": 0.1, "clip": (0.0, 1.0)},
+    {"lam": 0.1, "conservative": True},
+])
+@pytest.mark.parametrize("rows", [slice(0, 1), slice(None)])
+def test_jacobi_agrees_to_the_cg_tolerance(op, field, kwargs, rows):
+    """The Jacobi preconditioner changes the path of the Conjugate Gradient,
+    not its solution: same cells, the same values to the CG tolerance."""
+    _, _, val = field
+    v = val[rows] if val[rows].shape[0] > 1 else val[rows][0]
+    ref = op.resample(v, max_iter=200, tol=1e-8, **kwargs)
+    pre = op.resample(v, max_iter=200, tol=1e-8, jacobi=True, **kwargs)
+    np.testing.assert_array_equal(np.asarray(pre.cell_ids), np.asarray(ref.cell_ids))
+    tol = 1e-4 if op.dtype == torch.float32 else 1e-6
+    np.testing.assert_allclose(np.asarray(pre.cell_data), np.asarray(ref.cell_data), rtol=tol, atol=tol)

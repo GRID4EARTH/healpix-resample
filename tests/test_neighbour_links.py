@@ -42,11 +42,13 @@ def _same(a, b):
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
 
 
+@pytest.mark.parametrize("batch_size", [None, 1000])
 @pytest.mark.parametrize("delta", [None, 2])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_psf_from_links_is_the_same(delta, dtype):
+def test_psf_from_links_is_the_same(delta, dtype, batch_size):
     lon, lat = _grid()
-    kw = dict(level=12, Npt=9, threshold=0.1, dtype=dtype, coarse_level_delta=delta)
+    kw = dict(level=12, Npt=9, threshold=0.1, dtype=dtype, coarse_level_delta=delta,
+              batch_size=batch_size)
     a = PSFResampler(lon, lat, **kw)
     assert isinstance(a.neighbours, NeighbourLinks)
     b = PSFResampler(lon, lat, neighbours=a.neighbours, **kw)
