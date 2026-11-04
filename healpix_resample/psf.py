@@ -41,7 +41,16 @@ def _csr_transpose(A: torch.Tensor) -> torch.Tensor:
     order = torch.argsort(cols, stable=True)
     crow = torch.zeros(n_cols + 1, dtype=torch.long, device=A.device)
     crow[1:] = torch.cumsum(torch.bincount(cols, minlength=n_cols), 0)
-    return torch.sparse_csr_tensor(crow, rows[order], vals[order], size=(n_cols, n_rows))
+    return _csr_tensor(crow, rows[order], vals[order], (n_cols, n_rows))
+
+
+def _csr_tensor(crow: torch.Tensor, col: torch.Tensor, vals: torch.Tensor, size) -> torch.Tensor:
+    """``torch.sparse_csr_tensor`` with int32 indices when they fit (as scipy
+    keeps them): :class:`_ScipyCSR` then shares them instead of copying both
+    index arrays, and the indices take half the memory."""
+    if max(int(col.numel()), *size) < 2**31:
+        crow, col = crow.to(torch.int32), col.to(torch.int32)
+    return torch.sparse_csr_tensor(crow, col, vals, size=size)
 
 
 def _rmatmul(v: torch.Tensor, A: torch.Tensor, A_t: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -63,9 +72,10 @@ def _rmatmul(v: torch.Tensor, A: torch.Tensor, A_t: Optional[torch.Tensor] = Non
 class _ScipyCSR:
     """A CPU CSR matrix (a transpose from :func:`_csr_transpose`) whose
     products with dense torch tensors run in scipy, without copies of the
-    operands. scipy's CSR x dense kernel is several times faster than torch's
-    on CPU (one 10 m Sentinel-2 chunk, one thread: 0.04 s instead of 0.17 s
-    for one vector); the sums are the same, in another order."""
+    operands (scipy shares the arrays when the indices are int32, see
+    :func:`_csr_tensor`). scipy's CSR x dense kernel is several times faster
+    than torch's on CPU (a chunk of a few million samples, one thread: 0.04 s
+    instead of 0.17 s for one vector); the sums are the same, in another order."""
 
     def __init__(self, A: torch.Tensor):
         import scipy.sparse
@@ -904,9 +914,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         del sorted_key
         crow = torch.zeros(K + 1, dtype=torch.long, device=self.device)
         crow[1:] = torch.cumsum(torch.bincount(cols, minlength=K), 0)
-        self._M_t = torch.sparse_csr_tensor(
-            crow, rows[order_kn], wM.to(self.dtype)[order_kn], size=(K, N)
-        )
+        self._M_t = _csr_tensor(crow, rows[order_kn], wM.to(self.dtype)[order_kn], (K, N))
         del order_kn, crow
 
         norm_row = torch.bincount(rows, weights=w, minlength=N).to(self.dtype)
@@ -915,9 +923,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         order_nk = torch.argsort(rows * K + cols, stable=True)
         crow = torch.zeros(N + 1, dtype=torch.long, device=self.device)
         crow[1:] = torch.cumsum(torch.bincount(rows, minlength=N), 0)
-        self._MT_t = torch.sparse_csr_tensor(
-            crow, cols[order_nk], wMT.to(self.dtype)[order_nk], size=(N, K)
-        )
+        self._MT_t = _csr_tensor(crow, cols[order_nk], wMT.to(self.dtype)[order_nk], (N, K))
         del order_nk, crow, wMT
 
         # as comp_matrix: the requested cells with too little kernel support

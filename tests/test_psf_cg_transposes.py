@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from healpix_resample import PSFResampler
-from healpix_resample.psf import _csr_transpose, _rmatmul
+from healpix_resample.psf import _csr_transpose, _rmatmul, _ScipyCSR
 
 NDATA = 60
 LEVEL = 12
@@ -73,3 +73,16 @@ def test_transposes_built_once(op, field):
     first = op._cg_transposes()
     op.resample(val[2], lam=0.1)
     assert op._cg_transposes() is first
+
+
+def test_scipy_operator_shares_the_transpose(op):
+    """The transposes have int32 indices, so scipy uses them without a copy;
+    ``M`` rebuilt from its transpose keeps int64 COO indices."""
+    for A in op._cg_transposes():
+        assert isinstance(A, _ScipyCSR)
+    for t in (op._M_t, op._MT_t, _csr_transpose(op.M)):
+        assert t.crow_indices().dtype == torch.int32
+        s = _ScipyCSR(t)
+        assert np.shares_memory(s.matrix.indices, t.col_indices().numpy())
+        assert np.shares_memory(s.matrix.indptr, t.crow_indices().numpy())
+    assert op.M.indices().dtype == torch.int64
