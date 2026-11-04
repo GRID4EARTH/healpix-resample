@@ -95,7 +95,7 @@ def test_operator_with_ties_equals_coalesced_build(tie_grid, cls):
         pytest.param(hr.BilinearResampler, 1e-6, None, id="bilinear"),
         pytest.param(hr.BicubicResampler, 1e-6, None, id="bicubic"),
         pytest.param(hr.NearestResampler, 1e-6, None, id="nearest"),
-        # the PSF fit with the damping of the Sentinel-2 settings (lam=0.1):
+        # the PSF fit with a typical damping (lam=0.1):
         # without damping (lam=0, the default) the normal equations of this
         # grid are ill-conditioned, and the conjugate gradient amplifies any
         # change of the last bits (of the inputs, or of the order of its sums)
