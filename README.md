@@ -48,6 +48,12 @@ propagated) and accepts both NumPy arrays and PyTorch tensors, returning whichev
 pip install healpix-resample
 ```
 
+The notebooks also plot with [`healpix-plot`](https://github.com/GRID4EARTH/healpix-plot), which comes with the `notebooks` extra:
+
+```bash
+pip install "healpix-resample[notebooks]"
+```
+
 ### From source (editable, for development)
 
 ```bash
