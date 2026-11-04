@@ -608,6 +608,31 @@ def _ring_window(r: int) -> tuple[np.ndarray, np.ndarray]:
     return di.ravel(), dj.ravel()
 
 
+def _spread_bits(v: torch.Tensor) -> torch.Tensor:
+    """The bits of ``v`` (< 2**32) at the even positions of an int64."""
+    v = v & 0xFFFFFFFF
+    v = (v | (v << 16)) & 0x0000FFFF0000FFFF
+    v = (v | (v << 8)) & 0x00FF00FF00FF00FF
+    v = (v | (v << 4)) & 0x0F0F0F0F0F0F0F0F
+    v = (v | (v << 2)) & 0x3333333333333333
+    return (v | (v << 1)) & 0x5555555555555555
+
+
+def _on_device(dev: torch.device) -> bool:
+    """Whether the coarse search builds the neighbourhoods inside the faces
+    on ``dev`` (CUDA) rather than with ``healpix_geo`` on the CPU."""
+    return dev.type == "cuda"
+
+
+def _base_cell_coordinates_to_nested(
+    face: torch.Tensor, i: torch.Tensor, j: torch.Tensor, level: int
+) -> torch.Tensor:
+    """``healpix_geo.nested.base_cell_coordinates_to_healpix`` in torch (on
+    any device): the nested id is the face number followed by the bits of
+    ``j`` and ``i`` interleaved."""
+    return (face << (2 * level)) | (_spread_bits(j) << 1) | _spread_bits(i)
+
+
 def _coarse_weighted_nearest(
     longitude1: torch.Tensor,
     latitude1: torch.Tensor,
@@ -669,6 +694,12 @@ def _coarse_weighted_nearest(
     face, fi, fj = healpix_geo.nested.healpix_to_base_cell_coordinates(ipix, level, num_threads=num_threads)
     fi, fj = fi.astype(np.int64), fj.astype(np.int64)
     edge = (np.minimum(fi, fj) < R) | (np.maximum(fi, fj) >= nside - R)
+    # on a GPU, the neighbourhoods inside the faces are computed there (the
+    # same ids as healpix_geo's)
+    on_dev = _on_device(dev)
+    if on_dev:
+        face_t = torch.from_numpy(face.astype(np.int64)).to(dev)
+        fi_t, fj_t = torch.from_numpy(fi).to(dev), torch.from_numpy(fj).to(dev)
 
     # --- cell table: the coarse cells within rc coarse rings of the samples'
     # coarse cells cover every neighbourhood (rc * 2**k >= R + 2**k: the
@@ -690,9 +721,12 @@ def _coarse_weighted_nearest(
     V_t = torch.from_numpy(V).to(dev)
     xyz1 = _lonlat_to_xyz(torch.deg2rad(longitude1.to(dev)), torch.deg2rad(latitude1.to(dev)))
 
-    def table_index(ids: np.ndarray) -> torch.Tensor:
+    def table_index(ids) -> torch.Tensor:
         """Table index of fine cell ids (-1 stays -1)."""
-        ids_t = torch.from_numpy(ids.astype(np.int64)).to(dev)
+        if isinstance(ids, torch.Tensor):
+            ids_t = ids
+        else:
+            ids_t = torch.from_numpy(ids.astype(np.int64)).to(dev)
         valid = ids_t >= 0
         c = torch.where(valid, ids_t >> (2 * k), torch.zeros_like(ids_t))
         pos = torch.searchsorted(V_t, c)
@@ -721,6 +755,28 @@ def _coarse_weighted_nearest(
             ).astype(np.int64)
         return out
 
+    def window_dev(rows: np.ndarray, r: int, fill: bool) -> torch.Tensor:
+        """``window`` (then ``_fill_invalid_neighbours`` if ``fill``) on the
+        device: the pixels inside their face there, the others (whose rings
+        may cross into other faces) with ``kth_neighbourhood``."""
+        out = torch.empty((rows.size, (2 * r + 1) ** 2), dtype=torch.long, device=dev)
+        e = edge[rows]
+        if (~e).any():
+            inner = torch.from_numpy(~e).to(dev)
+            ri = torch.from_numpy(rows[~e]).to(dev)
+            di, dj = (torch.from_numpy(a.astype(np.int64)).to(dev) for a in _ring_window(r))
+            out[inner] = _base_cell_coordinates_to_nested(
+                face_t[ri, None], fi_t[ri, None] + di[None, :], fj_t[ri, None] + dj[None, :], level
+            )
+        if e.any():
+            nb = healpix_geo.nested.kth_neighbourhood(
+                ipix[rows[e]], level, r, num_threads=num_threads
+            ).astype(np.int64)
+            if fill:
+                nb = _fill_invalid_neighbours(nb, ipix[rows[e]])
+            out[torch.from_numpy(e).to(dev)] = torch.from_numpy(nb).to(dev)
+        return out
+
     if sigma is None:
         sigma = _sigma_level_m(level, radius=radius)
 
@@ -729,7 +785,10 @@ def _coarse_weighted_nearest(
     sums = torch.zeros(fine.size, device=dev, dtype=torch.float64)
     for s in range(0, N, batch_size):
         rows = np.arange(s, min(N, s + batch_size))
-        nbw = _fill_invalid_neighbours(window(rows, ring_weight), ipix[rows])
+        if on_dev:
+            nbw = window_dev(rows, ring_weight, fill=True)
+        else:
+            nbw = _fill_invalid_neighbours(window(rows, ring_weight), ipix[rows])
         idx = table_index(nbw)
         dot = torch.clamp((xyz_f[idx] * xyz1[s:s + rows.size, None, :]).sum(dim=-1), -1.0, 1.0)
         dist = radius * torch.acos(dot)
@@ -765,7 +824,7 @@ def _coarse_weighted_nearest(
         for s in range(0, todo.size, batch_size):
             rows = todo[s:s + batch_size]
             rows_t = torch.from_numpy(rows).to(dev)
-            ti = table_index(window(rows, r))
+            ti = table_index(window_dev(rows, r, fill=False) if on_dev else window(rows, r))
             cand = torch.where(ti >= 0, rank[torch.clamp(ti, min=0)], torch.full_like(ti, -1))
             dist = _arc_distance(xyz_f[torch.clamp(ti, min=0)], xyz1[rows_t, None, :], radius)
             dist = torch.where(cand >= 0, dist, torch.full_like(dist, float("inf")))

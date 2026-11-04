@@ -78,7 +78,10 @@ class NearestResampler(KNeighborsResampler):
         sample (the KNN path keeps, per cell, the linked sample of largest
         Gaussian weight, i.e. the nearest), several times faster on dense
         inputs, and no KNN links (``neighbours``) to search or keep. Samples
-        exactly as near as each other may be picked differently.
+        exactly as near as each other may be picked differently. On a CUDA
+        device (nested cells), the search runs on the GPU from HEALPix
+        buckets of the samples (``_nearest_source_buckets``): the
+        same samples as the KD-tree, ties apart.
         ``max_distance_m`` then applies to every requested cell (the KNN
         path applies it only to the cells its rings did not reach).
     All other parameters are forwarded to ``KNeighborsResampler``.
@@ -164,7 +167,12 @@ class NearestResampler(KNeighborsResampler):
             torch.deg2rad(torch.as_tensor(np.asarray(lat_c), dtype=torch.float64)),
         )
         xyz_samples = _lonlat_to_xyz(torch.deg2rad(lon), torch.deg2rad(lat))
-        hi, dot = self._nearest_source(xyz_cells, xyz_samples)
+        if self.device.type == "cuda" and self.nest:
+            hi, dot = self._nearest_source_buckets(
+                cells, self.level, lon, lat, xyz_cells, xyz_samples,
+                ellipsoid=self.ellipsoid, device=self.device)
+        else:
+            hi, dot = self._nearest_source(xyz_cells, xyz_samples)
         if self.max_distance_m is not None:
             near = self.radius * torch.acos(dot.clamp(-1.0, 1.0)) <= self.max_distance_m
             cells, hi = cells[near], hi[near]
@@ -353,6 +361,97 @@ class NearestResampler(KNeighborsResampler):
             torch.as_tensor(hi, dtype=torch.long, device=xyz_src.device),
             torch.as_tensor(dot, dtype=xyz_src.dtype, device=xyz_src.device),
         )
+
+    @staticmethod
+    def _nearest_source_buckets(
+        cells: torch.Tensor,              # (Q,) nested ids at ``level``, ascending
+        level: int,
+        lon_deg: torch.Tensor,            # (N,) samples
+        lat_deg: torch.Tensor,
+        xyz_query: torch.Tensor,          # (Q, 3) centres of ``cells``
+        xyz_src: torch.Tensor,            # (N, 3)
+        *,
+        ellipsoid: str,
+        device: torch.device,
+        delta: int = 2,
+        batch: int = 1 << 18,
+        max_pairs: int = 1 << 24,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """:meth:`_nearest_source` on ``device`` (a GPU), for nested cells.
+
+        The samples go into HEALPix buckets ``delta`` levels coarser than the
+        cells. Each cell compares the samples of its bucket and of the 8
+        around it, with the KD-tree's float64 squared chord
+        ``(dx*dx + dy*dy) + dz*dz``, and keeps the nearest (the smallest sample
+        index among equal distances). Any sample outside these 9 buckets is
+        at least about one bucket width away; a cell whose nearest candidate
+        is not closer than 0.4 of the nominal bucket width (or that has no
+        candidate, e.g. outside the swath) takes its nearest sample from the
+        KD-tree instead. So the picks are the KD-tree's, ties apart.
+
+        A batch compares at most ``max_pairs`` candidate pairs (about 0.4 GB
+        of float64 differences for the default) and holds at least 1024
+        cells: when a bucket holds more samples than that allows (cells much
+        coarser than the samples), the whole search goes to the KD-tree.
+
+        Returns hi (Q,) and the dot product (Q,), on the CPU, like
+        :meth:`_nearest_source`.
+        """
+        import math
+
+        dev = torch.device(device)
+        bl = level - delta
+        q_bucket = cells.to(dev, torch.long) >> (2 * delta)
+        s_bucket = torch.as_tensor(healpix_geo.nested.lonlat_to_healpix(
+            lon_deg.numpy(), lat_deg.numpy(), bl, ellipsoid=ellipsoid).astype(np.int64)).to(dev)
+        ub, q_inv = torch.unique(q_bucket, return_inverse=True)
+        nb = torch.as_tensor(healpix_geo.nested.kth_neighbourhood(
+            ub.cpu().numpy().astype(np.uint64), bl, 1).astype(np.int64)).to(dev)   # (U, 9), -1 invalid
+        sb, order = torch.sort(s_bucket, stable=True)
+        start = torch.searchsorted(sb, nb.clamp(min=0))
+        count = torch.searchsorted(sb, nb.clamp(min=0), right=True) - start
+        count[nb < 0] = 0
+        del q_bucket, s_bucket, ub, nb, sb
+        mmax = int(count.max()) if count.numel() else 0
+        if 1024 * 9 * mmax > max_pairs:
+            # too many samples per bucket for a batch of 1024 cells
+            hi, dot = NearestResampler._nearest_source(xyz_query.cpu(), xyz_src.cpu())
+            return hi.cpu(), dot.cpu()
+
+        xq, xs = xyz_query.to(dev, torch.float64), xyz_src.to(dev, torch.float64)
+        Q = xq.shape[0]
+        hi = torch.full((Q,), -1, dtype=torch.long, device=dev)
+        best = torch.full((Q,), math.inf, dtype=torch.float64, device=dev)
+        if mmax:
+            # at most max_pairs candidate pairs per batch
+            batch = max(1024, min(batch, max_pairs // (9 * mmax)))
+            ar = torch.arange(mmax, device=dev)
+            none = torch.iinfo(torch.long).max
+            for b0 in range(0, Q, batch):
+                b1 = min(Q, b0 + batch)
+                u = q_inv[b0:b1]
+                pos = start[u][:, :, None] + ar                             # (B, 9, m)
+                ok = (ar < count[u][:, :, None]).reshape(b1 - b0, -1)
+                cand = order[pos.clamp(max=order.numel() - 1)].reshape(b1 - b0, -1)
+                d = xs[cand] - xq[b0:b1, None, :]
+                d2 = (d[..., 0] * d[..., 0] + d[..., 1] * d[..., 1]) + d[..., 2] * d[..., 2]
+                d2 = torch.where(ok, d2, torch.full_like(d2, math.inf))
+                m = d2.min(dim=1).values
+                pick = torch.where((d2 == m[:, None]) & ok, cand, torch.full_like(cand, none))
+                hi[b0:b1] = pick.min(dim=1).values
+                best[b0:b1] = m
+        chord = best.sqrt()
+        guard = 0.4 * math.sqrt(4 * math.pi / (12 * 4**bl))
+        unsure = ~(chord < guard)
+        hi, chord = hi.cpu(), chord.cpu()
+        if bool(unsure.any()):
+            uq = unsure.nonzero().reshape(-1).cpu()
+            c2, h2 = cKDTree(xyz_src.cpu().numpy().astype(np.float64)).query(
+                xyz_query[uq].cpu().numpy().astype(np.float64), k=1)
+            hi[uq] = torch.as_tensor(h2, dtype=torch.long)
+            chord[uq] = torch.as_tensor(c2, dtype=torch.float64)
+        dot = 1.0 - 0.5 * chord * chord
+        return hi, dot.to(xyz_src.dtype)
 
     # ── resample ─────────────────────────────────────────────────────────────
 

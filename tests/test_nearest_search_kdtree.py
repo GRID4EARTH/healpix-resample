@@ -6,7 +6,7 @@ sample from a KD-tree of the samples, without the KNN links: the same cells
 and samples as the default search, on a full chunk, on a partial one and with
 ``max_distance_m``.
 
-CPU-only.
+On the CPU; the CUDA cases of the bucket search are skipped without a GPU.
 """
 from __future__ import annotations
 
@@ -74,3 +74,58 @@ def test_unknown_search(chunk):
     lon, lat, out = chunk
     with pytest.raises(ValueError, match="search"):
         NearestResampler(lon, lat, level=LEVEL, out_cell_ids=out, search="brute")
+
+
+def _bucket_search(lon, lat, out, device, **kw):
+    import torch
+
+    from healpix_resample.knn import _lonlat_to_xyz
+
+    cells = torch.unique(torch.as_tensor(out.astype(np.int64)))
+    clon, clat = healpix_geo.nested.healpix_to_lonlat(cells.numpy().astype(np.uint64), LEVEL)
+    xyz_cells = _lonlat_to_xyz(torch.deg2rad(torch.as_tensor(np.asarray(clon), dtype=torch.float64)),
+                               torch.deg2rad(torch.as_tensor(np.asarray(clat), dtype=torch.float64)))
+    lon_t = torch.as_tensor(lon, dtype=torch.float64)
+    lat_t = torch.as_tensor(lat, dtype=torch.float64)
+    xyz_src = _lonlat_to_xyz(torch.deg2rad(lon_t), torch.deg2rad(lat_t))
+    kd = NearestResampler._nearest_source(xyz_cells, xyz_src)
+    bk = NearestResampler._nearest_source_buckets(
+        cells, LEVEL, lon_t, lat_t, xyz_cells, xyz_src, ellipsoid="WGS84", device=device, **kw)
+    return kd, bk
+
+
+@pytest.mark.parametrize("part", ["full", "partial"])
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_bucket_search_same_samples_as_the_kdtree(chunk, part, device):
+    """The bucket search (used on CUDA devices) picks the KD-tree's samples,
+    also for the cells outside the samples' extent (they go to the KD-tree)."""
+    import torch
+
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    lon, lat, out = chunk
+    if part == "partial":
+        keep = lon < np.quantile(lon, 0.3)
+        lon, lat = lon[keep], lat[keep]
+    (hi_kd, dot_kd), (hi_bk, dot_bk) = _bucket_search(lon, lat, out, device)
+    np.testing.assert_array_equal(hi_bk.numpy(), hi_kd.numpy())
+    np.testing.assert_allclose(dot_bk.numpy(), dot_kd.numpy(), rtol=0, atol=1e-15)
+
+
+def test_bucket_search_too_many_samples_per_bucket_goes_to_the_kdtree(chunk, monkeypatch):
+    """Above ``max_pairs`` for a batch of 1024 cells, the bucket search hands
+    the whole search to the KD-tree instead of comparing the buckets."""
+    calls = []
+    kdtree = NearestResampler._nearest_source
+
+    def spy(*args):
+        calls.append(args[0].shape[0])
+        return kdtree(*args)
+
+    lon, lat, out = chunk
+    (hi_kd, dot_kd), _ = _bucket_search(lon, lat, out, "cpu")
+    monkeypatch.setattr(NearestResampler, "_nearest_source", staticmethod(spy))
+    _, (hi_bk, dot_bk) = _bucket_search(lon, lat, out, "cpu", max_pairs=1024)
+    assert calls[-1] == np.unique(out).size        # every cell, in one KD-tree query
+    np.testing.assert_array_equal(hi_bk.numpy(), hi_kd.numpy())
+    np.testing.assert_array_equal(dot_bk.numpy(), dot_kd.numpy())
