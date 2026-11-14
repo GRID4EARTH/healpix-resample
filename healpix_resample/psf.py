@@ -419,6 +419,10 @@ def _clip_bounds(clip, y, valid) -> Tuple[torch.Tensor, torch.Tensor]:
                 )
             masked = torch.where(valid, y, torch.full_like(y, -fill))
             bound = reduce(masked, dim=-1, keepdim=True)
+            # a row without valid sample has nothing to bound it: leave it
+            # unconstrained (the row is returned as NaN by resample)
+            has_data = valid.any(dim=-1, keepdim=True)
+            bound = torch.where(has_data, bound, torch.full_like(bound, fill))
         else:
             value = float(value)
             if math.isnan(value):
@@ -1082,7 +1086,9 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         whenever the target is reachable within the box.
 
         The number of cells held at each bound is returned in
-        ``ResampleResults.n_clipped_low`` and ``n_clipped_high``.
+        ``ResampleResults.n_clipped_low`` and ``n_clipped_high``. A row of
+        ``val`` without any valid sample is returned as NaN, as without
+        ``clip``, and counts 0 in both.
 
         NaN handling
         ------------
