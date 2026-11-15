@@ -199,6 +199,11 @@ def conjugate_gradient(
     return x, info
 
 
+def _masked(r: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
+    """``r`` with the masked samples (0 in ``mask``) set to 0; ``r`` if no mask."""
+    return r if mask is None else r * mask
+
+
 @torch.no_grad()
 def least_squares_cg(M,
         MT,
@@ -213,6 +218,7 @@ def least_squares_cg(M,
         M_t: Optional[torch.Tensor] = None,
         MT_t: Optional[torch.Tensor] = None,
         preconditioner: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
         ):
     """
     Solve for delta in a damped least-squares problem without forming dense matrices.
@@ -251,13 +257,20 @@ def least_squares_cg(M,
         M_t, MT_t : optional transposes of ``M`` and ``MT`` stored as CSR
         (``_csr_transpose``); with them the products run as CSR x dense
         (see ``_rmatmul``), same result, much faster.
+        mask : (B, N) or None -- 1 for a sample that carries data, 0 for one
+        that does not (its value is not fitted). It multiplies the sample-space
+        residual in the right-hand side and in the operator,
+        ``(M^T diag(mask) M + damp I) delta = ((y - x_ref @ MT) * mask) @ M``,
+        so a masked sample has no weight in the fit. A 0/1 diagonal in sample
+        space keeps the operator self-adjoint and positive semi-definite in the
+        same inner products. None: every sample counts (unchanged).
     """
 
     # b = M^T y
-    b = _rmatmul(y - _rmatmul(x_ref, MT, MT_t), M, M_t)
+    b = _rmatmul(_masked(y - _rmatmul(x_ref, MT, MT_t), mask), M, M_t)
     def A_mv(v: torch.Tensor) -> torch.Tensor:
         # (M^T M + damp I) v
-        return _rmatmul(_rmatmul(v, MT, MT_t), M, M_t) + damp * v
+        return _rmatmul(_masked(_rmatmul(v, MT, MT_t), mask), M, M_t) + damp * v
 
     x, info = conjugate_gradient(
         A_mv=A_mv, b=b, x0=x0, max_iter=max_iter, tol=tol, verbose=verbose, weight=weight,
@@ -283,6 +296,7 @@ def bounded_least_squares_cg(M,
         M_t: Optional[torch.Tensor] = None,
         MT_t: Optional[torch.Tensor] = None,
         preconditioner: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
         ):
     """
     Same damped weighted least-squares problem as ``least_squares_cg``,
@@ -318,8 +332,8 @@ def bounded_least_squares_cg(M,
 
     Shapes:
         lower, upper : (B, K), bounds on ``delta`` (``-inf``/``+inf`` where a
-        side is not constrained). Everything else (``M_t``, ``MT_t``
-        included) as in :func:`least_squares_cg`.
+        side is not constrained). Everything else (``M_t``, ``MT_t`` and
+        ``mask`` included) as in :func:`least_squares_cg`.
 
     Returns:
         delta: (B, K)
@@ -327,10 +341,10 @@ def bounded_least_squares_cg(M,
         ``niters`` (their total), ``n_outer`` and the final ``at_lower`` /
         ``at_upper`` masks (B, K) of the cells held at a bound.
     """
-    b = _rmatmul(y - _rmatmul(x_ref, MT, MT_t), M, M_t)
+    b = _rmatmul(_masked(y - _rmatmul(x_ref, MT, MT_t), mask), M, M_t)
 
     def A_mv(v: torch.Tensor) -> torch.Tensor:
-        return _rmatmul(_rmatmul(v, MT, MT_t), M, M_t) + damp * v
+        return _rmatmul(_masked(_rmatmul(v, MT, MT_t), mask), M, M_t) + damp * v
 
     x = torch.minimum(torch.maximum(x0, lower), upper)
     if b.shape[-1] == 0:
@@ -982,10 +996,14 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             self._cg_t_key = key
         return self._cg_t
 
-    def _cg_diagonal(self) -> torch.Tensor:
+    def _cg_diagonal(self, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Diagonal of the Conjugate Gradient operator without damping,
-        ``v -> (v @ MT) @ M``: ``d_k = sum_n MT[k, n] M[n, k]`` (K,). Built once."""
-        if getattr(self, "_cg_diag", None) is None:
+        ``v -> (v @ MT) @ M``: ``d_k = sum_n MT[k, n] M[n, k]`` (K,). Built once.
+
+        With ``mask`` (B, N), 1 for a sample that carries data and 0 for one
+        that does not, the diagonal of the masked operator, one per row:
+        ``d_bk = sum_n MT[k, n] M[n, k] mask[b, n]`` (B, K)."""
+        if getattr(self, "_cg_diag_terms", None) is None:
             import scipy.sparse
 
             M_t, MT_t = (
@@ -1000,13 +1018,20 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     shape=tuple(A.shape),
                 )
 
-            d = np.asarray(sp(M_t).multiply(sp(MT_t).T).sum(axis=1)).reshape(-1)
+            # (K, N): the terms MT[k, n] M[n, k] of the diagonal, summed over n
+            self._cg_diag_terms = sp(M_t).multiply(sp(MT_t).T).tocsr()
+            d = np.asarray(self._cg_diag_terms.sum(axis=1)).reshape(-1)
             self._cg_diag = torch.as_tensor(d, dtype=self.dtype, device=self.device)
-        return self._cg_diag
+        if mask is None:
+            return self._cg_diag
+        m = mask.to(self.dtype).cpu().numpy().T                               # (N, B)
+        d = np.asarray(self._cg_diag_terms @ m).T                             # (B, K)
+        return torch.as_tensor(np.ascontiguousarray(d), dtype=self.dtype, device=self.device)
 
-    def _jacobi(self, lam: float) -> torch.Tensor:
-        """Inverse diagonal of ``MT M + lam`` (1 where it is 0)."""
-        d = self._cg_diagonal() + lam
+    def _jacobi(self, lam: float, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Inverse diagonal of ``MT M + lam`` (1 where it is 0), (K,), or one
+        per row (B, K) with a sample ``mask`` (see :meth:`_cg_diagonal`)."""
+        d = self._cg_diagonal(mask) + lam
         return torch.where(d > 0, 1.0 / torch.where(d > 0, d, 1.0), 1.0)
 
     @torch.no_grad()
@@ -1106,17 +1131,29 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         *entire* batch row into NaN -- not just the cells near the bad
         sample, unlike ``BilinearResampler``/``NearestResampler``.
 
-        Concretely: NaN samples are replaced by ``0`` (per batch row) before
-        computing ``x_ref`` and before entering the CG solve. This removes the
-        sample's *value* contribution, but ``self.M``'s columns are
-        pre-normalized at construction time against *all* samples that can
-        reach a cell, so a zeroed NaN sample still counts in the denominator:
-        the surviving samples' weight in a cell at the border of a NaN area is
-        diluted, and the value is pulled towards 0. A cell whose support holds
-        only NaN samples would be solved from zeros alone.
+        Concretely: NaN samples are replaced by ``0`` (per batch row) so that
+        no NaN enters the products, and they carry no weight in the fit. With
+        ``v`` the valid mask of the row (1 for a sample, 0 for a NaN sample),
+        the reference field is the mean of the valid samples,
+        ``x_ref = (y @ M) / share`` where ``share = (v @ M) / (1 @ M)`` is the
+        share of valid weight of the cell (1 without NaN, so ``x_ref = y @ M``
+        there), and the system solved for ``delta`` is
+        ``(M^T diag(v) M + lam I) delta = ((y - x_ref @ MT) * v) @ M``: the
+        residual of a NaN sample is not fitted. The same holds with ``clip``
+        (the bounded fit), with ``conservative=True`` (the correction uses the
+        masked operator, and its constraint is on the cells with some valid
+        weight) and with ``jacobi=True`` (one diagonal per row). The sparse
+        operators ``M`` and ``MT`` are the ones built at construction, whatever
+        the NaN pattern of the row, and rows with different patterns can be
+        resampled in one call. Rows without NaN samples are computed exactly
+        as before. A NaN sample fitted as a ``0`` used to pull the cells up to
+        a few sample spacings around it towards 0 by tens of per cent of the
+        field; the result now agrees with a resampler built from the valid
+        samples only, except that cells keep their place in ``cell_ids``.
 
-        To keep such cells from passing as data, the share of valid weight of
-        each output cell is computed per batch row, ``(valid @ M) / (1 @ M)``
+        Cells with little valid weight stay badly determined, as they rest on
+        few valid samples. To keep such cells from passing as data, the share
+        of valid weight of each output cell is computed per batch row, ``(valid @ M) / (1 @ M)``
         (the operator that gives ``x_ref`` applied to the valid mask, divided
         by the same operator applied to all-ones, so it does not depend on how
         ``M`` is normalized), and the cells whose share is below
@@ -1128,14 +1165,14 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         samples skip this step and are unchanged. With ``clip``, the masked
         cells are not counted in ``n_clipped_low`` / ``n_clipped_high``. With
         ``conservative=True`` the correction is still computed before the
-        masking, like for the uncomputable cells below. The cells that remain
-        keep the dilution described above, bounded by ``min_valid_weight``;
-        raise it to keep cells with a mostly valid support only.
+        masking, like for the uncomputable cells below. ``min_valid_weight``
+        bounds how little valid support a returned cell has.
 
         The default ``min_valid_weight=0.5`` changes earlier results: cells
         less than half covered by valid samples, at the edge of a NaN area,
         used to come back diluted towards 0 and are now NaN;
-        ``min_valid_weight=0.0`` keeps them.
+        ``min_valid_weight=0.0`` keeps them (computed from the valid samples
+        only).
 
         Batch rows where *every* sample is NaN are handled separately: they
         are excluded from the CG solve entirely (rather than relying on the
@@ -1199,7 +1236,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # Cells whose share of valid weight is too low, per row, to be masked
         # after the solve. Only rows with some, but not all, NaN samples need
         # it (all-NaN rows are NaN already; full rows stay untouched).
-        low_valid = None
+        low_valid = live = None
         partial = row_has_data & nan_mask.any(dim=-1)
         if bool(partial.any()):
             psel = torch.nonzero(partial, as_tuple=False).reshape(-1)
@@ -1214,6 +1251,15 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             low = low & has_w
             low_valid = torch.zeros(B, x_ref.shape[1], dtype=torch.bool, device=self.device)
             low_valid[psel] = low
+            # NaN samples carry no weight: the reference field is the mean of
+            # the valid samples only, ``y @ M`` renormalised by the share of
+            # valid weight (1 where every sample is valid, so rows without NaN
+            # keep ``y @ M``). A cell without valid weight keeps 0.
+            x_ref[psel] = x_ref[psel] / torch.where(share > 0, share, torch.ones_like(share))
+            # per batch row, a cell with some valid weight (for the
+            # conservative correction below)
+            live = torch.ones(B, x_ref.shape[1], dtype=torch.bool, device=self.device)
+            live[psel] = share > 0
 
         if x0 is None:
             x0 = torch.zeros_like(x_ref)
@@ -1232,8 +1278,11 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             n_clipped_high = torch.zeros(B, dtype=torch.int64, device=self.device)
 
         if bool(row_has_data.any()):
-            pinv = self._jacobi(float(lam)) if jacobi else None
             sel = torch.nonzero(row_has_data, as_tuple=False).reshape(-1)
+            # 1 for the samples that carry data, only if some row has NaN
+            # samples (rows without any have a mask of ones: unchanged)
+            mask_sel = valid[sel].to(self.dtype) if bool(partial.any()) else None
+            pinv = self._jacobi(float(lam), mask_sel) if jacobi else None
             y_sel = y_filled[sel]
             x_ref_sel = x_ref[sel]
             x0_sel = x0[sel]
@@ -1253,6 +1302,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     M_t=M_t,
                     MT_t=MT_t,
                     preconditioner=pinv,
+                    mask=mask_sel,
                 )
             else:
                 # bounds on hval, per row (S,1), turned into bounds on delta (S,K)
@@ -1274,6 +1324,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                     M_t=M_t,
                     MT_t=MT_t,
                     preconditioner=pinv,
+                    mask=mask_sel,
                 )
                 held_lo, held_hi = info["at_lower"], info["at_upper"]
 
@@ -1304,19 +1355,28 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 area_b = area[None, :].expand(valid_sel.shape[0], -1)
                 area_valid_sum = (area_b * valid_sel).sum(dim=-1, keepdim=True)             # (S,1)
                 target_mean = (y_sel * area_b).sum(dim=-1, keepdim=True) / area_valid_sum   # (S,1)
-                F_target = target_mean * self.K                                             # (S,1)
+                if mask_sel is None:
+                    F_target = target_mean * self.K                                         # (S,1)
+                else:
+                    # the cells without any valid weight carry no data: the
+                    # constraint is on the others (K where every cell has some)
+                    F_target = target_mean * live[sel].sum(dim=-1, keepdim=True).to(self.dtype)
 
                 def _Hmv(v: torch.Tensor) -> torch.Tensor:
-                    return _rmatmul(_rmatmul(v, MT_op, MT_t), M_op, M_t) + float(lam) * v
+                    return _rmatmul(_masked(_rmatmul(v, MT_op, MT_t), mask_sel), M_op, M_t) + float(lam) * v
 
                 dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
+                if mask_sel is not None:
+                    # the masked operator is one per row; a cell without valid
+                    # weight is out of the range of H when lam = 0: leave it out
+                    dxinv_c = dxinv_c * live[sel].to(self.dtype)                           # (S,K)
                 if clip is None:
                     w, _ = conjugate_gradient(
                         A_mv=_Hmv, b=dxinv_c, max_iter=max_iter, tol=tol,
                         verbose=False, weight=self.cell_weight,
                     )                                                                      # (1,K)
 
-                    mu = (F_target - hval[sel].sum(dim=-1, keepdim=True)) / w.sum()         # (S,1)
+                    mu = (F_target - hval[sel].sum(dim=-1, keepdim=True)) / w.sum(dim=-1, keepdim=True)  # (S,1)
                     hval[sel] = hval[sel] + mu * w                                          # (S,K)
                 else:
                     # Same correction, restricted to the cells the bounded fit
