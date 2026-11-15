@@ -1162,13 +1162,12 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         (the cells next to it are those of the system with its rows deleted)
         for ``lam -> 0``. With ``lam > 0`` the damping towards ``x_ref`` acts
         with the full kernel weight: in a cell with a share of valid weight
-        below 1 it is stronger, by ``1 / share``, than in a resampler built
-        from the valid samples only (damping ``lam * share`` would be equal,
-        but it makes the plain CG much slower: 100 iterations, the default
-        ``max_iter``, instead of 27 on the test grid). A resampler built from
-        the valid samples only also normalises the kernel weights of the
-        samples next to the gap over its own cells, so the two are not
-        equal there to better than a few per cent of the kernel weight.
+        below 1 the regularisation towards the reference field is stronger,
+        by the factor ``1 / share``, than if the NaN samples were absent
+        (equal for ``lam -> 0``). A resampler built from the valid samples
+        only also normalises the kernel weights of the samples next to the
+        gap over its own cells, so the two are not equal there to better than
+        a few per cent of the kernel weight.
 
         Input without NaN samples goes through the unchanged operations
         (bit for bit the same cell data and ``cg_niters``). In a batch with
