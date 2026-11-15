@@ -96,21 +96,25 @@ def test_invalid_min_valid_weight_raises(op, half_nan, bad):
         op.resample(half_nan, min_valid_weight=bad)
 
 
-# --- comparison with the unmasked behaviour of origin/main ------------------
+# --- comparison with the behaviour before the masking -----------------------
+
+# Last commit before `min_valid_weight`: the reference for "only NaN is added".
+# A fixed commit, not a branch, so that the comparison keeps its meaning once the
+# change is merged. It needs the history (CI checks out with fetch-depth 0).
+_REFERENCE_COMMIT = "2be7c6270aa8b2345b231b26f5aeabaa71555276"
+
 
 @pytest.fixture(scope="module")
 def main_cls():
-    """`PSFResampler` as on origin/main (before the masking), loaded from git."""
+    """`PSFResampler` as before the masking, loaded from git."""
     root = Path(__file__).resolve().parents[1]
     try:
         src = subprocess.run(
-            ["git", "show", "origin/main:healpix_resample/psf.py"],
+            ["git", "show", f"{_REFERENCE_COMMIT}:healpix_resample/psf.py"],
             cwd=root, capture_output=True, text=True, check=True,
         ).stdout
     except (OSError, subprocess.CalledProcessError):
-        pytest.skip("origin/main not available")
-    if "min_valid_weight" in src:
-        pytest.skip("origin/main already has min_valid_weight")
+        pytest.skip(f"commit {_REFERENCE_COMMIT} not available (shallow clone)")
     spec = importlib.util.spec_from_loader("_psf_main_reference", loader=None)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
