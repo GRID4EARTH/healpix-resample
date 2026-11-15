@@ -15,6 +15,7 @@ This module is designed for large N and batched values (B,N) on CUDA.
 from typing import Any, Callable, Generic, Optional, Tuple, Dict
 
 import math
+import numbers
 import numpy as np
 import torch
 
@@ -1026,6 +1027,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         clip=None,
         max_outer: int = 10,
         jacobi: bool = False,
+        min_valid_weight: float = 0.5,
     ) -> ResampleResults[T_Array]:
         """Estimate the HEALPix field from unstructured samples.
 
@@ -1059,6 +1061,13 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             max_outer: with ``clip``, the maximum number of hold/solve/release
                 passes of the bounded fit; each pass runs one CG of up to
                 ``max_iter`` iterations.
+            min_valid_weight: a number in ``[0, 1]`` (default ``0.5``). In a
+                batch row that holds NaN samples, an output cell whose share
+                of valid kernel weight is below this value is returned as
+                NaN (see "NaN handling" below). ``0.0`` only masks the cells
+                that have no valid weight at all, ``1.0`` only keeps cells
+                whose whole support is valid. Rows without any NaN sample
+                are never masked.
 
         Bounded fit
         -----------
@@ -1104,23 +1113,35 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         sample, unlike ``BilinearResampler``/``NearestResampler``.
 
         Concretely: NaN samples are replaced by ``0`` (per batch row) before
-        computing ``x_ref`` and before entering the CG solve. This correctly
-        removes the sample's *value* contribution, but -- because ``self.M``'s
-        columns are pre-normalized at construction time against *all* samples
-        that can reach a cell (``comp_matrix``'s ``norm_col``, fixed at
-        construction, independent of any particular call's NaNs) -- a
-        zeroed-but-still-linked NaN sample still counts in that
-        normalization's denominator. The surviving samples' effective weight
-        in an affected cell is therefore slightly diluted rather than the
-        NaN sample being truly excluded from the local average. This is a
-        deliberate trade-off (see ``planning/02_psf_nan_filtering.md``):
-        cheap and requires no changes to the precomputed sparse operators,
-        at the cost of a small residual bias that only matters for large,
-        spatially-contiguous NaN regions rather than scattered/occasional
-        NaNs. If that bias turns out to matter for your data, restricting
-        the input to the valid samples' own KNN operator (rebuilding
-        ``self.M``/``self.MT``) would be the exact fix, at the cost of
-        rebuilding the sparse operators per call.
+        computing ``x_ref`` and before entering the CG solve. This removes the
+        sample's *value* contribution, but ``self.M``'s columns are
+        pre-normalized at construction time against *all* samples that can
+        reach a cell, so a zeroed NaN sample still counts in the denominator:
+        the surviving samples' weight in a cell at the border of a NaN area is
+        diluted, and the value is pulled towards 0. A cell whose support holds
+        only NaN samples would be solved from zeros alone.
+
+        To keep such cells from passing as data, the share of valid weight of
+        each output cell is computed per batch row, ``(valid @ M) / (1 @ M)``
+        (the operator that gives ``x_ref`` applied to the valid mask, divided
+        by the same operator applied to all-ones, so it does not depend on how
+        ``M`` is normalized), and the cells whose share is below
+        ``min_valid_weight`` are set to NaN after the solve. A cell with no
+        valid weight at all (share ``<= 0``) is always set to NaN, also with
+        ``min_valid_weight=0.0``; otherwise a cell is masked when its share is
+        below ``min_valid_weight`` by more than a rounding tolerance (so that
+        ``1.0`` does not mask cells that are fully valid). Rows without NaN
+        samples skip this step and are unchanged. With ``clip``, the masked
+        cells are not counted in ``n_clipped_low`` / ``n_clipped_high``. With
+        ``conservative=True`` the correction is still computed before the
+        masking, like for the uncomputable cells below. The cells that remain
+        keep the dilution described above, bounded by ``min_valid_weight``;
+        raise it to keep cells with a mostly valid support only.
+
+        The default ``min_valid_weight=0.5`` changes earlier results: cells
+        less than half covered by valid samples, at the edge of a NaN area,
+        used to come back diluted towards 0 and are now NaN;
+        ``min_valid_weight=0.0`` keeps them.
 
         Batch rows where *every* sample is NaN are handled separately: they
         are excluded from the CG solve entirely (rather than relying on the
@@ -1145,6 +1166,14 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             hval: (B,K) or (K,)
             (optional) info: CG information dict
         """
+        if (
+            isinstance(min_valid_weight, bool)
+            or not isinstance(min_valid_weight, numbers.Real)
+            or not 0.0 <= float(min_valid_weight) <= 1.0
+        ):
+            raise ValueError(
+                f"min_valid_weight must be a number in [0, 1], got {min_valid_weight!r}."
+            )
         y = val if isinstance(val, torch.Tensor) else torch.as_tensor(val)
         y = y.to(self.device, dtype=self.dtype)
         clean_shape=False
@@ -1172,6 +1201,25 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         M_op = self.M if M_t is None else None
         MT_op = self.MT if MT_t is None else None
         x_ref = _rmatmul(y_filled, M_op, M_t)
+
+        # Cells whose share of valid weight is too low, per row, to be masked
+        # after the solve. Only rows with some, but not all, NaN samples need
+        # it (all-NaN rows are NaN already; full rows stay untouched).
+        low_valid = None
+        partial = row_has_data & nan_mask.any(dim=-1)
+        if bool(partial.any()):
+            psel = torch.nonzero(partial, as_tuple=False).reshape(-1)
+            ones = torch.ones((1, y.shape[1]), device=self.device, dtype=self.dtype)
+            total_w = _rmatmul(ones, M_op, M_t)                          # (1,K)
+            valid_w = _rmatmul(valid[psel].to(self.dtype), M_op, M_t)    # (P,K)
+            has_w = total_w > 0
+            share = valid_w / torch.where(has_w, total_w, torch.ones_like(total_w))
+            share_tol = 100 * torch.finfo(self.dtype).eps
+            mvw = float(min_valid_weight)
+            low = (share <= 0) | (share < mvw - share_tol)
+            low = low & has_w
+            low_valid = torch.zeros(B, x_ref.shape[1], dtype=torch.bool, device=self.device)
+            low_valid[psel] = low
 
         if x0 is None:
             x0 = torch.zeros_like(x_ref)
@@ -1315,8 +1363,14 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 if self.uncomputable_out_cells is not None and self.uncomputable_out_cells.numel() > 0:
                     held_lo[:, self.uncomputable_out_cells] = False
                     held_hi[:, self.uncomputable_out_cells] = False
+                if low_valid is not None:
+                    held_lo = held_lo & ~low_valid[sel]
+                    held_hi = held_hi & ~low_valid[sel]
                 n_clipped_low[sel] = held_lo.sum(dim=-1)
                 n_clipped_high[sel] = held_hi.sum(dim=-1)
+
+        if low_valid is not None:
+            hval[low_valid] = float("nan")
 
         # Force nan for output cells flagged as uncomputable at construction
         # time (out_cell_ids-requested cells with too little real kernel
