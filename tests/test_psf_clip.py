@@ -241,3 +241,61 @@ def test_invalid_max_outer_raises(op, step):
     _, _, val = step
     with pytest.raises(ValueError):
         op.resample(val, clip=(0.0, None), max_outer=0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rows without valid sample, for every form of clip
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ROW_CLIPS = [
+    None,
+    ("input", "input"),
+    ("input", None),
+    (None, "input"),
+    (-0.1, None),
+    (0.0, 2.0),
+    ("input", 5.0),
+    (-5.0, "input"),
+]
+
+
+@pytest.mark.parametrize("clip", _ROW_CLIPS)
+def test_empty_row_mixed_batch(op, step, clip):
+    _, _, val = step
+    vals = np.stack([val, np.full_like(val, np.nan), val * 0.5])
+    res = op.resample(vals, lam=0.1, clip=clip)
+    assert np.isnan(res.cell_data[1]).all()
+    for i in (0, 2):
+        alone = op.resample(vals[i], lam=0.1, clip=clip)
+        np.testing.assert_allclose(
+            res.cell_data[i], alone.cell_data, rtol=1e-5, atol=1e-6, equal_nan=True
+        )
+    if clip is None:
+        assert res.n_clipped_low is None
+    else:
+        assert res.n_clipped_low[1] == 0 and res.n_clipped_high[1] == 0
+
+
+@pytest.mark.parametrize("clip", _ROW_CLIPS)
+def test_all_rows_empty(op, step, clip):
+    _, _, val = step
+    vals = np.full((2, val.size), np.nan)
+    res = op.resample(vals, lam=0.1, clip=clip)
+    assert np.isnan(res.cell_data).all()
+    if clip is not None:
+        assert (res.n_clipped_low == 0).all() and (res.n_clipped_high == 0).all()
+
+
+def test_empty_row_conservative(op, step):
+    _, _, val = step
+    vals = np.stack([val, np.full_like(val, np.nan)])
+    res = op.resample(vals, lam=0.1, clip=("input", "input"), conservative=True)
+    assert np.isnan(res.cell_data[1]).all()
+    assert np.isfinite(res.cell_data[0]).any()
+
+
+def test_empty_row_does_not_hide_inconsistent_bounds(op, step):
+    _, _, val = step
+    vals = np.stack([val, np.full_like(val, np.nan)])
+    with pytest.raises(ValueError, match="lower bound is above the upper bound"):
+        op.resample(vals, lam=0.1, clip=(float(np.nanmax(val)) + 1.0, "input"))
