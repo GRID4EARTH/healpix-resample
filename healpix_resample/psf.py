@@ -200,8 +200,9 @@ def conjugate_gradient(
 
 
 def _masked(r: torch.Tensor, mask: Optional[torch.Tensor]) -> torch.Tensor:
-    """``r`` with the masked samples (0 in ``mask``) set to 0; ``r`` if no mask."""
-    return r if mask is None else r * mask
+    """``r`` with the masked samples (0 in ``mask``) set to 0; ``r`` if no mask.
+    In place: ``r`` is always a fresh product (``_rmatmul``, a difference)."""
+    return r if mask is None else r.mul_(mask)
 
 
 @torch.no_grad()
@@ -1007,30 +1008,32 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         With ``mask`` (B, N), 1 for a sample that carries data and 0 for one
         that does not, the diagonal of the masked operator, one per row:
         ``d_bk = sum_n MT[k, n] M[n, k] mask[b, n]`` (B, K)."""
-        if getattr(self, "_cg_diag_terms", None) is None:
-            import scipy.sparse
+        if mask is None and getattr(self, "_cg_diag", None) is not None:
+            return self._cg_diag
+        import scipy.sparse
 
-            M_t, MT_t = (
-                self._M_t if getattr(self, "_M_t", None) is not None else _csr_transpose(self.M),
-                self._MT_t if getattr(self, "_MT_t", None) is not None else _csr_transpose(self.MT),
+        M_t, MT_t = (
+            self._M_t if getattr(self, "_M_t", None) is not None else _csr_transpose(self.M),
+            self._MT_t if getattr(self, "_MT_t", None) is not None else _csr_transpose(self.MT),
+        )
+
+        def sp(A):
+            return scipy.sparse.csr_matrix(
+                (A.values().cpu().numpy(), A.col_indices().cpu().numpy(),
+                 A.crow_indices().cpu().numpy()),
+                shape=tuple(A.shape),
             )
 
-            def sp(A):
-                return scipy.sparse.csr_matrix(
-                    (A.values().cpu().numpy(), A.col_indices().cpu().numpy(),
-                     A.crow_indices().cpu().numpy()),
-                    shape=tuple(A.shape),
-                )
-
-            # (K, N): the terms MT[k, n] M[n, k] of the diagonal, summed over n
-            self._cg_diag_terms = sp(M_t).multiply(sp(MT_t).T).tocsr()
-            d = np.asarray(self._cg_diag_terms.sum(axis=1)).reshape(-1)
-            self._cg_diag = torch.as_tensor(d, dtype=self.dtype, device=self.device)
+        # (K, N): the terms MT[k, n] M[n, k] of the diagonal, summed over n.
+        # Not kept (about the size of the operator): a call with a mask builds
+        # them again.
+        terms = sp(M_t).multiply(sp(MT_t).T).tocsr()
         if mask is None:
+            d = np.asarray(terms.sum(axis=1)).reshape(-1)
+            self._cg_diag = torch.as_tensor(d, dtype=self.dtype, device=self.device)
             return self._cg_diag
-        m = mask.to(self.dtype).cpu().numpy().T                               # (N, B)
-        d = np.asarray(self._cg_diag_terms @ m).T                             # (B, K)
-        return torch.as_tensor(np.ascontiguousarray(d), dtype=self.dtype, device=self.device)
+        d = np.asarray(terms @ mask.to(self.dtype).cpu().numpy().T)            # (K, B)
+        return torch.as_tensor(d, dtype=self.dtype, device=self.device).T      # (B, K), a view
 
     def _jacobi(self, lam: float, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Inverse diagonal of ``MT M + lam`` (1 where it is 0), (K,), or one
@@ -1073,6 +1076,10 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 ``mean(hval) == sum(val*area)/sum(area)``. Because HEALPix
                 cells are equal-area, this is equivalent to conserving the
                 total area-integrated quantity. See ``area`` in ``__init__``.
+                In a batch row with NaN samples the mean is taken over the
+                cells that are returned (not NaN, see "NaN handling") and the
+                sums over the valid samples: the returned cells meet the
+                target exactly, also with the default ``min_valid_weight``.
                 Off by default -- does not change existing behaviour.
             clip: ``None`` (the default: unconstrained fit, existing
                 behaviour) or a pair ``(lo, hi)`` of hard bounds on the
@@ -1147,15 +1154,46 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         ``(M^T diag(v) M + lam I) delta = ((y - x_ref @ MT) * v) @ M``: the
         residual of a NaN sample is not fitted. The same holds with ``clip``
         (the bounded fit), with ``conservative=True`` (the correction uses the
-        masked operator, and its constraint is on the cells with some valid
-        weight) and with ``jacobi=True`` (one diagonal per row). The sparse
+        masked operator, and its constraint is on the cells that are
+        returned) and with ``jacobi=True`` (one diagonal per row). The sparse
         operators ``M`` and ``MT`` are the ones built at construction, whatever
         the NaN pattern of the row, and rows with different patterns can be
-        resampled in one call. Rows without NaN samples are computed exactly
-        as before. A NaN sample fitted as a ``0`` used to pull the cells up to
-        a few sample spacings around it towards 0 by tens of per cent of the
-        field; the result now agrees with a resampler built from the valid
-        samples only, except that cells keep their place in ``cell_ids``.
+        resampled in one call. A NaN sample behaves as if it were absent
+        (the cells next to it are those of the system with its rows deleted)
+        for ``lam -> 0``. With ``lam > 0`` the damping towards ``x_ref`` acts
+        with the full kernel weight: in a cell with a share of valid weight
+        below 1 it is stronger, by ``1 / share``, than in a resampler built
+        from the valid samples only (damping ``lam * share`` would be equal,
+        but it makes the plain CG much slower: 100 iterations, the default
+        ``max_iter``, instead of 27 on the test grid). A resampler built from
+        the valid samples only also normalises the kernel weights of the
+        samples next to the gap over its own cells, so the two are not
+        equal there to better than a few per cent of the kernel weight.
+
+        Input without NaN samples goes through the unchanged operations
+        (bit for bit the same cell data and ``cg_niters``). In a batch with
+        mixed rows, a row without NaN samples equals the same row resampled
+        alone to the solver tolerance, not bit for bit: the stopping test of
+        the CG is shared by the rows of a call.
+
+        Cost with NaN samples (only when some row has them): a float
+        ``(B, N)`` mask, the in-place product of the residual with it in each
+        CG iteration (no new array), a ``(B, K)`` boolean, and for the
+        reference field two ``(P, K)`` temporaries for the ``P`` rows with NaN.
+        With ``jacobi=True`` one preconditioner per row, ``(B, K)`` instead of
+        ``(K,)``, and its setup builds the ``(K, N)`` sparse terms of the
+        diagonal again in each call (they are not kept) with a ``(B, K)``
+        product, transient. With ``conservative=True`` the correction solves
+        one right-hand side per row, ``(S, K)`` arrays for the target, the
+        mask of the returned cells and the correction, and ``S`` times the
+        matrix products of the single right-hand side of an input without NaN.
+        For float32, ``B = 20``, ``N = 2e6``, ``K = 4e6`` (``(B, N)`` 160 MB,
+        ``(B, K)`` 320 MB, sizes from the shapes, not measured): mask 160 MB,
+        boolean 80 MB, reference temporaries up to 640 MB, ``jacobi`` 320 MB
+        kept and about 1 GB transient, ``conservative`` 3 x 320 MB. On a
+        10000-sample test grid (one thread) one row with NaN samples took 3 to
+        10 % longer than the same row without; ``conservative=True`` with 8
+        rows, one with NaN samples, 1.7 times as long.
 
         Cells with little valid weight stay badly determined, as they rest on
         few valid samples. To keep such cells from passing as data, the share
@@ -1170,9 +1208,11 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         ``1.0`` does not mask cells that are fully valid). Rows without NaN
         samples skip this step and are unchanged. With ``clip``, the masked
         cells are not counted in ``n_clipped_low`` / ``n_clipped_high``. With
-        ``conservative=True`` the correction is still computed before the
-        masking, like for the uncomputable cells below. ``min_valid_weight``
-        bounds how little valid support a returned cell has.
+        ``conservative=True`` the constraint is on the cells that are
+        returned, so cells that are masked (and cells without valid weight) do
+        not take part in it; the cells flagged uncomputable below are left out
+        of it too. ``min_valid_weight`` bounds how little valid support a
+        returned cell has.
 
         The default ``min_valid_weight=0.5`` changes earlier results: cells
         less than half covered by valid samples, at the edge of a NaN area,
@@ -1242,7 +1282,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # Cells whose share of valid weight is too low, per row, to be masked
         # after the solve. Only rows with some, but not all, NaN samples need
         # it (all-NaN rows are NaN already; full rows stay untouched).
-        low_valid = live = None
+        low_valid = has_valid = None
         partial = row_has_data & nan_mask.any(dim=-1)
         if bool(partial.any()):
             psel = torch.nonzero(partial, as_tuple=False).reshape(-1)
@@ -1261,11 +1301,11 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             # the valid samples only, ``y @ M`` renormalised by the share of
             # valid weight (1 where every sample is valid, so rows without NaN
             # keep ``y @ M``). A cell without valid weight keeps 0.
-            x_ref[psel] = x_ref[psel] / torch.where(share > 0, share, torch.ones_like(share))
+            x_ref[psel] = x_ref[psel].div_(torch.where(share > 0, share, torch.ones_like(share)))
             # per batch row, a cell with some valid weight (for the
             # conservative correction below)
-            live = torch.ones(B, x_ref.shape[1], dtype=torch.bool, device=self.device)
-            live[psel] = share > 0
+            has_valid = torch.ones(B, x_ref.shape[1], dtype=torch.bool, device=self.device)
+            has_valid[psel] = share > 0
 
         if x0 is None:
             x0 = torch.zeros_like(x_ref)
@@ -1287,7 +1327,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             sel = torch.nonzero(row_has_data, as_tuple=False).reshape(-1)
             # 1 for the samples that carry data, only if some row has NaN
             # samples (rows without any have a mask of ones: unchanged)
-            mask_sel = valid[sel].to(self.dtype) if bool(partial.any()) else None
+            mask_sel = valid[sel].to(self.dtype) if has_valid is not None else None
             pinv = self._jacobi(float(lam), mask_sel) if jacobi else None
             y_sel = y_filled[sel]
             x_ref_sel = x_ref[sel]
@@ -1362,27 +1402,36 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 area_valid_sum = (area_b * valid_sel).sum(dim=-1, keepdim=True)             # (S,1)
                 target_mean = (y_sel * area_b).sum(dim=-1, keepdim=True) / area_valid_sum   # (S,1)
                 if mask_sel is None:
+                    live_f = None
                     F_target = target_mean * self.K                                         # (S,1)
                 else:
-                    # the cells without any valid weight carry no data: the
-                    # constraint is on the others (K where every cell has some)
-                    F_target = target_mean * live[sel].sum(dim=-1, keepdim=True).to(self.dtype)
+                    # the constraint is on the cells that are returned (those
+                    # with enough valid weight): 1 there, 0 elsewhere, per row
+                    live_f = (has_valid[sel] & ~low_valid[sel]).to(self.dtype)       # (S,K)
+                    if self.uncomputable_out_cells is not None and self.uncomputable_out_cells.numel() > 0:
+                        live_f[:, self.uncomputable_out_cells] = 0.0
+                    F_target = target_mean * live_f.sum(dim=-1, keepdim=True)
+
+                def _lsum(t: torch.Tensor) -> torch.Tensor:
+                    # sum over the cells of the constraint, per row (S,1)
+                    return t.sum(dim=-1, keepdim=True) if live_f is None else (t * live_f).sum(dim=-1, keepdim=True)
 
                 def _Hmv(v: torch.Tensor) -> torch.Tensor:
                     return _rmatmul(_masked(_rmatmul(v, MT_op, MT_t), mask_sel), M_op, M_t) + float(lam) * v
 
                 dxinv_c = (1.0 / self.cell_weight).unsqueeze(0)  # (1,K) = Dx^-1 @ 1_K
-                if mask_sel is not None:
-                    # the masked operator is one per row; a cell without valid
-                    # weight is out of the range of H when lam = 0: leave it out
-                    dxinv_c = dxinv_c * live[sel].to(self.dtype)                           # (S,K)
+                if live_f is not None:
+                    # the masked operator is one per row, and the cells that
+                    # are not returned (among them those without valid weight,
+                    # out of the range of H when lam = 0) are left out
+                    dxinv_c = dxinv_c * live_f                                              # (S,K)
                 if clip is None:
                     w, _ = conjugate_gradient(
                         A_mv=_Hmv, b=dxinv_c, max_iter=max_iter, tol=tol,
                         verbose=False, weight=self.cell_weight,
                     )                                                                      # (1,K)
 
-                    mu = (F_target - hval[sel].sum(dim=-1, keepdim=True)) / w.sum(dim=-1, keepdim=True)  # (S,1)
+                    mu = (F_target - _lsum(hval[sel])) / _lsum(w)                            # (S,1)
                     hval[sel] = hval[sel] + mu * w                                          # (S,K)
                 else:
                     # Same correction, restricted to the cells the bounded fit
@@ -1402,8 +1451,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                             A_mv=_Hfree, b=free_f * dxinv_c, max_iter=max_iter, tol=tol,
                             verbose=False, weight=self.cell_weight,
                         )                                                                  # (S,K)
-                        w_sum = w.sum(dim=-1, keepdim=True)
-                        gap = F_target - base.sum(dim=-1, keepdim=True)
+                        w_sum = _lsum(w)
+                        gap = F_target - _lsum(base)
                         mu = torch.where(w_sum != 0, gap / torch.where(w_sum != 0, w_sum, 1.0), 0.0)
                         cand = base + mu * w
                         below = (free_f > 0) & (cand < lo_sel)
@@ -1442,7 +1491,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # every other cell's correction via hval[sel].sum(). Note this means
         # conservative=True's global constraint is still computed *including*
         # these cells' (pre-nan) contribution -- a known, minor interaction
-        # this flag doesn't attempt to fully resolve.
+        # this flag doesn't attempt to fully resolve (a batch with NaN samples
+        # does leave them out of the constraint, see the correction above).
         if self.uncomputable_out_cells is not None and self.uncomputable_out_cells.numel() > 0:
             hval[:, self.uncomputable_out_cells] = float("nan")
 
