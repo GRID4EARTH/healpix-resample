@@ -138,15 +138,37 @@ def ramp_nan(grid):
     return val
 
 
-def _same_as_main(new, old):
+def _far_from_nan(op, grid, val, spacings=30.0):
+    """Cells whose centre is more than ``spacings`` sample spacings from every NaN sample."""
+    import healpix_geo.nested as hgn
+    from scipy.spatial import cKDTree
+
+    lon, lat = grid
+    c = np.cos(np.radians(45.25))
+    clon, clat = hgn.healpix_to_lonlat(np.asarray(op.cell_ids).astype("uint64"), LEVEL, "WGS84")
+    clon = (np.asarray(clon) + 180.0) % 360.0 - 180.0
+    bad = np.isnan(val)
+    d = cKDTree(np.c_[lon[bad] * c, lat[bad]]).query(np.c_[clon * c, np.asarray(clat)])[0]
+    return d > spacings * 0.5 / 119
+
+
+def _same_as_main(new, old, op, grid, val, compare=True):
     # The values of the cells next to NaN samples are not those of main any
     # more: NaN samples carry no weight in the fit (tests/test_psf_nan_samples.py).
-    # What this file checks stays: main's finite output gets NaN cells, the
-    # others are finite.
+    # What this file checks stays: main's output is finite, the NaN cells of the
+    # new one are exactly those below min_valid_weight, the cells far from any
+    # NaN sample (12 spacings: 1e-6 of the field observed) are those of main, the
+    # others are finite. ``compare=False`` for conservative: its correction
+    # moves every cell.
     a, b = np.asarray(new.cell_data), np.asarray(old.cell_data)
-    keep = ~np.isnan(a)
-    assert keep.any() and np.isnan(a).any()
-    assert not np.isnan(b).any() and np.isfinite(a[keep]).all()
+    assert np.isnan(a).any() and np.isfinite(a).any()
+    assert not np.isnan(b).any()
+    share = _dense_share(op, val)
+    np.testing.assert_array_equal(np.isnan(a), (share <= 0) | (share < 0.5 - 100 * np.finfo(np.float32).eps))
+    far = _far_from_nan(op, grid, val) & ~np.isnan(a)
+    if compare and far.any():
+        assert np.max(np.abs(a[far] - b[far])) < 1e-5 * np.median(np.abs(b[far]))
+    return far.sum()
 
 
 @pytest.mark.parametrize("which", ["half_nan", "scattered_nan"])
@@ -164,7 +186,10 @@ def _same_as_main(new, old):
 def test_unmasked_cells_are_finite_as_on_main(op, main_cls, grid, request, which, kwargs):
     val = request.getfixturevalue(which)
     old_op = main_cls(lon_deg=grid[0], lat_deg=grid[1], level=LEVEL, threshold=0.3)
-    _same_as_main(op.resample(val, **kwargs), old_op.resample(val, **kwargs))
+    n_far = _same_as_main(op.resample(val, **kwargs), old_op.resample(val, **kwargs), op, grid, val,
+                          compare=not kwargs.get("conservative"))
+    # half plane: cells far from the NaN samples exist; 10 % scattered NaN: none
+    assert (n_far > 0) == (which == "half_nan")
 
 
 def test_unmasked_cells_are_finite_as_on_main_with_x0_and_1d(op, main_cls, grid, half_nan):
@@ -172,14 +197,15 @@ def test_unmasked_cells_are_finite_as_on_main_with_x0_and_1d(op, main_cls, grid,
     x0 = torch.full((1, len(op.cell_ids)), 0.01, dtype=torch.float32)
     new = op.resample(half_nan, lam=0.1, x0=x0)
     assert np.asarray(new.cell_data).ndim == 1  # 1-D in, 1-D out
-    _same_as_main(new, old_op.resample(half_nan, lam=0.1, x0=x0))
+    _same_as_main(new, old_op.resample(half_nan, lam=0.1, x0=x0), op, grid, half_nan)
 
 
 def test_unmasked_cells_are_finite_as_on_main_float64(main_cls, grid, half_nan):
     kw = dict(lon_deg=grid[0], lat_deg=grid[1], level=LEVEL, threshold=0.3, dtype=torch.float64)
-    new = PSFResampler(**kw).resample(half_nan, lam=0.1)
+    op64 = PSFResampler(**kw)
+    new = op64.resample(half_nan, lam=0.1)
     old = main_cls(**kw).resample(half_nan, lam=0.1)
-    _same_as_main(new, old)
+    _same_as_main(new, old, op64, grid, half_nan)
 
 
 def test_fully_valid_row_equals_main(op, main_cls, grid):
@@ -244,13 +270,16 @@ def test_counters_count_the_unmasked_cells_at_a_bound(op, main_cls, grid, ramp_n
     assert int(old.n_clipped_low) > int(res.n_clipped_low)
 
 
-def test_conservative_is_computed_before_the_masking(op, main_cls, grid, half_nan):
-    # documented: the correction still sums over the cells masked afterwards,
-    # so the unmasked cells are those of main and the mean of the unmasked
-    # cells is not the input mean.
+def test_conservative_constraint_is_on_the_returned_cells(op, main_cls, grid, half_nan):
+    # the constraint is on the cells that come back: their mean is the input
+    # mean (0.15, whatever the cell weights); on main the correction summed over
+    # all cells, among them the ones masked afterwards.
     old_op = main_cls(lon_deg=grid[0], lat_deg=grid[1], level=LEVEL, threshold=0.3)
-    new = op.resample(half_nan, lam=0.1, conservative=True)
-    _same_as_main(new, old_op.resample(half_nan, lam=0.1, conservative=True))
+    new = np.asarray(op.resample(half_nan, lam=0.1, conservative=True).cell_data, dtype="f8")
+    old = np.asarray(old_op.resample(half_nan, lam=0.1, conservative=True).cell_data, dtype="f8")
+    assert np.isnan(new).any() and np.isfinite(new).any()
+    assert np.nanmean(new) == pytest.approx(0.15, rel=1e-5)
+    assert abs(np.mean(old[np.isfinite(new)]) - 0.15) > 0.01   # main: not the input mean
 
 
 # --- out_cell_ids ------------------------------------------------------------
