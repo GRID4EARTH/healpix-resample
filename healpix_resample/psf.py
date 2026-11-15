@@ -394,11 +394,15 @@ def bounded_least_squares_cg(M,
     return x, info
 
 
-def _clip_bounds(clip, y, valid) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Turn ``resample(..., clip=(lo, hi))`` into per-row bounds, each (B, 1).
+def _clip_bounds(clip, y, valid, local=None) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Turn ``resample(..., clip=(lo, hi))`` into bounds on the output.
 
     Each side is ``None`` (not constrained: -inf or +inf), a number, or
-    ``"input"`` (the min or max of the row's valid samples).
+    ``"input"`` (the min or max of the row's valid samples): bounds (B, 1),
+    the same for every cell of a row. A side can also be ``"local"``: the
+    min or max of the valid samples that reach each cell, bounds (B, K) given
+    by the callable ``local(y, valid) -> (lo, hi)`` (see
+    ``PSFResampler._local_range``).
     """
     if not (isinstance(clip, (tuple, list)) and len(clip) == 2):
         raise ValueError(
@@ -407,16 +411,23 @@ def _clip_bounds(clip, y, valid) -> Tuple[torch.Tensor, torch.Tensor]:
         )
     B = y.shape[0]
     out = []
+    loc = None
     for side, value, fill, reduce in (
         ("lo", clip[0], float("-inf"), torch.amin),
         ("hi", clip[1], float("inf"), torch.amax),
     ):
         if value is None:
             bound = torch.full((B, 1), fill, device=y.device, dtype=y.dtype)
+        elif isinstance(value, str) and value == "local":
+            if local is None:
+                raise ValueError("clip 'local' needs the PSFResampler operator.")
+            if loc is None:
+                loc = local(y, valid)
+            bound = loc[0] if side == "lo" else loc[1]
         elif isinstance(value, str):
             if value != "input":
                 raise ValueError(
-                    f"clip {side} must be None, a number or 'input', got {value!r}."
+                    f"clip {side} must be None, a number, 'input' or 'local', got {value!r}."
                 )
             masked = torch.where(valid, y, torch.full_like(y, -fill))
             bound = reduce(masked, dim=-1, keepdim=True)
@@ -427,7 +438,11 @@ def _clip_bounds(clip, y, valid) -> Tuple[torch.Tensor, torch.Tensor]:
             bound = torch.full((B, 1), value, device=y.device, dtype=y.dtype)
         out.append(bound)
     lo, hi = out
-    if bool((lo > hi).any()):
+    if "local" in clip:
+        # a fixed side can lie beyond a local bound: keep the box non-empty
+        hi = torch.maximum(hi, lo)
+        lo = torch.minimum(lo, hi)
+    elif bool((lo > hi).any()):
         raise ValueError(f"clip lower bound is above the upper bound: {clip!r}.")
     return lo, hi
 
@@ -1009,6 +1024,63 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         d = self._cg_diagonal() + lam
         return torch.where(d > 0, 1.0 / torch.where(d > 0, d, 1.0), 1.0)
 
+    def _local_links(self, support: float):
+        """Links (cell, sample) that define the local bounds: the CSR
+        structure of ``M.T`` (rows: cells), keeping the links whose weight is
+        at least ``support`` times the largest weight of the cell. Cached."""
+        cache = getattr(self, "_local_links_cache", None)
+        if cache is None:
+            cache = self._local_links_cache = {}
+        if support not in cache:
+            self._cg_transposes()
+            A = self._M_t
+            crow = A.crow_indices().to(torch.long)
+            col = A.col_indices().to(torch.long)
+            vals = A.values()
+            lengths = torch.diff(crow)
+            if support > 0.0 and vals.numel():
+                row = torch.repeat_interleave(
+                    torch.arange(self.K, device=vals.device), lengths
+                )
+                top = torch.zeros(self.K, dtype=vals.dtype, device=vals.device)
+                top = top.scatter_reduce(0, row, vals, reduce="amax", include_self=True)
+                keep = (vals > 0) & (vals >= support * top[row])
+                col = col[keep]
+                lengths = torch.bincount(row[keep], minlength=self.K)
+            cache[support] = (col, lengths)
+        return cache[support]
+
+    def _local_range(self, y, valid, support: float = 0.0, margin: float = 0.0):
+        """Per-cell min and max of the valid samples that reach each cell
+        (the samples linked to it, see :meth:`_local_links`), widened on each
+        side by ``margin`` times the local range. (S, N) -> two (S, K).
+
+        A cell without valid linked sample is not bounded (-inf, +inf).
+        The result depends on the neighbourhood of a cell only, not on the
+        other samples of the chunk.
+        """
+        col, lengths = self._local_links(support)
+        S = y.shape[0]
+        lo = torch.empty((S, self.K), dtype=y.dtype, device=y.device)
+        hi = torch.empty_like(lo)
+        inf = float("inf")
+        has = (lengths > 0)
+        for b in range(S):  # one row at a time: (nnz,) temporaries
+            v = y[b].index_select(0, col)
+            ok = valid[b].index_select(0, col)
+            vmin = torch.where(ok, v, torch.full_like(v, inf))
+            vmax = torch.where(ok, v, torch.full_like(v, -inf))
+            lo[b] = torch.segment_reduce(vmin, "min", lengths=lengths, axis=0, initial=inf)
+            hi[b] = torch.segment_reduce(vmax, "max", lengths=lengths, axis=0, initial=-inf)
+        empty = ~(lo <= hi)  # no valid sample (lo=+inf, hi=-inf)
+        if margin > 0.0:
+            m = margin * (hi - lo)
+            lo = torch.where(empty, lo, lo - m)
+            hi = torch.where(empty, hi, hi + m)
+        lo = torch.where(empty, torch.full_like(lo, -inf), lo)
+        hi = torch.where(empty, torch.full_like(hi, inf), hi)
+        return lo, hi
+
     @torch.no_grad()
     def resample(
         self,
@@ -1024,6 +1096,8 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         max_outer: int = 10,
         jacobi: bool = False,
         min_valid_weight: float = 0.5,
+        local_support: float = 0.0,
+        local_margin: float = 0.0,
     ) -> ResampleResults[T_Array]:
         """Estimate the HEALPix field from unstructured samples.
 
@@ -1054,6 +1128,17 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 ``clip=(0.0, None)`` for a non-negative field,
                 ``clip=(None, 1.0)`` for an upper bound only, and
                 ``clip=("input", "input")`` to stay within the input range.
+                A side can also be ``"local"``: each output cell is bounded
+                by the min (or max) of the valid samples linked to it (see
+                "Local bounds" below), so the bounds do not depend on which
+                other samples the call holds.
+            local_support: with ``"local"``, a number in ``[0, 1]`` (default
+                ``0.0``): only the samples whose weight in the cell is at
+                least this share of the cell's largest weight define its
+                bounds. ``0.0`` keeps every linked sample.
+            local_margin: with ``"local"``, a number ``>= 0`` (default
+                ``0.0``): the bounds of a cell are widened on each side by
+                this multiple of its local range ``max - min``.
             max_outer: with ``clip``, the maximum number of hold/solve/release
                 passes of the bounded fit; each pass runs one CG of up to
                 ``max_iter`` iterations.
@@ -1083,6 +1168,26 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         legitimately reconstructed above the input values, so capping it at
         the input maximum spreads that energy over its neighbours and widens
         the feature.
+
+        Local bounds
+        ------------
+        ``"input"`` bounds the whole call by the extreme values of all its
+        samples, so the result depends on how the data is split into calls
+        (chunks): the same cell gets other bounds, hence another value,
+        when the call holds more or fewer distant samples. ``"local"`` bounds
+        each cell by the min and max of the valid samples linked to it (the
+        samples that have the cell among their ``Npt`` nearest cells, whose
+        weight in the cell is at least ``local_support`` times the largest
+        one), widened by ``local_margin``. Those samples are all inside the
+        kernel support of the cell, so once a call holds the whole support
+        of a cell its bounds, and with them its value up to the solver
+        tolerance and the coupling of the neighbouring cells through the
+        fit, no longer depend on the rest of the data. The bounds are
+        tighter than the input range: the fit can no longer sharpen a cell
+        beyond its own neighbourhood. A cell without a valid linked sample is
+        not bounded (and is NaN when its row holds NaN samples, see "NaN
+        handling"). Cost: one gather over the links per row (about as much as
+        a few CG iterations) and two ``(rows, K)`` arrays.
 
         With ``conservative=True``, the conservation correction is computed
         on the free cells only, and cells it would take out of the box are
@@ -1225,7 +1330,20 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         cg_niters = torch.tensor(0, device=self.device)
         n_clipped_low = n_clipped_high = None
         if clip is not None:
-            _clip_bounds(clip, y, valid)  # validate the argument even if no row has data
+            # validate the argument even if no row has data
+            _clip_bounds(clip, y, valid, local=lambda *_: (y[:, :1], y[:, :1]))
+            if (
+                isinstance(local_support, bool)
+                or not isinstance(local_support, numbers.Real)
+                or not 0.0 <= float(local_support) <= 1.0
+            ):
+                raise ValueError(f"local_support must be a number in [0, 1], got {local_support!r}.")
+            if (
+                isinstance(local_margin, bool)
+                or not isinstance(local_margin, numbers.Real)
+                or float(local_margin) < 0.0
+            ):
+                raise ValueError(f"local_margin must be a number >= 0, got {local_margin!r}.")
             if int(max_outer) < 1:
                 raise ValueError(f"max_outer must be at least 1, got {max_outer!r}.")
             n_clipped_low = torch.zeros(B, dtype=torch.int64, device=self.device)
@@ -1256,7 +1374,12 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
                 )
             else:
                 # bounds on hval, per row (S,1), turned into bounds on delta (S,K)
-                lo_sel, hi_sel = _clip_bounds(clip, y[sel], valid[sel])
+                lo_sel, hi_sel = _clip_bounds(
+                    clip, y[sel], valid[sel],
+                    local=lambda yy, vv: self._local_range(
+                        yy, vv, float(local_support), float(local_margin)
+                    ),
+                )
                 delta, info = bounded_least_squares_cg(
                     M=M_op,
                     MT=MT_op,
