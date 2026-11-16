@@ -1113,6 +1113,8 @@ _E4_SEQUENTIAL = ("#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f9
 _E4_INK = "#0b0b0b"
 _E4_INK2 = "#52514e"
 _E4_EQUIV = {"real": math.sqrt(1.25), "synthetic": SYNTH_EQUIV_FACTOR}
+_E4_MARGIN_PCT = 15.0       # colour range of the margin map (saturates beyond)
+_E4_DIVERGED_PCT = 1000.0   # |median margin| above this: diverged solve
 
 
 def _e4_f_label(f):
@@ -1152,22 +1154,31 @@ def e4_figures(benches=("real", "synthetic"), n_iter=30):
         margin = g.pivot(index="lam", columns="f", values="median_margin").loc[lams, fs] * 100
         wins = g.pivot(index="lam", columns="f", values="wins").loc[lams, fs]
         n = int(g["n_regions"].max())
-        vmax = float(np.nanmax(np.abs(margin.to_numpy())))
-        panels = ((margin, div, TwoSlopeNorm(0.0, -vmax, vmax), "{:.1f}",
+        # Undamped (lam = 0) package solves diverge at small f: those cells
+        # are labelled "div." and left uncoloured instead of driving the scale.
+        diverged = np.abs(margin.to_numpy()) > _E4_DIVERGED_PCT
+        panels = ((margin, div, TwoSlopeNorm(0.0, -_E4_MARGIN_PCT, _E4_MARGIN_PCT),
                    "median margin vs strongest tuned competitor (%)"),
-                  (wins, seq, plt.Normalize(0, n), "{:.0f}",
-                   f"regions won (of {n})"))
-        for c, (data, cmap, norm, fmt, title) in enumerate(panels):
+                  (wins, seq, plt.Normalize(0, n), f"regions won (of {n})"))
+        for c, (data, cmap, norm, title) in enumerate(panels):
             ax = axes[r, c]
-            im = ax.imshow(data.to_numpy(), cmap=cmap, norm=norm, aspect="auto")
+            shown = data.to_numpy().astype(float)
+            if c == 0:
+                shown = np.where(diverged, np.nan, shown)
+            im = ax.imshow(np.ma.masked_invalid(shown), cmap=cmap, norm=norm, aspect="auto")
             for i in range(len(lams)):
                 for j in range(len(fs)):
                     v = data.to_numpy()[i, j]
                     if not np.isfinite(v):
                         continue
+                    if c == 0 and diverged[i, j]:
+                        ax.text(j, i, "div.", ha="center", va="center", fontsize=6,
+                                color=_E4_INK2)
+                        continue
                     rgba = cmap(norm(v))
                     lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
-                    ax.text(j, i, fmt.format(v), ha="center", va="center", fontsize=6,
+                    label = f"{v:.0f}" if (c == 1 or abs(v) >= 10) else f"{v:.1f}"
+                    ax.text(j, i, label, ha="center", va="center", fontsize=6,
                             color="white" if lum < 0.5 else _E4_INK)
                     if c == 1 and v >= E4_SAFE_WIN * n:
                         ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False,
@@ -1181,7 +1192,8 @@ def e4_figures(benches=("real", "synthetic"), n_iter=30):
             ax.set_title(f"{bench}: {title}", loc="left")
             for s in ax.spines.values():
                 s.set_visible(False)
-            fig.colorbar(im, ax=ax, shrink=0.85, pad=0.01).outline.set_visible(False)
+            fig.colorbar(im, ax=ax, shrink=0.85, pad=0.01,
+                         extend="both" if c == 0 else "neither").outline.set_visible(False)
     fig.savefig(figdir / f"e4_width_lambda_maps_it{n_iter}.pdf")
     fig.savefig(figdir / f"e4_width_lambda_maps_it{n_iter}.png", dpi=200)
     plt.close(fig)
@@ -1209,7 +1221,7 @@ def e4_figures(benches=("real", "synthetic"), n_iter=30):
         ax.grid(axis="y", color="#e4e3df", lw=0.6)
         for s in ("top", "right"):
             ax.spines[s].set_visible(False)
-    axes[0, 0].legend(frameon=False, loc="upper center")
+    axes[0, 0].legend(frameon=False, loc="lower left")
     fig.savefig(figdir / "e4_width_curves.pdf")
     fig.savefig(figdir / "e4_width_curves.png", dpi=200)
     plt.close(fig)
