@@ -210,6 +210,136 @@ cellules).**
 - **Classement des méthodes dans S1 et S3 :** il dit si l'avantage de
   PSF-aware dépend de l'approximation gaussienne.
 
+## E5 — vérité indépendante inter-capteurs : SEN2VENµS (ajouté le 2026-11-16, avant tout calcul E5)
+
+**Question.** Sur de vraies images Sentinel-2 à 10 m, sans dégradation
+artificielle, quelle méthode reproduit le mieux une référence acquise le
+même jour par un autre capteur, VENµS à 5 m ? Et avec quelle précision
+faut-il connaître la largeur de la PSF ?
+
+**Données.** SEN2VENµS v2.0.0 (Michel et al., *Data* 2022, 7, 96 ;
+DOI 10.5281/zenodo.14603764).
+- Bande B4 uniquement, valeurs en int16 / 10 000.
+- Paires du même jour : Sentinel-2 L2A en extraits de 128 × 128 à 10 m,
+  VENµS en extraits de 256 × 256 à 5 m. Les deux couvrent la même emprise
+  de 1 280 m, en UTM ; les GeoTIFF sont géoréférencés.
+- Les fichiers VENµS sont sous licence CC BY-NC 4.0 : on ne redistribue
+  que les métriques et le script de téléchargement.
+
+**Sites.** Les 13 sites dont l'angle zénithal de visée de VENµS est
+≤ 25° (table 1 de la notice Zenodo) : FR-LQ1, NARYN, FGMANAUS, MAD-AMBO,
+ARM, BAMBENW2, ES-IC3XG, ANJI, ATTO, ESGISB-3, ESGISB-1, FR-BIL et
+K34-AMAZ. La résolution de VENµS se dégrade hors nadir ; ce critère garde
+les références les plus nettes. Il ne dépend que des métadonnées.
+
+**Filtres par extrait.** Ils portent sur les entrées seules, avant toute
+méthode. Les zones intérieures s'entendent à plus de 4 σ du bord pour les
+lissages.
+1. **Invalide :** une valeur B4 < −1 000 ou > 15 000 dans l'une des deux
+   images.
+2. **Plat :** écart-type relatif de VENµS B4 < 1e-3 (critère du banc réel).
+3. **Brillant :** plus de 30 % des pixels VENµS B4 au-dessus de 0,30 de
+   réflectance (nuage ou neige ; critère du banc réel).
+4. **Incohérence grossière :** corrélation < 0,9 entre Sentinel-2 et VENµS
+   ramené à 10 m, les deux lissés par une gaussienne de 40 m de FWHM
+   (changement de scène, nuage ou ombre résiduels).
+5. **Co-registration :**
+   - Le décalage est estimé par corrélation de phase (`skimage`,
+     sur-échantillonnage 100) entre Sentinel-2 B4 et VENµS B4 ramené à
+     10 m. VENµS est ramené à 10 m par une gaussienne de 10 m de FWHM au pas
+     de 5 m, puis par une moyenne 2 × 2.
+   - L'extrait est exclu si |décalage| > 1 pixel Sentinel-2.
+   - Il est aussi exclu si l'une des quatre estimations sur les quadrants de
+     64 × 64 s'écarte de plus de 0,2 pixel de l'estimation sur l'extrait
+     entier.
+
+**Échantillonnage.**
+- Dans chaque site, 24 extraits sont tirés parmi ceux qui passent les
+  filtres (graine 20261116).
+- Le tirage se fait à tour de rôle sur les paires (dates), prises dans un
+  ordre aléatoire.
+- Un site qui a moins de 24 extraits valides les garde tous.
+
+**Référence.**
+1. **Harmonisation radiométrique :** ajustement linéaire
+   S2₄₀ = a · VEN₄₀ + b sur les images lissées à 40 m (10 m, zone
+   intérieure). On l'applique ensuite à VENµS à 5 m. Seules les échelles
+   ≥ 40 m entrent dans l'ajustement.
+2. **Recalage :** le décalage estimé est appliqué aux positions où on lit
+   VENµS. L'image n'est pas rééchantillonnée.
+3. **Moyennes de cellules :**
+   - Une cellule L20 (6,2 m) vaut la moyenne de VENµS harmonisé, vu comme
+     constant par pixel de 5 m, aux centres de ses 64 sous-cellules L23
+     (pixel contenant chaque centre).
+   - L19 (12,4 m), en robustesse : la même chose sur ses 256 sous-cellules
+     L23.
+   - Ce code est indépendant des opérateurs PSF. `OverlapConservativeResampler`
+     ne convient pas, car il exige une grille source rectiligne en lon/lat.
+4. **Cellules évaluées :** celles dont le centre est à ≥ 200 m à l'intérieur
+   de l'emprise de l'extrait.
+5. **HEALPix :** indexation nested, ellipsoïde WGS84 (comme le banc réel).
+
+**Méthodes.** Elles partent toutes des pixels Sentinel-2 B4 à 10 m.
+- **`psf_aware` :**
+  - centres des pixels → L20 (et L19) ;
+  - gaussienne de largeur f × 12,5 m, l'approximation nominale de la
+    réponse Sentinel-2 dans l'article ;
+  - f ∈ {0,6 ; 0,7 ; … ; 1,5} ;
+  - grille λ × itérations d'E1 ; `Npt` par `recommend_npt` (masse 0,99) ;
+    `threshold` 0,1.
+- **Géométriques :** plus proche voisin, bilinéaire, bicubique, lus aux
+  centres des sous-cellules L22 (L21 pour L19) puis moyennés par cellule.
+  C'est l'estimande de l'article.
+- **Déconvolutions :** `rl2` (`clip` et `minmax`), `tik_id`, `tik_lap` et
+  `wiener_hunt`, avec la gaussienne f × 12,5 m sur la grille de 10 m, les
+  grilles d'E1 et la même lecture.
+
+**Score et réglage.**
+- **Par extrait :** RMSE contre la référence sur les cellules évaluées, et
+  score relatif = RMSE / RMSE bicubique du même extrait.
+- **Par site :** moyenne sur ses extraits. L'unité statistique est le site
+  (n = 13).
+- **Réglage principal : leave-one-site-out (13 plis).** Pour chaque famille,
+  on retient la configuration qui minimise la moyenne, sur les sites
+  d'entraînement, du score relatif par site. Deux modes :
+  - mode A : f = 1 ;
+  - mode B : f fait partie de la grille.
+- **Réglage transféré (mode A) :** pour chaque famille, la configuration
+  qui minimise le score relatif moyen sur les 40 régions synthétiques d'E1,
+  à f = 1. C'est la même géométrie (10 m → L20).
+- **Oracle :** la meilleure configuration par site.
+
+**Statistiques.**
+- **Δ apparié par site** = RMSE moyen du concurrent − RMSE moyen de
+  PSF-aware.
+- **Inférence :** IC bootstrap sur les sites (5 000 réplicats, graine
+  20260818), nombre de sites gagnés et test de signe exact bilatéral.
+- **À titre descriptif :** la fraction d'extraits gagnés.
+- **Courbes en f :** à chaque f, chaque famille est réglée par
+  leave-one-site-out restreint à ce f. On rapporte la médiane et l'IQR
+  sur les sites du score relatif, et les victoires de PSF-aware contre le
+  concurrent le plus fort au même f.
+- **Niveaux :** L20 est le résultat principal ; L19 est rapporté en
+  robustesse, avec les modes A et B en leave-one-site-out.
+
+**Lecture fixée avant calcul.**
+- **Marges plus faibles qu'en résolution réduite :** c'est attendu, car la
+  réponse propre de VENµS floute la référence. Le classement (sites gagnés
+  sur 13) est le résultat principal ; le RMSE absolu est secondaire.
+- **Optimum de PSF-aware à f < 1 :** il serait cohérent avec cette
+  référence floutée. La largeur relative attendue est d'environ
+  √(12,5² − r²), où r est la largeur de la réponse de la référence.
+- **Données insuffisantes :** si moins de 8 sites gardent au moins 8 extraits
+  après les filtres, l'expérience est rapportée comme limitée, sans changer
+  les critères.
+
+**Sorties.**
+- `tables/revision/e5_manifest.csv` : filtres, décalage et ajustement de
+  chaque extrait ;
+- `e5/<extrait>.csv` : résultats bruts ;
+- `analysis_e5/` : tables ;
+- `figures/e5_*.pdf` : figures.
+
 ## Journal des modifications après gel
 
 ### Amendement 1 — 2026-11-16 : extension des grilles ouvertes
