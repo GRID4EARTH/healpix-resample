@@ -411,8 +411,8 @@ def figure():
         ax.plot(1e3 * summ["k"], summ[f"{key}_median"], color=blue, lw=1.8,
                 label=f"median of {n_sites} sites")
         if key == "gamma2":
-            ax.plot(1e3 * summ["k"], summ["gamma2_refined_median"], color=blue, lw=1.0,
-                    ls=":", label="γ² with refined shift (median)")
+            ax.plot(1e3 * summ["k"], summ["gamma2_refined_median"], color=rt._E4_INK, lw=0.9,
+                    ls=(0, (1, 1.5)), zorder=5, label="γ² with refined shift (median)")
         if key in ("R", "H"):
             ax.plot(1e3 * kk, 1.0 / nominal_mtf(kk), color=rt._E4_INK2, lw=1.0,
                     ls=(0, (3, 2)), label="1 / MTF, nominal S2 (12.5 m)")
