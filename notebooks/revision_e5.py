@@ -427,8 +427,8 @@ def run_patch(row, force=False, data_dir=DATA_DIR):
         return pd.read_csv(out_path)
     s2_dn, ven_dn, t10, t05, crs = read_patch(row, data_dir)
     s2, ven = s2_dn / DN_SCALE, ven_dn / DN_SCALE
-    meta = dict(bench="sen2venus", scene=row.patch_id, scene_class=row.site,
-                region_id=row.site, patch_id=row.patch_id)
+    meta = dict(scene=row.patch_id, scene_class=row.site, region_id=row.site,
+                patch_id=row.patch_id)
     shift = (row.shift_row_px, row.shift_col_px)
     fit = (row.fit_a, row.fit_b)
     xs, ys = s2_centres(t10, s2.shape)
