@@ -83,7 +83,7 @@ pixi run -e notebooks python notebooks/revision_run.py e1e2 real --limit 1
 pixi run -e notebooks python notebooks/revision_run.py e1e2 synthetic --limit 1
 ```
 
-- `selftest` doit afficher **40/40 checks passed**.
+- `selftest` doit afficher **44/44 checks passed**.
 - Les deux `--limit 1` traitent une région par classe ; ils servent de test
   de fumée.
 - Ensuite, supprimer `notebooks/tables/revision/e1e2_*` (sinon ces 4 régions
@@ -139,6 +139,7 @@ pixi run --as-is -e notebooks python notebooks/revision_run.py e5-manifest   # t
 qsub -q omp -v "$V,STEP=e5,NSHARD=32"            -J 0-31 notebooks/hpc/revision_pbs.sh
 qsub -q omp -v "$V,STEP=e5 --part ext,NSHARD=32" -J 0-31 notebooks/hpc/revision_pbs.sh  # amendement 3
 pixi run --as-is -e notebooks python notebooks/revision_run.py e5-analyze
+pixi run --as-is -e notebooks python notebooks/revision_run.py e5-spectral   # E5-S, exploratoire, ~2 min
 ```
 
 **Ordres de grandeur sur CPU (estimations, à confirmer par le test de

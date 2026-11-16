@@ -474,3 +474,80 @@ relance.
 L'analyse étendue porte sur l'union des deux parties. Le score, les plis, les
 graines, les statistiques et les filtres sont inchangés. Si une configuration
 retenue tombe encore au bord d'une grille étendue, on le signale tel quel.
+
+## Analyse exploratoire E5-S — 2026-11-16, après l'analyse E5 étendue (non pré-enregistrée)
+
+**Pourquoi.** Après l'amendement 3, aucune méthode ne fait mieux que la
+lecture bicubique contre VENµS. Les déconvolutions retiennent f → 0,2, donc
+quasiment l'identité. La lecture fixée avant calcul attendait au contraire un
+optimum à f < 1, mais pas nul. Deux causes possibles :
+- **référence floue :** VENµS B4 n'a pas plus de hautes fréquences que
+  Sentinel-2 B4 ;
+- **incohérence entre capteurs :** VENµS en a davantage, mais elles ne sont
+  pas prévisibles à partir de Sentinel-2. En cause : bruit, repliement de
+  Sentinel-2, parallaxe, recalage local, réponses spectrales différentes.
+
+**Statut.** Cette analyse a été décidée après avoir vu les résultats d'E5.
+Elle est descriptive : elle ne change aucune sélection, aucune comparaison ni
+aucune conclusion d'E5, ne comporte aucun test et sera présentée comme
+exploratoire.
+
+**Données.** Les 307 extraits d'E5, bande B4. L'harmonisation (gain a) et le
+décalage sont ceux du manifeste E5.
+
+**Calcul, par extrait.**
+- Les deux images sont centrées, puis apodisées par la même fenêtre de Hann
+  continue, sin²(π u / 1280 m).
+- Leur transformée de Fourier est prise autour du coin commun de l'extrait.
+- Le décalage E5 est appliqué à VENµS comme une rampe de phase, et son gain
+  a comme un facteur.
+- Les fréquences communes vont par pas de 1/1280 m⁻¹ jusqu'à la fréquence de
+  Nyquist de Sentinel-2 (0,05 m⁻¹, bande carrée).
+
+On somme par anneau radial (largeur 2/1280 m⁻¹) P_S = Σ|S|², P_V = Σ|V|² et
+C = Σ S V̄, puis on additionne ces sommes sur les extraits de chaque site.
+
+**Grandeurs par site et par anneau.**
+- **Rapport d'amplitude :** R = √(P_V / P_S).
+- **Cohérence :** γ² = |C|² / (P_S P_V).
+- **Gain linéaire optimal :** |H| = |C| / P_S = γ R. C'est le filtre qui,
+  appliqué à Sentinel-2, approche au mieux VENµS au sens des moindres carrés.
+  Si |H| ≤ 1 dans toute la bande, la référence ne récompense aucun
+  affûtage.
+- **Recalage :** les sommes portent sur +k et −k, donc C est réel. Un
+  défaut de recalage ne se voit pas comme une phase, mais comme une baisse
+  de γ². On calcule donc aussi γ² sans décalage, et γ² avec le décalage E5
+  affiné par extrait sur toute la bande (pic de la corrélation croisée,
+  suréchantillonnée 8 fois). Si l'affinage relève γ² nettement, le recalage
+  global est en cause ; sinon, ce sont les écarts locaux et les autres
+  causes.
+- **Cohérence de repliement :** la cohérence de Sentinel-2 en k avec VENµS
+  aux fréquences partenaires k + p/(10 m), où p ∈ {(±1, 0), (0, ±1), (±1, ±1)}.
+  Leur somme est une borne basse de la part de la puissance Sentinel-2 en k
+  qui provient de contenu replié.
+
+**Bilan d'erreur.** On le calcule par site, avec et sans filtre boîte de
+6,2 m et de 12,4 m. Ce filtre approche les cellules L20 et L19 par des
+carrés.
+- Énergie VENµS hors de la bande de Sentinel-2, qu'aucune méthode linéaire
+  invariante par translation ne peut prédire.
+- Erreur dans la bande de l'identité (G = 1).
+- Erreur dans la bande du filtre optimal du site (G = H). C'est une borne
+  optimiste, puisque H est estimé sur les mêmes données.
+- Rapport des RMSE totaux, filtre optimal sur identité : c'est le gain
+  maximal qu'un filtre linéaire isotrope pourrait apporter.
+- Contrôle de cohérence : le RMSE spectral de l'identité au niveau L20,
+  comparé au RMSE bicubique mesuré par E5.
+
+**Lecture (sans seuil de décision).**
+- R ≈ 1, avec γ² élevé : la référence est floue.
+- R > 1, avec γ² faible aux hautes fréquences : les capteurs sont
+  incohérents.
+- Les deux causes peuvent s'additionner.
+
+**Sorties.** Elles restent hors de git, comme les autres tables :
+- `tables/revision/analysis_e5_spectral/` ;
+- `figures/e5_spectral.pdf`.
+
+Seules des sommes spectrales agrégées sortent du module ; la licence VENµS
+interdit de redistribuer les images.

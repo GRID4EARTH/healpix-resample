@@ -327,9 +327,76 @@ def test_e5_geometry():
           inside and 0.9 < len(cells) / expect < 1.1, f"{len(cells)} cells, ~{expect:.0f}")
 
 
+def test_e5_spectral():
+    """E5-S (exploratory): gain, registration phase, alias partners and the
+    error-budget normalization on plane waves of known transfer."""
+    try:
+        import pandas as pd
+        import revision_e5_spectral as e5s
+    except ImportError as exc:
+        print(f"[SKIP] E5 spectral not tested: {exc}")
+        return
+    u10 = 10.0 * (np.arange(128) + 0.5)
+    u05 = 5.0 * (np.arange(256) + 0.5)
+    R10, C10 = np.meshgrid(u10, u10, indexing="ij")
+    R05, C05 = np.meshgrid(u05, u05, indexing="ij")
+
+    def waves(ur, uc, specs, amps):
+        return sum(a * np.cos(2 * np.pi * k * (np.cos(t) * ur + np.sin(t) * uc) + p)
+                   for (k, t, p), a in zip(specs, amps))
+
+    def frame(s2, ven, shift, gain):
+        rings, scalars = e5s.patch_rings(s2, ven, shift, gain)
+        return e5s._ring_frame(rings), pd.DataFrame([scalars])
+
+    specs = [(0.012, 0.3, 0.1), (0.025, 1.2, 2.0), (0.040, 2.2, 4.0)]
+    D = (4.0, -7.0)               # m, rows / columns: VENmuS shows the scene of u + D at u
+    mtf = e5s.nominal_mtf(np.array([s[0] for s in specs]))
+    s2 = 0.1 + waves(R10, C10, specs, 0.01 * mtf)
+    ven = 0.3 + 2.0 * waves(R05 + D[0], C05 + D[1], specs, 0.01 * np.ones(3))
+    rings, _ = frame(s2, ven, (D[0] / 10, D[1] / 10), 0.5)
+    d = e5s.derive(rings).set_index("ring")
+    errs = []
+    for (k, _, _), m in zip(specs, mtf):
+        r = int(k * e5s.PATCH_M // e5s.RING)
+        errs.append((abs(d.H[r] * m - 1), 1 - d.gamma2[r]))
+    errs = np.array(errs)
+    check("E5-S: H == 1/MTF and gamma2 == 1 on registered plane waves",
+          (errs[:, 0] < 0.02).all() and (errs[:, 1] < 0.01).all(),
+          f"max |H MTF - 1| {errs[:, 0].max():.1e}, 1 - gamma2 {errs[:, 1].max():.1e}")
+    wf, wp = frame(s2, ven, (-D[0] / 10, -D[1] / 10), 0.5)
+    wrong = e5s.derive(wf).set_index("ring")
+    r = int(0.040 * e5s.PATCH_M // e5s.RING)
+    resid = np.array([wp.resid_shift_row_m[0], wp.resid_shift_col_m[0]])
+    # registering by -D leaves VENmuS showing F(u + 2 D): residual +2 D
+    check("E5-S: wrong-sign shift lowers gamma2; refinement finds the residual 2D",
+          wrong.gamma2[r] < 0.8 and wrong.gamma2_refined[r] > 0.99
+          and np.abs(resid - 2 * np.array(D)).max() < 0.3,
+          f"gamma2 {wrong.gamma2[r]:.2f} -> {wrong.gamma2_refined[r]:.3f}, "
+          f"residual {resid.round(2)} m")
+    spec_a = [(0.07, 0.0, 0.7)]   # beyond the Sentinel-2 Nyquist: aliased to 0.03 m^-1
+    s2a = 0.1 + waves(R10, C10, spec_a, [0.01])
+    vena = 0.1 + waves(R05, C05, spec_a, [0.01])
+    da = e5s.derive(frame(s2a, vena, (0.0, 0.0), 1.0)[0]).set_index("ring")
+    r = int(0.03 * e5s.PATCH_M // e5s.RING)
+    check("E5-S: alias partner k + 1/(10 m) carries the aliased wave",
+          da.alias_row[r] > 0.95, f"alias coherence {da.alias_row[r]:.3f}")
+    rng = np.random.default_rng(13)
+    sigma = 0.004
+    fine = waves(R05, C05, specs, [0.01] * 3)
+    s2n = 0.1 + waves(R10, C10, specs, [0.01] * 3)
+    venn = 0.1 + fine + sigma * rng.standard_normal(fine.shape)
+    rn, pn = frame(s2n, venn, (0.0, 0.0), 1.0)
+    b = e5s.budget(rn, pn)
+    check("E5-S: budget RMSE of the identity == white-noise sigma",
+          abs(b["rmse_identity_est"] / sigma - 1) < 0.03,
+          f"{b['rmse_identity_est']:.5f} vs {sigma}, out-of-band share {b['share_out']:.2f}")
+
+
 def main():
     for test in (test_rl, test_fourier, test_operators_and_cg, test_stacked_cubic,
-                 test_notebook_markers, test_analysis, test_e3_kernels, test_e5_geometry):
+                 test_notebook_markers, test_analysis, test_e3_kernels, test_e5_geometry,
+                 test_e5_spectral):
         try:
             test()
         except Exception as exc:

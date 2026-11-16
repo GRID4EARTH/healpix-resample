@@ -17,6 +17,7 @@ Run inside the paper environment, from anywhere in the repository::
     pixi run -e notebooks python notebooks/revision_run.py e5              # E5 runs
     pixi run -e notebooks python notebooks/revision_run.py e5 --part ext   # E5 amendment 3 grids
     pixi run -e notebooks python notebooks/revision_run.py e5-analyze      # E5 tables and figure
+    pixi run -e notebooks python notebooks/revision_run.py e5-spectral     # E5-S (exploratory)
     pixi run -e notebooks python notebooks/revision_run.py selftest
 
 ``--limit N`` keeps N regions per scene class (smoke test; ``--limit 1`` runs
@@ -177,6 +178,17 @@ def cmd_e5_analyze(args):
     return 0
 
 
+def cmd_e5_spectral(args):
+    """E5-S: exploratory Sentinel-2 / VENmuS spectral comparison."""
+    import revision_e5_spectral as e5s
+    if args.analyze_only:
+        e5s.analyze()
+        return 0
+    rt.write_provenance("e5_spectral", {"limit": args.limit})
+    e5s.run(limit=args.limit)
+    return 0
+
+
 def _run_regions(args, kwargs):
     if args.bench == "real":
         gt = rt.load_gt()
@@ -291,6 +303,12 @@ def main(argv=None):
     p.set_defaults(func=cmd_e5)
     p = sub.add_parser("e5-analyze", help="E5 tables and figure")
     p.set_defaults(func=cmd_e5_analyze)
+    p = sub.add_parser("e5-spectral",
+                       help="E5-S: exploratory S2/VENmuS spectra (not pre-registered)")
+    p.add_argument("--limit", type=int, default=0, help="patches per site (0 = all)")
+    p.add_argument("--analyze-only", action="store_true",
+                   help="recompute tables and figure from the saved ring sums")
+    p.set_defaults(func=cmd_e5_spectral)
 
     p = sub.add_parser("selftest", help="numerical self-tests (no data needed)")
     p.set_defaults(func=cmd_selftest)
