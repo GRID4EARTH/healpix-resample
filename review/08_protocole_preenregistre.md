@@ -138,6 +138,22 @@ de la grille étendue, on le signale tel quel dans l'article.
   d'itérations (RMSE 20 à 100 itérations). Prolonger les itérations
   n'apporterait rien.
 
+**Résultat du run 2 (commit `8170b87`).**
+- **Largeurs :** les baselines retiennent f = 1,2, désormais un point
+  intérieur (la grille va jusqu'à 1,5). Les courbes en largeur sont en U :
+  - `tik_id` réel, RMSE relatif médian : 0,847 à f = 1 ; 0,759 à f = 1,2 ;
+    1,405 à f = 1,5 ;
+  - `psf_aware` : minimum à √1,25 (réel) et à 1,138 (synthétique).
+- **Autres bords :** les choix tombent encore au bord des grilles étendues
+  (λ = 1e-10 pour Tikhonov ; 5000 itérations RL ; 2000 MLEM ; 1000 pour SIRT
+  et les GC). Ce sont des plateaux : entre l'ancien et le nouveau bord, le
+  RMSE relatif médian change de 0,04 % au plus. Pour Tikhonov, la limite
+  λ → 0 est le filtre inverse exact. Sur la grille grossière, |H|² reste
+  ≥ 0,02 dans la bande pour f ≤ 1,2.
+- **Comparaisons :** les comparaisons appariées du run 2 diffèrent de celles
+  du run 1 de moins de 0,15 point de marge relative. La seule exception est
+  SIRT, qui, convergé, rejoint la solution du GC.
+
 **Ce qui ne change pas.** Le run 1 est conservé tel quel dans
 `notebooks/tables/revision_run1/`. Le score de sélection, les plis, les
 graines et les statistiques sont inchangés. Les comparaisons de l'article
