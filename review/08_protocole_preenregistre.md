@@ -19,6 +19,8 @@ marqueur ; aucune copie du code n'est faite.
 
 ## Facteurs de largeur supposée
 
+(Grilles étendues par l'amendement 1, en bas du fichier.)
+
 - `real` : f ∈ {0,9 ; 1,0 ; √1,25 ≈ 1,118 ; 1,2} × 25 m. √1,25 correspond à
   la réponse combinée nominale de 27,95 m.
 - `synthetic` : f ∈ {0,9 ; 1,0 ; 1,138 ; 1,2} × 12,5 m. 1,138 correspond à la
@@ -94,4 +96,49 @@ cellules non calculables valent NaN comme dans le package.
 
 ## Journal des modifications après gel
 
-(vide)
+### Amendement 1 — 2026-11-16 : extension des grilles ouvertes
+
+**Constat (run 1, commit `b244c3f`, 40 + 40 régions).** La validation croisée
+à 5 plis a retenu le bord d'une grille ouverte pour plusieurs familles :
+
+| Famille | Bord retenu au run 1 |
+|---------|----------------------|
+| `tik_id`, `tik_lap` | λ = 1e-5 (minimum), les deux modes, les deux bancs |
+| `rl2` | 500 itérations (maximum) ; mode B réel : f = 1,2 (maximum) |
+| `tik_id`, `tik_lap`, `wiener_hunt` (mode B) | f = 1,2 (maximum) |
+| `e2_mlem` | 200 itérations (maximum) |
+| `e2_sirt` | 100 itérations et ω = 1,5 (maxima) |
+| `e2_wcg`, `e2_cg_euclid`, `e2_jacobi`, `e2_tik_x0`, `e2_tik_dref` | 100 itérations (maximum), avec λ = 0 |
+
+Une configuration au bord d'une grille ouverte sous-estime la meilleure
+performance de la famille. Cela va contre les concurrents de la méthode
+PSF-aware, ce qui biaise la comparaison en sa faveur.
+
+**Règle adoptée.** Si la configuration retenue tombe au bord d'une grille
+ouverte, on étend cette grille dans la direction du bord, d'un facteur au
+moins 3, et on relance. Les bornes naturelles ne sont pas des bords ouverts :
+λ = 0, et ω < 2 pour SIRT. Si la configuration retenue tombe encore au bord
+de la grille étendue, on le signale tel quel dans l'article.
+
+**Grilles étendues (run 2).**
+- Largeurs : f ∈ {0,9 ; 1,0 ; √1,25 ou 1,138 ; 1,2 ; 1,3 ; 1,4 ; 1,5}, pour
+  toutes les méthodes en mode B, PSF-aware comprise.
+- `rl2` : itérations ∈ {5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000}.
+- `tik_id`, `tik_lap` : λ ∈ logspace(−10, 0, 21).
+- `e2_sirt` : ω ∈ {0,5 ; 1 ; 1,5 ; 1,9} × itérations ∈ {5, 14, 30, 100, 300,
+  1000}.
+- `e2_mlem` : itérations ∈ {5, 10, 20, 50, 100, 200, 500, 1000, 2000}.
+- Bras E2 de type GC : itérations ∈ {5, 14, 30, 100, 300, 1000}.
+
+**Grille inchangée pour `psf_aware`** (λ × {5, 14, 30, 100}) :
+- mode A : le choix (λ = 0, 30 itérations) est intérieur en itérations ;
+- mode B : le choix (λ = 1e-2, 100 itérations) est convergé, car 30 et
+  100 itérations donnent le même RMSE à 1e-6 près ;
+- à λ = 0, le solveur float32 du package diverge au-delà d'une trentaine
+  d'itérations (RMSE 20 à 100 itérations). Prolonger les itérations
+  n'apporterait rien.
+
+**Ce qui ne change pas.** Le run 1 est conservé tel quel dans
+`notebooks/tables/revision_run1/`. Le score de sélection, les plis, les
+graines et les statistiques sont inchangés. Les comparaisons de l'article
+utilisent le run 2, et la réponse aux reviewers mentionne l'extension.

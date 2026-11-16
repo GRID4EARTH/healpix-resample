@@ -51,21 +51,28 @@ _SIGMA_G = SYNTH_NOMINAL_FWHM_M / (2.0 * math.sqrt(2.0 * math.log(2.0)))
 _SIGMA_BOX = 10.0 / math.sqrt(12.0)
 # Second-moment equivalent Gaussian of Gaussian (x) 10 m box: 14.23 / 12.5.
 SYNTH_EQUIV_FACTOR = math.sqrt(_SIGMA_G ** 2 + _SIGMA_BOX ** 2) / _SIGMA_G
+# Amendment 1 (2026-11-16, review/08_protocole_preenregistre.md): run 1 selected
+# the edge of every open grid marked "A1" below; those grids were extended and
+# E1/E2 re-run.  Run 1 is kept in tables/revision_run1/.  Natural bounds
+# (lam = 0, SIRT omega < 2) are not open edges.
 WIDTH_FACTORS = {
     # sqrt(1.25): combined nominal response sqrt(25^2 + 12.5^2) = 27.95 m.
-    "real": (0.9, 1.0, math.sqrt(1.25), 1.2),
-    "synthetic": (0.9, 1.0, SYNTH_EQUIV_FACTOR, 1.2),
+    "real": (0.9, 1.0, math.sqrt(1.25), 1.2, 1.3, 1.4, 1.5),             # A1: + 1.3-1.5
+    "synthetic": (0.9, 1.0, SYNTH_EQUIV_FACTOR, 1.2, 1.3, 1.4, 1.5),     # A1: + 1.3-1.5
 }
 NOMINAL_FWHM = {"real": REAL_NOMINAL_FWHM_M, "synthetic": SYNTH_NOMINAL_FWHM_M}
 
 PSF_LAMBDAS = (0.0, 1e-4, 1e-3, 1e-2, 1e-1)
-PSF_ITERS = (5, 14, 30, 100)
+PSF_ITERS = (5, 14, 30, 100)          # package runs; run-1 choices interior or converged
 PSF_TOL = 1e-8
-RL_ITERS = (5, 10, 20, 50, 100, 200, 500)
-TIK_LAMBDAS = tuple(float(v) for v in np.logspace(-5, 0, 11))
-SIRT_OMEGAS = (0.5, 1.0, 1.5)
-SIRT_ITERS = (5, 14, 30, 100)
-MLEM_ITERS = (5, 10, 20, 50, 100, 200)
+E2_ITERS = (5, 14, 30, 100, 300, 1000)                     # A1: CG-type E2 arms, + 300, 1000
+RL_ITERS = (5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000)  # A1: + 1000-5000
+TIK_LAMBDAS = tuple(float(v) for v in np.logspace(-10, 0, 21))  # A1: down to 1e-10
+SIRT_OMEGAS = (0.5, 1.0, 1.5, 1.9)                         # A1: + 1.9 (< 2)
+SIRT_ITERS = (5, 14, 30, 100, 300, 1000)                   # A1: + 300, 1000
+MLEM_ITERS = (5, 10, 20, 50, 100, 200, 500, 1000, 2000)    # A1: + 500-2000
+# The package check compares e2_wcg with the package at every PSF_ITERS point.
+assert set(PSF_ITERS) <= set(E2_ITERS)
 
 # The configurations reported in the submitted paper.
 PAPER_CONFIG = {
@@ -382,11 +389,11 @@ def e2_fields(ops, y):
         d = diag_ba + lam
         jac = np.where(d > 0, 1.0 / np.where(d > 0, d, 1.0), 1.0)
         runs = {
-            "e2_wcg": (x_ref, pcg_snapshots(H_w, b_w, PSF_ITERS, weight=dx)),
-            "e2_cg_euclid": (x_ref, pcg_snapshots(H_w, b_w, PSF_ITERS, weight=None)),
-            "e2_jacobi": (x_ref, pcg_snapshots(H_w, b_w, PSF_ITERS, weight=dx, precond=jac)),
-            "e2_tik_x0": (0.0, pcg_snapshots(H_e, b_tik0, PSF_ITERS, weight=None)),
-            "e2_tik_dref": (x_ref, pcg_snapshots(H_e, b_tikd, PSF_ITERS, weight=None)),
+            "e2_wcg": (x_ref, pcg_snapshots(H_w, b_w, E2_ITERS, weight=dx)),
+            "e2_cg_euclid": (x_ref, pcg_snapshots(H_w, b_w, E2_ITERS, weight=None)),
+            "e2_jacobi": (x_ref, pcg_snapshots(H_w, b_w, E2_ITERS, weight=dx, precond=jac)),
+            "e2_tik_x0": (0.0, pcg_snapshots(H_e, b_tik0, E2_ITERS, weight=None)),
+            "e2_tik_dref": (x_ref, pcg_snapshots(H_e, b_tikd, E2_ITERS, weight=None)),
         }
         for family, (base, snaps) in runs.items():
             for k, delta in snaps.items():
