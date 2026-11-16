@@ -8,11 +8,13 @@ Run inside the paper environment, from anywhere in the repository::
     pixi run -e notebooks python notebooks/revision_run.py e1e2 real
     pixi run -e notebooks python notebooks/revision_run.py e1e2 synthetic
     pixi run -e notebooks python notebooks/revision_run.py analyze real
+    pixi run -e notebooks python notebooks/revision_run.py e4 real          # E4 width complement
+    pixi run -e notebooks python notebooks/revision_run.py e4-analyze      # E4 tables and figures
     pixi run -e notebooks python notebooks/revision_run.py selftest
 
 ``--limit N`` keeps N regions per scene class (smoke test; ``--limit 1`` runs
 four regions).  ``--shard k/n`` splits ``e1e2`` across the n tasks of a job
-array.  Per-region results are written as soon as a region finishes, so an
+array (also ``e4``).  Per-region results are written as soon as a region finishes, so an
 interrupted job resumes where it stopped (``--force`` recomputes).
 Protocol: review/08_protocole_preenregistre.md.  Outputs: notebooks/tables/revision/.
 """
@@ -86,12 +88,31 @@ def cmd_e0(args):
 
 def cmd_e1e2(args):
     rt.write_provenance(f"e1e2_{args.bench}", {"limit": args.limit, "no_e2": args.no_e2})
+    return _run_regions(args, dict(do_e2=not args.no_e2))
+
+
+def cmd_e4(args):
+    """E4 complement: PSF-aware and the E1 baselines at E4_EXTRA_WIDTHS."""
+    rt.write_provenance(f"e4_{args.bench}", {"limit": args.limit,
+                                             "widths": rt.E4_EXTRA_WIDTHS})
+    return _run_regions(args, dict(do_e2=False, widths=rt.E4_EXTRA_WIDTHS, study="e4"))
+
+
+def cmd_e4_analyze(args):
+    for bench in ("real", "synthetic"):
+        rt.e4_analyze(bench)
+    rt.e4_figures(n_iter=30)
+    rt.e4_figures(n_iter=14)
+    return 0
+
+
+def _run_regions(args, kwargs):
     if args.bench == "real":
         gt = rt.load_gt()
         items = _real_scenes(gt, args.limit)
 
         def run(item):
-            return rt.run_real_region(gt, item, do_e2=not args.no_e2, force=args.force)
+            return rt.run_real_region(gt, item, force=args.force, **kwargs)
 
         def name(item):
             return item
@@ -100,7 +121,7 @@ def cmd_e1e2(args):
         items = _synthetic_patches(ns, args.limit)
 
         def run(item):
-            return rt.run_synthetic_region(ns, item, do_e2=not args.no_e2, force=args.force)
+            return rt.run_synthetic_region(ns, item, force=args.force, **kwargs)
 
         def name(item):
             return item.patch_id
@@ -150,6 +171,7 @@ def main(argv=None):
 
     for name, func, help_ in (("e0", cmd_e0, "regression against the submitted CSVs"),
                               ("e1e2", cmd_e1e2, "tuned baselines (E1) and inversion ablation (E2)"),
+                              ("e4", cmd_e4, "width complement for the width x lambda study (E4)"),
                               ("analyze", cmd_analyze, "cross-validation, oracle, paired statistics")):
         p = sub.add_parser(name, help=help_)
         p.add_argument("bench", choices=("real", "synthetic"))
@@ -158,12 +180,16 @@ def main(argv=None):
                            help="regions per scene class (0 = all)")
             p.add_argument("--online", action="store_true",
                            help="synthetic: allow fetching missing Esri tiles")
-        if name == "e1e2":
+        if name in ("e1e2", "e4"):
             p.add_argument("--force", action="store_true", help="recompute finished regions")
-            p.add_argument("--no-e2", action="store_true", help="skip the E2 inversion arms")
             p.add_argument("--shard", default="",
                            help="k/n: process regions k, k+n, k+2n, ... (job arrays)")
+        if name == "e1e2":
+            p.add_argument("--no-e2", action="store_true", help="skip the E2 inversion arms")
         p.set_defaults(func=func)
+
+    p = sub.add_parser("e4-analyze", help="E4 tables and figures (both benchmarks)")
+    p.set_defaults(func=cmd_e4_analyze)
 
     p = sub.add_parser("selftest", help="numerical self-tests (no data needed)")
     p.set_defaults(func=cmd_selftest)

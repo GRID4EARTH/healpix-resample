@@ -94,6 +94,30 @@ cellules non calculables valent NaN comme dans le package.
 - Toutes les sorties vont dans `notebooks/tables/revision/` ; aucun CSV de
   l'article n'est écrasé.
 
+## E4 — sensibilité à la largeur supposée et à λ (ajouté le 2026-11-16, avant tout calcul E4)
+
+- **Données.** Toutes les familles qui modélisent la PSF (`psf_aware`, `rl2`,
+  `tik_id`, `tik_lap`, `wiener_hunt`), à chaque largeur supposée f :
+  - f ≥ 0,9 : run 2 d'E1 ;
+  - f ∈ {0,6 ; 0,7 ; 0,8} : complément E4, mêmes grilles, sans E2.
+- **Concurrent à f fixé.** Chaque famille est réglée par la validation croisée
+  à 5 plis d'E1, restreinte à ce f. Pour chaque région, le concurrent retenu
+  est le meilleur de ces concurrents réglés, choisi avec la référence. Ce
+  choix favorise les concurrents.
+- **Carte f × λ.** La méthode PSF-aware est prise à chaque (λ, itérations ∈
+  {14, 30}), sans réglage, au même f que le concurrent. On rapporte la marge
+  relative médiane (concurrent − PSF-aware) / concurrent et le nombre de
+  régions gagnées, sur l'ensemble et par classe.
+- **Courbes.** RMSE relatif au bicubique (médiane et IQR) de chaque famille
+  réglée à chaque f.
+- **Zone d'usage sûr.** Pour chaque (λ, itérations), c'est l'intervalle
+  contigu de f autour de 1 où la méthode PSF-aware gagne au moins 90 % des
+  régions.
+- **Sorties.**
+  - `analysis_<banc>/e4_width_lambda_map.csv`, `e4_width_curves.csv` et
+    `e4_safe_zone.csv` ;
+  - `figures/e4_*.pdf`.
+
 ## Journal des modifications après gel
 
 ### Amendement 1 — 2026-11-16 : extension des grilles ouvertes

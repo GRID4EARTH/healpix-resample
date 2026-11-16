@@ -74,6 +74,13 @@ MLEM_ITERS = (5, 10, 20, 50, 100, 200, 500, 1000, 2000)    # A1: + 500-2000
 # The package check compares e2_wcg with the package at every PSF_ITERS point.
 assert set(PSF_ITERS) <= set(E2_ITERS)
 
+# E4 (width x lambda sensitivity): the widths >= 0.9 come from the E1 run;
+# this complement adds the under-estimation side planned for E4.
+E4_EXTRA_WIDTHS = (0.6, 0.7, 0.8)
+E4_ITERS = (14, 30)
+E4_COMPETITORS = ("rl2", "tik_id", "tik_lap", "wiener_hunt")
+E4_SAFE_WIN = 0.9
+
 # The configurations reported in the submitted paper.
 PAPER_CONFIG = {
     "real": {
@@ -528,9 +535,9 @@ def _family_method(key):
     return family, family if not variant else f"{family}_{variant}"
 
 
-def region_csv_path(bench, scene):
+def region_csv_path(bench, scene, study="e1e2"):
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(scene))
-    return ensure_out_dir(f"e1e2_{bench}") / f"{safe}.csv"
+    return ensure_out_dir(f"{study}_{bench}") / f"{safe}.csv"
 
 
 def _write_rows(rows, path):
@@ -542,10 +549,11 @@ def _write_rows(rows, path):
     return frame
 
 
-def run_real_region(gt, scene, *, do_e2=True, force=False):
-    """E1 (+ E2) on one real region; returns the region's result frame."""
+def run_real_region(gt, scene, *, do_e2=True, force=False, widths=None, study="e1e2"):
+    """E1 (+ E2) on one real region; returns the region's result frame.
+    ``widths``/``study`` let E4 reuse it on other width factors."""
     import pandas as pd
-    out_path = region_csv_path("real", scene)
+    out_path = region_csv_path("real", scene, study)
     if out_path.exists() and not force:
         return pd.read_csv(out_path)
 
@@ -583,7 +591,7 @@ def run_real_region(gt, scene, *, do_e2=True, force=False):
     y_obs = g["img_coarse"].reshape(-1)
     lon_c = g["lon_coarse"].reshape(-1)
     lat_c = g["lat_coarse"].reshape(-1)
-    for f in WIDTH_FACTORS["real"]:
+    for f in (widths or WIDTH_FACTORS["real"]):
         fwhm = f * REAL_NOMINAL_FWHM_M
         common = dict(width_factor=f, fwhm_m=fwhm)
 
@@ -647,10 +655,12 @@ def _run_e2(rs, y_obs, pkg, score, common):
               lam=lam, n_iter=it, omega=diff / scale if scale else np.nan, **common)
 
 
-def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False):
-    """E1 (+ E2) on one synthetic region (its paper-selected patch)."""
+def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False, widths=None,
+                         study="e1e2"):
+    """E1 (+ E2) on one synthetic region (its paper-selected patch).
+    ``widths``/``study`` let E4 reuse it on other width factors."""
     import pandas as pd
-    out_path = region_csv_path("synthetic", patch_row.patch_id)
+    out_path = region_csv_path("synthetic", patch_row.patch_id, study)
     if out_path.exists() and not force:
         return pd.read_csv(out_path)
 
@@ -691,7 +701,7 @@ def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False):
     observed = products["blurred_detector"].astype(np.float64)
     lon = products["lon"].ravel().astype(np.float64)
     lat = products["lat"].ravel().astype(np.float64)
-    for f in WIDTH_FACTORS["synthetic"]:
+    for f in (widths or WIDTH_FACTORS["synthetic"]):
         fwhm = f * SYNTH_NOMINAL_FWHM_M
         common = dict(width_factor=f, fwhm_m=fwhm)
 
@@ -731,11 +741,11 @@ def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False):
     return _write_rows(rows, out_path)
 
 
-def collect_results(bench):
+def collect_results(bench, study="e1e2"):
     import pandas as pd
-    files = sorted(ensure_out_dir(f"e1e2_{bench}").glob("*.csv"))
+    files = sorted(ensure_out_dir(f"{study}_{bench}").glob("*.csv"))
     if not files:
-        raise FileNotFoundError(f"no per-region results under {OUT_DIR / f'e1e2_{bench}'}")
+        raise FileNotFoundError(f"no per-region results under {OUT_DIR / f'{study}_{bench}'}")
     return pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
 
 
@@ -989,3 +999,218 @@ def analyze(bench):
                 "mean_rel_margin", "ci_low", "ci_high"]].to_string(index=False))
     print(f"-> {out}")
     return sel, comp, curves
+
+
+# =============================================================================
+# E4: assumed-width x damping sensitivity (R2.3)
+# =============================================================================
+def e4_frame(bench):
+    """PSF-modelling families at every assumed width: the E1 run (f >= 0.9)
+    plus the E4 complement (E4_EXTRA_WIDTHS); geo_cubic for the score."""
+    import pandas as pd
+    fams = set(E4_COMPETITORS) | {"psf_aware"}
+    base = collect_results(bench, "e1e2")
+    parts = [base[base["family"].isin(fams | {"geo_cubic"})]]
+    try:
+        extra = collect_results(bench, "e4")
+        parts.append(extra[extra["family"].isin(fams)])
+    except FileNotFoundError:
+        print(f"[{bench}] no E4 complement yet: widths >= 0.9 only")
+    df = prepare(pd.concat(parts, ignore_index=True))
+    df["f"] = df["width_factor"].round(6)
+    return df
+
+
+def e4_analyze(bench):
+    """E4 tables.  At each assumed width f, every competitor is tuned by the
+    E1 5-fold CV restricted to that f; the strongest competitor of a region is
+    the best of those tuned competitors *for that region* (chosen with the
+    reference: favourable to the competitors).  PSF-aware is evaluated at every
+    (lam, n_iter in E4_ITERS) without tuning, which gives the f x lam map."""
+    import pandas as pd
+    df = e4_frame(bench)
+    out = ensure_out_dir(f"analysis_{bench}")
+    bic = df[df["family"] == "geo_cubic"].set_index("region_id")["rmse"]
+    classes = df.groupby("region_id")["scene_class"].first()
+    widths = sorted(df["f"].dropna().unique())
+    curve_rows, map_rows = [], []
+    for f in widths:
+        at_f = df[np.isclose(df["f"], f)]
+        tuned = {}
+        for fam in E4_COMPETITORS + ("psf_aware",):
+            s = select(at_f, fam, "B", "5fold")       # one width in the frame
+            if len(s):
+                tuned[fam] = s.set_index("region_id")["rmse"]
+        for fam, r in tuned.items():
+            rel = (r / bic.reindex(r.index)).dropna()
+            curve_rows.append(dict(f=f, family=fam, tuning="5fold@f", n_regions=len(rel),
+                                   median_rel=rel.median(), q25_rel=rel.quantile(0.25),
+                                   q75_rel=rel.quantile(0.75)))
+        comp = pd.concat({k: v for k, v in tuned.items() if k != "psf_aware"}, axis=1)
+        best = comp.min(axis=1)
+        ours_all = at_f[(at_f["family"] == "psf_aware") & at_f["n_iter"].isin(E4_ITERS)]
+        for (lam, it), g in ours_all.groupby(["lam", "n_iter"]):
+            ours = g.set_index("region_id")["rmse"]
+            idx = ours.index.intersection(best.index)
+            margin = (best[idx] - ours[idx]) / best[idx]        # > 0 favours PSF-aware
+            win = ours[idx] < best[idx]
+            for cls, sub in [("all", idx)] + [(c, idx[classes[idx] == c]) for c in CLASSES]:
+                row = dict(f=f, lam=lam, n_iter=int(it), scene_class=cls,
+                           n_regions=len(sub), wins=int(win[sub].sum()),
+                           win_frac=float(win[sub].mean()) if len(sub) else np.nan,
+                           median_margin=float(margin[sub].median()) if len(sub) else np.nan,
+                           mean_margin=float(margin[sub].mean()) if len(sub) else np.nan)
+                for fam in comp.columns:
+                    row[f"win_frac_vs_{fam}"] = float((ours[sub] < comp.loc[sub, fam]).mean())
+                map_rows.append(row)
+    curves = pd.DataFrame(curve_rows)
+    emap = pd.DataFrame(map_rows)
+    curves.to_csv(out / "e4_width_curves.csv", index=False)
+    emap.to_csv(out / "e4_width_lambda_map.csv", index=False)
+    safe = e4_safe_zone(emap)
+    safe.to_csv(out / "e4_safe_zone.csv", index=False)
+    print(f"[{bench}] E4 safe zone (win fraction >= {E4_SAFE_WIN:g} against the "
+          f"strongest tuned competitor, all regions):")
+    print(safe.to_string(index=False))
+    print(f"-> {out}")
+    return curves, emap, safe
+
+
+def e4_safe_zone(emap):
+    """For each (lam, n_iter): the contiguous range of f around 1 where
+    PSF-aware wins at least E4_SAFE_WIN of the regions."""
+    import pandas as pd
+    rows = []
+    allc = emap[emap["scene_class"] == "all"]
+    for (lam, it), g in allc.groupby(["lam", "n_iter"]):
+        g = g.sort_values("f").reset_index(drop=True)
+        ok = (g["win_frac"] >= E4_SAFE_WIN).to_numpy()
+        i0 = int(np.argmin(np.abs(g["f"].to_numpy() - 1.0)))
+        if not ok[i0]:
+            rows.append(dict(lam=lam, n_iter=it, f_min=np.nan, f_max=np.nan,
+                             min_win_frac=np.nan))
+            continue
+        lo = hi = i0
+        while lo > 0 and ok[lo - 1]:
+            lo -= 1
+        while hi < len(ok) - 1 and ok[hi + 1]:
+            hi += 1
+        rows.append(dict(lam=lam, n_iter=it, f_min=g["f"][lo], f_max=g["f"][hi],
+                         min_win_frac=float(g["win_frac"][lo:hi + 1].min()),
+                         f_min_is_grid_edge=lo == 0, f_max_is_grid_edge=hi == len(ok) - 1))
+    return pd.DataFrame(rows)
+
+
+# Reference data-viz palette (light, print): categorical slots 1-4 in their
+# validated order, blue/red diverging pair with a grey midpoint, blue ramp.
+_E4_SERIES = {"psf_aware": ("PSF-aware", "#2a78d6", "o", "-"),
+              "rl2": ("Richardson-Lucy", "#eb6834", "s", "--"),
+              "tik_id": ("Tikhonov", "#1baf7a", "^", "-."),
+              "wiener_hunt": ("Wiener-Hunt", "#eda100", "D", ":")}
+_E4_DIVERGING = ("#e34948", "#f0efec", "#2a78d6")
+_E4_SEQUENTIAL = ("#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95",
+                  "#0d366b")
+_E4_INK = "#0b0b0b"
+_E4_INK2 = "#52514e"
+_E4_EQUIV = {"real": math.sqrt(1.25), "synthetic": SYNTH_EQUIV_FACTOR}
+
+
+def _e4_f_label(f):
+    if np.isclose(f, math.sqrt(1.25)):
+        return "1.118"
+    if np.isclose(f, SYNTH_EQUIV_FACTOR):
+        return "1.138"
+    return f"{f:g}"
+
+
+def e4_figures(benches=("real", "synthetic"), n_iter=30):
+    """Fig. E4a: f x lam maps (median margin, wins) for PSF-aware against the
+    strongest tuned competitor.  Fig. E4b: relative RMSE versus f."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+
+    plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8,
+                         "xtick.labelsize": 7, "ytick.labelsize": 7, "legend.fontsize": 7,
+                         "axes.edgecolor": _E4_INK2, "axes.labelcolor": _E4_INK,
+                         "xtick.color": _E4_INK2, "ytick.color": _E4_INK2,
+                         "pdf.fonttype": 42})
+    figdir = ensure_out_dir("figures")
+    div = LinearSegmentedColormap.from_list("e4div", _E4_DIVERGING)
+    seq = LinearSegmentedColormap.from_list("e4seq", _E4_SEQUENTIAL)
+
+    # ---- E4a: maps -------------------------------------------------------
+    fig, axes = plt.subplots(len(benches), 2, figsize=(7.16, 2.3 * len(benches)),
+                             constrained_layout=True, squeeze=False)
+    for r, bench in enumerate(benches):
+        emap = pd.read_csv(OUT_DIR / f"analysis_{bench}" / "e4_width_lambda_map.csv")
+        g = emap[(emap["scene_class"] == "all") & (emap["n_iter"] == n_iter)]
+        fs = sorted(g["f"].unique())
+        lams = sorted(g["lam"].unique())
+        margin = g.pivot(index="lam", columns="f", values="median_margin").loc[lams, fs] * 100
+        wins = g.pivot(index="lam", columns="f", values="wins").loc[lams, fs]
+        n = int(g["n_regions"].max())
+        vmax = float(np.nanmax(np.abs(margin.to_numpy())))
+        panels = ((margin, div, TwoSlopeNorm(0.0, -vmax, vmax), "{:.1f}",
+                   "median margin vs strongest tuned competitor (%)"),
+                  (wins, seq, plt.Normalize(0, n), "{:.0f}",
+                   f"regions won (of {n})"))
+        for c, (data, cmap, norm, fmt, title) in enumerate(panels):
+            ax = axes[r, c]
+            im = ax.imshow(data.to_numpy(), cmap=cmap, norm=norm, aspect="auto")
+            for i in range(len(lams)):
+                for j in range(len(fs)):
+                    v = data.to_numpy()[i, j]
+                    if not np.isfinite(v):
+                        continue
+                    rgba = cmap(norm(v))
+                    lum = 0.2126 * rgba[0] + 0.7152 * rgba[1] + 0.0722 * rgba[2]
+                    ax.text(j, i, fmt.format(v), ha="center", va="center", fontsize=6,
+                            color="white" if lum < 0.5 else _E4_INK)
+                    if c == 1 and v >= E4_SAFE_WIN * n:
+                        ax.add_patch(plt.Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False,
+                                                   lw=1.0, ec=_E4_INK))
+            ax.set_xticks(range(len(fs)), [_e4_f_label(f) for f in fs])
+            ax.set_yticks(range(len(lams)), [f"{v:g}" for v in lams])
+            j_eq = int(np.argmin(np.abs(np.asarray(fs) - _E4_EQUIV[bench])))
+            ax.get_xticklabels()[j_eq].set_fontweight("bold")
+            ax.set_xlabel("assumed width factor f (bold: equivalent width)")
+            ax.set_ylabel("damping λ")
+            ax.set_title(f"{bench}: {title}", loc="left")
+            for s in ax.spines.values():
+                s.set_visible(False)
+            fig.colorbar(im, ax=ax, shrink=0.85, pad=0.01).outline.set_visible(False)
+    fig.savefig(figdir / f"e4_width_lambda_maps_it{n_iter}.pdf")
+    fig.savefig(figdir / f"e4_width_lambda_maps_it{n_iter}.png", dpi=200)
+    plt.close(fig)
+
+    # ---- E4b: curves -----------------------------------------------------
+    fig, axes = plt.subplots(1, len(benches), figsize=(7.16, 2.5), constrained_layout=True,
+                             squeeze=False)
+    for c, bench in enumerate(benches):
+        cur = pd.read_csv(OUT_DIR / f"analysis_{bench}" / "e4_width_curves.csv")
+        ax = axes[0, c]
+        for fam, (label, color, marker, ls) in _E4_SERIES.items():
+            g = cur[cur["family"] == fam].sort_values("f")
+            if g.empty:
+                continue
+            ax.fill_between(g["f"], g["q25_rel"], g["q75_rel"], color=color, alpha=0.15, lw=0)
+            ax.plot(g["f"], g["median_rel"], color=color, lw=1.6, ls=ls, marker=marker,
+                    ms=4, mec="white", mew=0.6, label=label)
+        ax.axvline(_E4_EQUIV[bench], color=_E4_INK2, lw=0.8, ls=(0, (2, 2)))
+        ax.axhline(1.0, color=_E4_INK2, lw=0.6)
+        ax.text(_E4_EQUIV[bench], 0.98, " equivalent width", transform=ax.get_xaxis_transform(),
+                va="top", ha="left", fontsize=6.5, color=_E4_INK2)
+        ax.set_xlabel("assumed width factor f")
+        ax.set_ylabel("RMSE / bicubic RMSE (median, IQR)")
+        ax.set_title(f"{bench} (each method tuned by 5-fold CV at each f)", loc="left")
+        ax.grid(axis="y", color="#e4e3df", lw=0.6)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+    axes[0, 0].legend(frameon=False, loc="upper center")
+    fig.savefig(figdir / "e4_width_curves.pdf")
+    fig.savefig(figdir / "e4_width_curves.png", dpi=200)
+    plt.close(fig)
+    print(f"-> {figdir}")
