@@ -1382,8 +1382,8 @@ def e4_figures(benches=("real", "synthetic"), n_iter=30):
 # arm -> (study directory, width factor of A and of the deconvolution kernels)
 _E3_ARM_SOURCE = {"S0": ("e1e2", 1.0), "S1": ("e3s1", 1.0),
                   "S2": ("e1e2", SYNTH_EQUIV_FACTOR), "S3": ("e3s3", 1.0)}
-_E3_ARM_LABEL = {"S0": "S0\npaper set-up", "S1": "S1\npoint-sampled",
-                 "S2": "S2\nequivalent width", "S3": "S3\nexact kernel"}
+_E3_ARM_LABEL = {"S0": "S0\npaper", "S1": "S1\npoint-\nsampled",
+                 "S2": "S2\nequiv.\nwidth", "S3": "S3\nexact\nkernel"}
 
 
 def e3_study(arm):
@@ -1551,7 +1551,8 @@ def e3_figure():
     win = win[(win["scene_class"] == "all") & (win["competitor"] == "strongest")]
     x0 = np.arange(len(E3_ARMS))
 
-    fig, axes = plt.subplots(1, 2, figsize=(7.16, 2.6), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=(7.16, 2.8), constrained_layout=True,
+                             gridspec_kw={"width_ratios": [1.5, 1.0]})
     ax = axes[0]
     offsets = np.linspace(-0.24, 0.24, len(_E4_SERIES))
     for off, (fam, (label, color, marker, _)) in zip(offsets, _E4_SERIES.items()):
@@ -1562,9 +1563,10 @@ def e3_figure():
                     mew=0.6, elinewidth=1.0, capsize=0, label=label)
     ax.axhline(0.0, color=_E4_INK2, lw=0.6)
     ax.set_xticks(x0, [_E3_ARM_LABEL[a] for a in E3_ARMS])
-    ax.set_ylabel("recovery vs blurred texture (%, mean, 95% CI)")
-    ax.set_title("(a) recovery, each method tuned by 5-fold CV in its arm", loc="left")
-    ax.legend(frameon=False, loc="best")
+    ax.set_ylabel("recovery (%, mean, 95% CI)")
+    ax.set_title("(a) recovery; each method tuned by 5-fold CV in its arm", loc="left")
+    ax.legend(frameon=False, loc="lower right", ncol=2, handletextpad=0.3,
+              columnspacing=1.0)
 
     ax = axes[1]
     g = win.set_index("arm").reindex(list(E3_ARMS))
@@ -1582,7 +1584,9 @@ def e3_figure():
     ax.set_xticks(x0, [_E3_ARM_LABEL[a] for a in E3_ARMS])
     ax.set_xlim(-0.5, len(E3_ARMS) - 0.3)
     ax.set_ylabel("PSF-aware margin (%, mean, 95% CI)")
-    ax.set_title("(b) vs strongest tuned competitor (regions won)", loc="left")
+    ax.set_title("(b) margin over the strongest competitor", loc="left")
+    ax.text(0.98, 0.98, "labels: regions won", transform=ax.transAxes, ha="right",
+            va="top", fontsize=6.5, color=_E4_INK2)
     for a in axes:
         a.grid(axis="y", color="#e4e3df", lw=0.6)
         for s in ("top", "right"):
