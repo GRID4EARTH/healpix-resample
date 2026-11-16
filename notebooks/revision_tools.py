@@ -1,4 +1,4 @@
-"""Shared machinery for the JSTARS major revision: experiments E0, E1 and E2.
+"""Shared machinery for the JSTARS major revision: experiments E0 to E4.
 
 Protocol (frozen before any production run): ``review/08_protocole_preenregistre.md``.
 Command-line entry point: ``notebooks/revision_run.py``.
@@ -81,6 +81,16 @@ E4_ITERS = (14, 30)
 E4_COMPETITORS = ("rl2", "tik_id", "tik_lap", "wiener_hunt")
 E4_SAFE_WIN = 0.9
 
+# E3 (response mismatch from the 10 m detector aperture, synthetic bench).
+# S0 and S2 are the E1 run at f = 1 and f = SYNTH_EQUIV_FACTOR; S1 and S3 are
+# computed by `run_synthetic_region(..., arm=...)`.
+E3_APERTURE_M = 10.0
+E3_ARMS = ("S0", "S1", "S2", "S3")
+E3_NEW_ARMS = ("S1", "S3")
+E3_KERNEL_RADIUS_PX = 3          # discrete kernel of the deconvolutions (S3)
+E3_FAMILIES = ("psf_aware", "rl2", "tik_id", "tik_lap", "wiener_hunt", "geo_cubic")
+E3_CONTRASTS = (("S0", "S3"), ("S0", "S2"), ("S2", "S3"), ("S0", "S1"))
+
 # The configurations reported in the submitted paper.
 PAPER_CONFIG = {
     "real": {
@@ -133,6 +143,101 @@ def gaussian_kernel(fwhm_m: float, pixel_size_m: float, radius_sigma: float = 4.
     xx, yy = np.meshgrid(axis, axis)
     kernel = np.exp(-(xx ** 2 + yy ** 2) / (2.0 * sigma_px ** 2))
     return kernel / kernel.sum()
+
+
+def box_gaussian_weight(u, v, sigma=_SIGMA_G, a=E3_APERTURE_M):
+    """Gaussian (std ``sigma``) convolved with an ``a`` x ``a`` square
+    aperture, at offsets ``(u, v)`` (metres, along the aperture's sides),
+    scaled to a peak of 1 like the package's Gaussian (E3, arm S3):
+
+        w = prod_{t in (u, v)} [erf((t + a/2)/(sqrt2 s)) - erf((t - a/2)/(sqrt2 s))] / 2
+    """
+    from scipy.special import erf
+    s = math.sqrt(2.0) * sigma
+
+    def axis(t):
+        t = np.asarray(t, dtype=np.float64)
+        return 0.5 * (erf((t + a / 2.0) / s) - erf((t - a / 2.0) / s))
+
+    return axis(u) * axis(v) / float(axis(0.0)) ** 2
+
+
+def box_gaussian_integral(sigma=_SIGMA_G, a=E3_APERTURE_M):
+    """Integral (m^2) of `box_gaussian_weight` over the plane: a^2 / peak."""
+    from scipy.special import erf
+    return a * a / erf(a / (2.0 * math.sqrt(2.0) * sigma)) ** 2
+
+
+def box_gaussian_pixel_kernel(pixel_m, radius_px=E3_KERNEL_RADIUS_PX, **kw):
+    """`box_gaussian_weight` at the integer pixel offsets, normalized to sum
+    1: the deconvolution kernel of arm S3 on the 10 m detector grid."""
+    t = np.arange(-radius_px, radius_px + 1) * float(pixel_m)
+    uu, vv = np.meshgrid(t, t)
+    k = box_gaussian_weight(uu, vv, **kw)
+    return k / k.sum()
+
+
+def utm_box_kernel(crs_utm, **kw):
+    """`PSFResampler(kernel=...)` for arm S3: `box_gaussian_weight` of the
+    offset of the cell centre from the sample in the patch's UTM frame -- the
+    frame the synthetic generation blurs and averages in (both points are
+    projected with the patch's own transformer, as the generation does)."""
+    import pyproj
+    import torch
+    to_utm = pyproj.Transformer.from_crs(4326, crs_utm, always_xy=True)
+
+    def kernel(lon_s, lat_s, lon_c, lat_c):
+        xs, ys = to_utm.transform(to_numpy(lon_s), to_numpy(lat_s))
+        xc, yc = to_utm.transform(to_numpy(lon_c), to_numpy(lat_c))
+        w = box_gaussian_weight(np.asarray(xc) - np.asarray(xs),
+                                np.asarray(yc) - np.asarray(ys), **kw)
+        return torch.as_tensor(w, dtype=torch.float64)
+    return kernel
+
+
+def half_shift_gaussian(image, sigma_px, truncate=4.0):
+    """Gaussian convolution of ``image`` evaluated half a pixel down and right
+    of each pixel centre: ``out[i, j]`` is the blurred value at (i + 1/2,
+    j + 1/2).  The Gaussian is sampled at the half-integer offsets with the
+    truncation and the boundary (``reflect``) of ``scipy.ndimage.gaussian_filter``;
+    nothing is interpolated (E3, arm S1)."""
+    radius = int(truncate * float(sigma_px) + 0.5)
+    m = np.arange(-radius + 1, radius + 1)
+    h = np.exp(-((m - 0.5) ** 2) / (2.0 * float(sigma_px) ** 2))
+    h /= h.sum()
+    out = np.asarray(image, dtype=np.float64)
+    for axis in (0, 1):
+        n = out.shape[axis]
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (radius, radius)
+        padded = np.pad(out, pad, mode="symmetric")   # == ndimage "reflect"
+        acc = np.zeros_like(out)
+        for k, w in zip(m, h):
+            sl = [slice(None), slice(None)]
+            sl[axis] = slice(radius + k, radius + k + n)
+            acc += w * padded[tuple(sl)]
+        out = acc
+    return out
+
+
+def point_sampled_detector(ns, patch_row, products):
+    """Arm S1: the synthetic latent texture blurred by the 12.5 m Gaussian and
+    sampled at the 10 m detector centres (no aperture average).  The detector
+    centre (r, c) sits at fine-grid position (4r + 3/2, 4c + 3/2)."""
+    from scipy.ndimage import gaussian_filter
+    grids = ns["patch_coordinate_grids"](patch_row)
+    latent_hr, _ = ns["load_or_sample_esri_patch"](patch_row, grids)
+    sigma_m = ns["TRUE_FWHM_M"] / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+    sigma_px = sigma_m / (ns["DETECTOR_GSD_M"] / ns["OVERSAMPLE"])
+    # Same latent and blur as build_synthetic_patch: refuse to go on otherwise.
+    blurred_hr = gaussian_filter(latent_hr, sigma=sigma_px, mode="reflect")
+    if not np.array_equal(ns["block_mean"](blurred_hr), products["blurred_detector"]):
+        raise RuntimeError(f"{patch_row.patch_id}: blurred field differs from the paper's")
+    os_ = int(ns["OVERSAMPLE"])
+    if os_ != 4:
+        raise RuntimeError("the half-pixel offset below assumes OVERSAMPLE = 4")
+    shifted = half_shift_gaussian(latent_hr, sigma_px)
+    return shifted[os_ // 2 - 1::os_, os_ // 2 - 1::os_], grids
 
 
 def provenance() -> dict:
@@ -656,10 +761,17 @@ def _run_e2(rs, y_obs, pkg, score, common):
 
 
 def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False, widths=None,
-                         study="e1e2"):
+                         study="e1e2", arm="S0"):
     """E1 (+ E2) on one synthetic region (its paper-selected patch).
-    ``widths``/``study`` let E4 reuse it on other width factors."""
+    ``widths``/``study`` let E4 reuse it on other width factors.  ``arm``
+    (E3): "S0" is the paper's set-up; "S1" point-samples the blurred texture
+    at the detector centres (no aperture); "S3" models the aperture exactly,
+    in A (`utm_box_kernel`) and in the deconvolution kernel."""
     import pandas as pd
+    if arm not in ("S0",) + E3_NEW_ARMS:
+        raise ValueError(f"unknown arm {arm!r}")
+    if arm != "S0" and (do_e2 or tuple(widths or ()) != (1.0,)):
+        raise ValueError("E3 arms run without E2, at widths=(1.0,)")
     out_path = region_csv_path("synthetic", patch_row.patch_id, study)
     if out_path.exists() and not force:
         return pd.read_csv(out_path)
@@ -669,6 +781,13 @@ def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False, widths=None,
     products = ns["build_synthetic_patch"](patch_row)
     ref_ids, ref_vals = products["parent_ids"], products["hpx_latent"]
     rows = []
+    crs_utm = None
+    if arm == "S1":
+        detector, _ = point_sampled_detector(ns, patch_row, products)
+        # the geometric baselines read products["blurred_detector"]
+        products = dict(products, blurred_detector=detector)
+    elif arm == "S3":
+        crs_utm = ns["patch_coordinate_grids"](patch_row)["crs_utm"]
 
     def score(cell_ids, cell_data, family, method, **params):
         aligned = ns["align_estimate"](ref_ids, ref_vals, cell_ids, cell_data)
@@ -681,6 +800,10 @@ def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False, widths=None,
     for method in ("nearest", "linear", "cubic"):
         est = ns["geometric_cell_average"](products, method)
         score(ref_ids, est, f"geo_{method}", f"classical_{method}")
+    if arm != "S0":
+        # denominator of the paper's recovery fraction (Gaussian-blurred
+        # texture, no aperture): the same for every arm of a region
+        score(ref_ids, products["hpx_blurred"], "ref_blurred", "ref_blurred")
 
     query = np.column_stack([products["child_y"].ravel(), products["child_x"].ravel()])
     n_cells, n_child = products["child_y"].shape
@@ -703,17 +826,39 @@ def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False, widths=None,
     lat = products["lat"].ravel().astype(np.float64)
     for f in (widths or WIDTH_FACTORS["synthetic"]):
         fwhm = f * SYNTH_NOMINAL_FWHM_M
+        kernel = None
+        if arm == "S3":
+            # exact Gaussian (x) box in A; the neighbour search, Npt and the
+            # recorded width are those of the second-moment equivalent Gaussian
+            fwhm = SYNTH_EQUIV_FACTOR * SYNTH_NOMINAL_FWHM_M
+            kernel = utm_box_kernel(crs_utm)
         common = dict(width_factor=f, fwhm_m=fwhm)
 
         scale = ns["fwhm_to_scale"](fwhm)
         npt = int(ns["recommend_npt"](scale, ns["HEALPIX_LEVEL"],
                                       target_mass=ns["TARGET_KERNEL_MASS"])["npt"])
         t0 = time.perf_counter()
+        extra = {} if kernel is None else {"kernel": kernel}
         rs = ns["PSFResampler"](lon_deg=lon, lat_deg=lat, level=ns["HEALPIX_LEVEL"],
                                 threshold=ns["THRESHOLD"], verbose=False,
                                 ellipsoid="sphere", sigma_m=scale, Npt=npt,
-                                device=ns["DEVICE"])
+                                device=ns["DEVICE"], **extra)
         build_s = time.perf_counter() - t0
+        if arm != "S0":
+            # Diagnostic: kernel mass captured by each sample's links, in
+            # units of the kernel's integral (cell area x sum of weights);
+            # carried in `omega` like the package check.
+            w = to_numpy(rs._link_weights()).astype(np.float64)
+            w[to_numpy(rs.hi) < 0] = 0.0
+            cell_area = 4.0 * math.pi * rs.radius ** 2 / (12.0 * 4.0 ** ns["HEALPIX_LEVEL"])
+            if arm == "S3":
+                integral = box_gaussian_integral()
+            else:
+                integral = math.pi * scale ** 2 / 2.0      # of exp(-2 d^2 / s^2)
+            captured = w.sum(axis=1) * cell_area / integral
+            rows.append(_row("synthetic", meta, "check_kernel_mass", "check_kernel_mass",
+                             omega=float(np.median(captured)), n_iter=int(npt),
+                             n_cells=int(rs.K), **common))
         pkg = {}
         for lam in PSF_LAMBDAS:
             for it in PSF_ITERS:
@@ -726,7 +871,10 @@ def run_synthetic_region(ns, patch_row, *, do_e2=True, force=False, widths=None,
         if do_e2 and f == 1.0:
             _run_e2(rs, observed.ravel(), pkg, score, common)
 
-        kernel = gaussian_kernel(fwhm, ns["DETECTOR_GSD_M"])
+        if arm == "S3":
+            kernel = box_gaussian_pixel_kernel(ns["DETECTOR_GSD_M"])
+        else:
+            kernel = gaussian_kernel(fwhm, ns["DETECTOR_GSD_M"])
         fields, runtimes = deconvolution_fields(observed, kernel, rl_variants=("minmax",))
         keys = list(fields)
         vals = readout([fields[k] for k in keys])
@@ -1226,3 +1374,221 @@ def e4_figures(benches=("real", "synthetic"), n_iter=30):
     fig.savefig(figdir / "e4_width_curves.png", dpi=200)
     plt.close(fig)
     print(f"-> {figdir}")
+
+
+# =============================================================================
+# E3: response mismatch from the 10 m detector aperture (R1.5, R2.2)
+# =============================================================================
+# arm -> (study directory, width factor of A and of the deconvolution kernels)
+_E3_ARM_SOURCE = {"S0": ("e1e2", 1.0), "S1": ("e3s1", 1.0),
+                  "S2": ("e1e2", SYNTH_EQUIV_FACTOR), "S3": ("e3s3", 1.0)}
+_E3_ARM_LABEL = {"S0": "S0\npaper set-up", "S1": "S1\npoint-sampled",
+                 "S2": "S2\nequivalent width", "S3": "S3\nexact kernel"}
+
+
+def e3_study(arm):
+    return _E3_ARM_SOURCE[arm][0]
+
+
+def e3_arm_frame(arm, cache):
+    """One arm's rows: geometric baselines, `ref_blurred` and the
+    PSF-modelling families at the arm's width (E2 arms left out)."""
+    study, f = _E3_ARM_SOURCE[arm]
+    if study not in cache:
+        cache[study] = collect_results("synthetic", study)
+    raw = cache[study]
+    keep = (raw["width_factor"].isna() | np.isclose(raw["width_factor"], f)) \
+        & ~raw["family"].str.startswith("e2_")
+    df = prepare(raw[keep])
+    df["arm"] = arm
+    return df
+
+
+def e3_analyze():
+    """E3 tables (protocol section E3): recovery per arm and family, PSF-aware
+    against each competitor within an arm, and arm-to-arm contrasts; every
+    family tuned by the E1 5-fold CV inside its arm."""
+    import pandas as pd
+    out = ensure_out_dir("analysis_synthetic")
+    cache = {}
+    frames = {arm: e3_arm_frame(arm, cache) for arm in E3_ARMS}
+
+    # Recovery denominator RMSE(blurred, latent): no aperture, so identical
+    # in S1 and S3 (and valid for S0, S2: same texture and Gaussian).
+    blurred = {arm: frames[arm][frames[arm]["family"] == "ref_blurred"]
+               .set_index("region_id")["rmse"] for arm in E3_NEW_ARMS}
+    b1, b3 = blurred["S1"], blurred["S3"].reindex(blurred["S1"].index)
+    if not np.allclose(b1, b3, rtol=1e-12, atol=0):
+        raise RuntimeError("ref_blurred differs between S1 and S3")
+    blurred = b1
+
+    for arm in E3_NEW_ARMS:
+        chk = cache[e3_study(arm)]
+        chk = chk[chk["family"] == "check_kernel_mass"]
+        print(f"[E3 {arm}] Npt {int(chk['n_iter'].median())}, captured kernel mass: "
+              f"median {chk['omega'].median():.4f}, min {chk['omega'].min():.4f}")
+
+    tuned = {}
+    for arm, df in frames.items():
+        for fam in E3_FAMILIES:
+            s = select(df, fam, "B", "5fold")      # one width in each arm's frame
+            if len(s):
+                tuned[(arm, fam)] = s
+
+    rec_rows = []
+    for (arm, fam), s in tuned.items():
+        r = s.set_index("region_id")
+        rec = 1.0 - r["rmse"] / blurred.reindex(r.index)
+        bic = frames[arm][frames[arm]["family"] == "geo_cubic"].set_index("region_id")["rmse"]
+        rel = r["rmse"] / bic.reindex(r.index)
+        for cls, idx in [("all", r.index)] + [(c, r.index[r["scene_class"] == c])
+                                               for c in CLASSES]:
+            mean, lo, hi = bootstrap_mean_ci(rec[idx])
+            rec_rows.append(dict(arm=arm, family=fam, scene_class=cls, n_regions=len(idx),
+                                 mean_recovery=mean, ci_low=lo, ci_high=hi,
+                                 median_rel_bicubic=float(rel[idx].median()),
+                                 mean_rmse=float(r.loc[idx, "rmse"].mean()),
+                                 top_config=r.loc[idx, "config"].mode().iat[0]))
+    recovery = pd.DataFrame(rec_rows)
+
+    win_rows = []
+    for arm in E3_ARMS:
+        ours = tuned[(arm, "psf_aware")]
+        comps = {fam: tuned[(arm, fam)] for fam in E3_FAMILIES
+                 if fam != "psf_aware" and (arm, fam) in tuned}
+        for fam, theirs in comps.items():
+            for r in paired_stats(ours, theirs):
+                win_rows.append(dict(arm=arm, competitor=fam, **r))
+        # strongest deconvolution competitor of each region, chosen with the
+        # reference (as in E4: favourable to the competitors)
+        best = pd.concat({f: comps[f].set_index("region_id")["rmse"]
+                          for f in E4_COMPETITORS if f in comps}, axis=1).min(axis=1)
+        theirs = pd.DataFrame({"region_id": best.index, "rmse": best.to_numpy()})
+        o = ours.set_index("region_id")
+        margin = (best - o["rmse"].reindex(best.index)) / best
+        for r in paired_stats(ours, theirs):
+            if r["scene_class"] == "all":
+                idx = margin.index
+            else:
+                idx = margin.index[(o["scene_class"].reindex(margin.index)
+                                    == r["scene_class"]).to_numpy()]
+            _, mlo, mhi = bootstrap_mean_ci(margin[idx])
+            win_rows.append(dict(arm=arm, competitor="strongest", **r,
+                                 rel_margin_ci_low=mlo, rel_margin_ci_high=mhi))
+    within = pd.DataFrame(win_rows)
+
+    x_rows = []
+    for fam in E3_FAMILIES:
+        for a, b in E3_CONTRASTS:
+            if (a, fam) in tuned and (b, fam) in tuned:
+                # paired_stats: Delta = theirs - ours = RMSE_a - RMSE_b (> 0: b better)
+                for r in paired_stats(tuned[(b, fam)], tuned[(a, fam)]):
+                    x_rows.append(dict(family=fam, contrast=f"{a}-{b}", **r))
+    across = pd.DataFrame(x_rows)
+
+    recovery.to_csv(out / "e3_recovery.csv", index=False)
+    within.to_csv(out / "e3_within_arm.csv", index=False)
+    across.to_csv(out / "e3_across_arms.csv", index=False)
+    pd.concat([s.assign(arm=a) for (a, _), s in tuned.items()]).to_csv(
+        out / "e3_selected_configs.csv", index=False)
+
+    pd.set_option("display.width", 200)
+    allc = recovery[recovery["scene_class"] == "all"]
+    print(allc.pivot(index="family", columns="arm", values="mean_recovery").round(4))
+    w = within[within["scene_class"] == "all"]
+    print(w.pivot(index="competitor", columns="arm", values="mean_rel_margin").round(4))
+    print(w.pivot(index="competitor", columns="arm", values="wins"))
+    x = across[(across["scene_class"] == "all") & across["family"].isin(["psf_aware", "rl2"])]
+    print(x[["family", "contrast", "wins", "n_regions", "mean_delta", "ci_low", "ci_high",
+             "mean_rel_margin"]].to_string(index=False))
+    e3_real()
+    print(f"-> {out}")
+    return recovery, within, across
+
+
+def e3_real():
+    """Real bench, no new run: nominal 25 m (R0) and combined nominal 27.95 m
+    (R2) widths, PSF-aware against each competitor tuned at the same width."""
+    import pandas as pd
+    df = e4_frame("real")
+    rows = []
+    for label, f in (("R0", 1.0), ("R2", math.sqrt(1.25))):
+        at_f = df[np.isclose(df["f"], round(f, 6))]
+        tuned = {fam: select(at_f, fam, "B", "5fold")
+                 for fam in E4_COMPETITORS + ("psf_aware",)}
+        ours = tuned.pop("psf_aware")
+        best = pd.concat({k: v.set_index("region_id")["rmse"] for k, v in tuned.items()},
+                         axis=1).min(axis=1)
+        tuned["strongest"] = pd.DataFrame({"region_id": best.index, "rmse": best.to_numpy()})
+        for comp, theirs in tuned.items():
+            for r in paired_stats(ours, theirs):
+                rows.append(dict(arm=label, width_factor=f, competitor=comp, **r))
+    table = pd.DataFrame(rows)
+    out = ensure_out_dir("analysis_real")
+    table.to_csv(out / "e3_real_widths.csv", index=False)
+    print(table[table["scene_class"] == "all"][["arm", "competitor", "wins", "n_regions",
+                                                "mean_rel_margin"]].to_string(index=False))
+    return table
+
+
+def e3_figure():
+    """Fig. E3: (a) recovery per arm for each family, (b) PSF-aware margin over
+    the strongest tuned competitor per arm."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    plt.rcParams.update({"font.size": 8, "axes.titlesize": 8, "axes.labelsize": 8,
+                         "xtick.labelsize": 7, "ytick.labelsize": 7, "legend.fontsize": 7,
+                         "axes.edgecolor": _E4_INK2, "axes.labelcolor": _E4_INK,
+                         "xtick.color": _E4_INK2, "ytick.color": _E4_INK2,
+                         "pdf.fonttype": 42})
+    src = OUT_DIR / "analysis_synthetic"
+    rec = pd.read_csv(src / "e3_recovery.csv")
+    rec = rec[rec["scene_class"] == "all"]
+    win = pd.read_csv(src / "e3_within_arm.csv")
+    win = win[(win["scene_class"] == "all") & (win["competitor"] == "strongest")]
+    x0 = np.arange(len(E3_ARMS))
+
+    fig, axes = plt.subplots(1, 2, figsize=(7.16, 2.6), constrained_layout=True)
+    ax = axes[0]
+    offsets = np.linspace(-0.24, 0.24, len(_E4_SERIES))
+    for off, (fam, (label, color, marker, _)) in zip(offsets, _E4_SERIES.items()):
+        g = rec[rec["family"] == fam].set_index("arm").reindex(list(E3_ARMS))
+        y = g["mean_recovery"].to_numpy() * 100
+        err = np.vstack([y - g["ci_low"].to_numpy() * 100, g["ci_high"].to_numpy() * 100 - y])
+        ax.errorbar(x0 + off, y, yerr=err, fmt=marker, color=color, ms=4.5, mec="white",
+                    mew=0.6, elinewidth=1.0, capsize=0, label=label)
+    ax.axhline(0.0, color=_E4_INK2, lw=0.6)
+    ax.set_xticks(x0, [_E3_ARM_LABEL[a] for a in E3_ARMS])
+    ax.set_ylabel("recovery vs blurred texture (%, mean, 95% CI)")
+    ax.set_title("(a) recovery, each method tuned by 5-fold CV in its arm", loc="left")
+    ax.legend(frameon=False, loc="best")
+
+    ax = axes[1]
+    g = win.set_index("arm").reindex(list(E3_ARMS))
+    y = g["mean_rel_margin"].to_numpy() * 100
+    err = np.vstack([y - g["rel_margin_ci_low"].to_numpy() * 100,
+                     g["rel_margin_ci_high"].to_numpy() * 100 - y])
+    color = _E4_SERIES["psf_aware"][1]
+    ax.errorbar(x0, y, yerr=err, fmt="o", color=color, ms=5, mec="white", mew=0.6,
+                elinewidth=1.0, capsize=0)
+    for xi, yi, (_, r) in zip(x0, y, g.iterrows()):
+        ax.annotate(f"{int(r['wins'])}/{int(r['n_regions'])}", (xi, yi),
+                    xytext=(7, 0), textcoords="offset points", va="center",
+                    fontsize=6.5, color=_E4_INK2)
+    ax.axhline(0.0, color=_E4_INK2, lw=0.6)
+    ax.set_xticks(x0, [_E3_ARM_LABEL[a] for a in E3_ARMS])
+    ax.set_xlim(-0.5, len(E3_ARMS) - 0.3)
+    ax.set_ylabel("PSF-aware margin (%, mean, 95% CI)")
+    ax.set_title("(b) vs strongest tuned competitor (regions won)", loc="left")
+    for a in axes:
+        a.grid(axis="y", color="#e4e3df", lw=0.6)
+        for s in ("top", "right"):
+            a.spines[s].set_visible(False)
+    figdir = ensure_out_dir("figures")
+    fig.savefig(figdir / "e3_arms.pdf")
+    fig.savefig(figdir / "e3_arms.png", dpi=200)
+    plt.close(fig)
+    print(f"-> {figdir / 'e3_arms.pdf'}")

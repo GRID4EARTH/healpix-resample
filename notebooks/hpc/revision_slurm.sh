@@ -22,7 +22,7 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-8}
 export MKL_NUM_THREADS=$OMP_NUM_THREADS
 
 ARGS=($STEP)
-if [[ -n "${SLURM_ARRAY_TASK_ID:-}" && ( "${ARGS[0]}" == "e1e2" || "${ARGS[0]}" == "e4" ) ]]; then
+if [[ -n "${SLURM_ARRAY_TASK_ID:-}" && ( "${ARGS[0]}" == "e1e2" || "${ARGS[0]}" == "e4" || "${ARGS[0]}" == "e3" ) ]]; then
     ARGS+=(--shard "${SLURM_ARRAY_TASK_ID}/${SLURM_ARRAY_TASK_COUNT}")
 fi
 

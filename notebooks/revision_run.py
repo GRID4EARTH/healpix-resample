@@ -1,4 +1,4 @@
-"""Command-line driver for the JSTARS revision experiments E0, E1 and E2.
+"""Command-line driver for the JSTARS revision experiments E0 to E4.
 
 Run inside the paper environment, from anywhere in the repository::
 
@@ -10,11 +10,13 @@ Run inside the paper environment, from anywhere in the repository::
     pixi run -e notebooks python notebooks/revision_run.py analyze real
     pixi run -e notebooks python notebooks/revision_run.py e4 real          # E4 width complement
     pixi run -e notebooks python notebooks/revision_run.py e4-analyze      # E4 tables and figures
+    pixi run -e notebooks python notebooks/revision_run.py e3 S1           # E3 arms S1, S3
+    pixi run -e notebooks python notebooks/revision_run.py e3-analyze      # E3 tables and figure
     pixi run -e notebooks python notebooks/revision_run.py selftest
 
 ``--limit N`` keeps N regions per scene class (smoke test; ``--limit 1`` runs
 four regions).  ``--shard k/n`` splits ``e1e2`` across the n tasks of a job
-array (also ``e4``).  Per-region results are written as soon as a region finishes, so an
+array (also ``e4`` and ``e3``).  Per-region results are written as soon as a region finishes, so an
 interrupted job resumes where it stopped (``--force`` recomputes).
 Protocol: review/08_protocole_preenregistre.md.  Outputs: notebooks/tables/revision/.
 """
@@ -106,6 +108,20 @@ def cmd_e4_analyze(args):
     return 0
 
 
+def cmd_e3(args):
+    """E3 arm S1 (point-sampled data) or S3 (exact Gaussian x box kernel)."""
+    args.bench = "synthetic"
+    study = rt.e3_study(args.arm)
+    rt.write_provenance(study + "_synthetic", {"limit": args.limit, "arm": args.arm})
+    return _run_regions(args, dict(do_e2=False, widths=(1.0,), study=study, arm=args.arm))
+
+
+def cmd_e3_analyze(args):
+    rt.e3_analyze()
+    rt.e3_figure()
+    return 0
+
+
 def _run_regions(args, kwargs):
     if args.bench == "real":
         gt = rt.load_gt()
@@ -190,6 +206,19 @@ def main(argv=None):
 
     p = sub.add_parser("e4-analyze", help="E4 tables and figures (both benchmarks)")
     p.set_defaults(func=cmd_e4_analyze)
+
+    p = sub.add_parser("e3", help="response-mismatch arm S1 or S3 (E3, synthetic)")
+    p.add_argument("arm", choices=rt.E3_NEW_ARMS)
+    p.add_argument("--limit", type=int, default=0, help="regions per scene class (0 = all)")
+    p.add_argument("--online", action="store_true",
+                   help="allow fetching missing Esri tiles")
+    p.add_argument("--force", action="store_true", help="recompute finished regions")
+    p.add_argument("--shard", default="",
+                   help="k/n: process regions k, k+n, k+2n, ... (job arrays)")
+    p.set_defaults(func=cmd_e3)
+
+    p = sub.add_parser("e3-analyze", help="E3 tables and figure")
+    p.set_defaults(func=cmd_e3_analyze)
 
     p = sub.add_parser("selftest", help="numerical self-tests (no data needed)")
     p.set_defaults(func=cmd_selftest)

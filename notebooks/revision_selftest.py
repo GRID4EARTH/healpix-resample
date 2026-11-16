@@ -214,9 +214,69 @@ def test_analysis():
     check("bootstrap of a constant", m == lo == hi == 1.0)
 
 
+def test_e3_kernels():
+    """E3: the Gaussian (x) box weight, its pixel kernel, the half-pixel
+    Gaussian of arm S1 (protocol section E3)."""
+    from scipy.ndimage import gaussian_filter, map_coordinates
+    sigma = rt._SIGMA_G
+    t = np.linspace(-25.0, 25.0, 41)
+    uu, vv = np.meshgrid(t, t)
+    gauss = np.exp(-(uu ** 2 + vv ** 2) / (2.0 * sigma ** 2))
+    w0 = rt.box_gaussian_weight(uu, vv, a=1e-3)
+    check("box (x) Gaussian -> Gaussian as the aperture -> 0",
+          np.max(np.abs(w0 - gauss)) < 1e-6, f"max diff {np.max(np.abs(w0 - gauss)):.1e}")
+    w = rt.box_gaussian_weight(uu, vv)
+    check("box (x) Gaussian: unit peak, symmetric, separable",
+          np.isclose(rt.box_gaussian_weight(0.0, 0.0), 1.0) and np.allclose(w, w.T)
+          and np.allclose(w, w[::-1, ::-1]))
+    # integral on a fine grid (0.25 m) against the closed form a^2 / peak
+    s = np.arange(-60.0, 60.0 + 1e-9, 0.25)
+    su, sv = np.meshgrid(s, s)
+    num = rt.box_gaussian_weight(su, sv).sum() * 0.25 ** 2
+    check("box (x) Gaussian integral == a^2 / peak",
+          abs(num / rt.box_gaussian_integral() - 1.0) < 1e-6,
+          f"{num:.6f} vs {rt.box_gaussian_integral():.6f}")
+    # second moment per axis: sigma^2 + a^2 / 12 (the equivalent Gaussian)
+    var = (rt.box_gaussian_weight(su, sv) * su ** 2).sum() * 0.25 ** 2 / num
+    check("box (x) Gaussian variance == sigma_G^2 + sigma_box^2",
+          abs(var / (rt._SIGMA_G ** 2 + rt._SIGMA_BOX ** 2) - 1.0) < 1e-6)
+    k = rt.box_gaussian_pixel_kernel(10.0)
+    check("S3 pixel kernel: 7x7, sums to 1, symmetric",
+          k.shape == (7, 7) and np.isclose(k.sum(), 1.0) and np.allclose(k, k.T)
+          and np.allclose(k, k[::-1, ::-1]))
+
+    sigma_px = rt._SIGMA_G / 2.5
+    const = np.full((40, 44), 3.25)
+    check("half-pixel Gaussian keeps a constant",
+          np.allclose(rt.half_shift_gaussian(const, sigma_px), 3.25, atol=1e-12))
+    # sampled analytic Gaussian bump: the result must follow the analytic
+    # convolution (variances add) at the half-pixel points
+    n, sb = 64, 2.0
+    i = np.arange(n, dtype=float)
+    yy, xx = np.meshgrid(i, i, indexing="ij")
+    c0, c1 = 31.3, 30.6
+    bump = np.exp(-((yy - c0) ** 2 + (xx - c1) ** 2) / (2 * sb ** 2))
+    out = rt.half_shift_gaussian(bump, sigma_px)
+    st2 = sb ** 2 + sigma_px ** 2
+    exact = (sb ** 2 / st2) * np.exp(-((yy + 0.5 - c0) ** 2 + (xx + 0.5 - c1) ** 2) / (2 * st2))
+    err = np.max(np.abs(out - exact)) / exact.max()
+    check("half-pixel Gaussian == analytic convolution (<= 1e-3 of peak)", err <= 1e-3,
+          f"max err {err:.1e}")
+    # smooth texture: agrees with a cubic-spline reading of gaussian_filter
+    tex = smooth_image((96, 96), seed=7)
+    ri, ci = np.meshgrid(np.arange(96) + 0.5, np.arange(96) + 0.5, indexing="ij")
+    ref = map_coordinates(gaussian_filter(tex, sigma_px, mode="reflect"),
+                          [ri.ravel(), ci.ravel()], order=3, mode="reflect").reshape(96, 96)
+    ours = rt.half_shift_gaussian(tex, sigma_px)
+    inner = (slice(12, -12), slice(12, -12))
+    rel = np.sqrt(np.mean((ours[inner] - ref[inner]) ** 2)) / np.sqrt(np.mean(ref[inner] ** 2))
+    check("half-pixel Gaussian == spline reading of gaussian_filter (<= 1e-3 RMS)",
+          rel <= 1e-3, f"rel RMS {rel:.1e}")
+
+
 def main():
     for test in (test_rl, test_fourier, test_operators_and_cg, test_stacked_cubic,
-                 test_notebook_markers, test_analysis):
+                 test_notebook_markers, test_analysis, test_e3_kernels):
         try:
             test()
         except Exception as exc:

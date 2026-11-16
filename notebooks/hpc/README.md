@@ -83,7 +83,7 @@ pixi run -e notebooks python notebooks/revision_run.py e1e2 real --limit 1
 pixi run -e notebooks python notebooks/revision_run.py e1e2 synthetic --limit 1
 ```
 
-- `selftest` doit afficher **28/28 checks passed**.
+- `selftest` doit afficher **36/36 checks passed**.
 - Les deux `--limit 1` traitent une région par classe ; ils servent de test
   de fumée.
 - Ensuite, supprimer `notebooks/tables/revision/e1e2_*` (sinon ces 4 régions
@@ -113,6 +113,19 @@ V=PIXI=$HOME/.pixi/bin/pixi,PIXI_CACHE_DIR=$DATAWORK/.pixi-cache
 V=$V,HPXREV_SIF=$DATAWORK/containers/noble-scm.sif,SINGULARITY_MODULE=singularity/3.6.4
 qsub -q omp -v "$V,STEP=e1e2 real,NSHARD=4"      -J 0-3 notebooks/hpc/revision_pbs.sh
 qsub -q omp -v "$V,STEP=e1e2 synthetic,NSHARD=8" -J 0-7 notebooks/hpc/revision_pbs.sh
+```
+
+E4 (largeurs 0,6–0,8) et E3 (bras S1 et S3, banc synthétique) suivent le
+même schéma ; leurs analyses lisent aussi les résultats d'E1 :
+
+```bash
+qsub -q omp -v "$V,STEP=e4 real,NSHARD=8"      -J 0-7 notebooks/hpc/revision_pbs.sh
+qsub -q omp -v "$V,STEP=e4 synthetic,NSHARD=8" -J 0-7 notebooks/hpc/revision_pbs.sh
+qsub -q omp -v "$V,STEP=e3 S1,NSHARD=8"        -J 0-7 notebooks/hpc/revision_pbs.sh
+qsub -q omp -v "$V,STEP=e3 S3,NSHARD=8"        -J 0-7 notebooks/hpc/revision_pbs.sh
+# puis, dans le conteneur :
+pixi run --as-is -e notebooks python notebooks/revision_run.py e4-analyze
+pixi run --as-is -e notebooks python notebooks/revision_run.py e3-analyze
 ```
 
 **Ordres de grandeur sur CPU (estimations, à confirmer par le test de

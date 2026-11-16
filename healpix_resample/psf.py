@@ -448,6 +448,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         threshold: float = 0.1,
         area: Optional[T_Array] = None,
         fill_missing_out_cells: bool = False,
+        kernel: Optional[Callable] = None,
         **kwargs,
     ):
         """
@@ -455,6 +456,22 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
 
         Parameters
         ----------
+        kernel : callable, optional
+            Raw (unnormalized) weight of a link between a sample and a
+            HEALPix cell, in place of the default Gaussian
+            ``exp(-2 d^2 / sigma_m^2)`` -- e.g. an anisotropic response, or a
+            Gaussian integrated over a square detector aperture, evaluated in
+            a projected frame. It is called on all the links at once as
+            ``kernel(lon_sample, lat_sample, lon_cell, lat_cell)``: float64
+            tensors of degrees, all of the same shape. It must return
+            non-negative weights of that shape. ``M`` and ``MT`` are built
+            from these weights by the same dual normalization, so
+            ``MT = Dx @ M.T @ Dy^-1`` and the solvers are unchanged.
+            ``sigma_m`` still drives the neighbour search (the ``Npt`` cells
+            of each sample, the cells kept against ``threshold``): give it
+            the width of a Gaussian close to the kernel, and scale the kernel
+            to a peak of 1, like the Gaussian, so that ``threshold`` keeps its
+            meaning. ``None`` (the default): the Gaussian.
         fill_missing_out_cells : bool
             Only relevant when ``out_cell_ids`` is supplied. Some requested
             output cells can end up with too little real kernel support (an
@@ -572,6 +589,14 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         # exist.
         self.area = area_t
         self.fill_missing_out_cells = bool(fill_missing_out_cells)
+        # Read by _link_weights() / _tie_weights() while super().__init__()
+        # builds the operators.
+        self.kernel = kernel
+        if kernel is not None:
+            self._kernel_lonlat = tuple(
+                torch.as_tensor(v).to(dev, dtype=torch.float64).reshape(-1)
+                for v in (lon_deg, lat_deg)
+            )
 
         super().__init__(
             lon_deg=lon_deg,
@@ -588,10 +613,43 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
             **kwargs,
         )
 
+    def _kernel_weights(self, rows: torch.Tensor, cols: torch.Tensor) -> torch.Tensor:
+        """``self.kernel`` on the links from samples ``rows`` to cells ``cols``."""
+        import healpix_geo
+
+        lon_s, lat_s = self._kernel_lonlat
+        hp = healpix_geo.nested if self.nest else healpix_geo.ring
+        cells = self.cell_ids.detach().cpu().numpy().astype(np.uint64)
+        lon_c, lat_c = hp.healpix_to_lonlat(cells, self.level, ellipsoid=self.ellipsoid)
+        lon_c = torch.as_tensor(np.asarray(lon_c), dtype=torch.float64, device=self.device)
+        lat_c = torch.as_tensor(np.asarray(lat_c), dtype=torch.float64, device=self.device)
+        w = self.kernel(lon_s[rows], lat_s[rows], lon_c[cols], lat_c[cols])
+        w = torch.as_tensor(w, device=self.device).to(self.dtype)
+        if w.shape != rows.shape:
+            raise ValueError(
+                f"kernel returned shape {tuple(w.shape)}, expected {tuple(rows.shape)}"
+            )
+        return w
+
+    def _link_weights(self) -> torch.Tensor:
+        """Raw weight of every link of ``hi``, ``(N, Npt)``: the Gaussian of
+        the base class, or ``kernel`` when one was given."""
+        if self.kernel is None:
+            return super()._link_weights()
+        rows = torch.arange(self.N, device=self.device)[:, None].expand_as(self.hi)
+        return self._kernel_weights(rows, self.hi.clamp(min=0))
+
+    def _tie_weights(self) -> torch.Tensor:
+        """Raw weight of every tied link, ``(T,)``."""
+        if self.kernel is None:
+            return super()._tie_weights()
+        return self._kernel_weights(self.tie_rows, self.tie_hi)
+
     def comp_matrix(self):
         # --- weights per sample->cell link
-        # w = exp(-2*d^2/sigma^2)
-        w_raw = torch.exp((-2.0) * (self.d_m * self.d_m) / (self.sigma_m * self.sigma_m))
+        # w = exp(-2*d^2/sigma^2) (KNeighborsResampler._distance_weights), or
+        # the user's `kernel`
+        w_raw = self._link_weights()
 
         # Conservative rebinning: bake the native-grid (source) pixel area into
         # the raw weights before normalization. Multiplying by self.area here
@@ -627,7 +685,7 @@ class PSFResampler(KNeighborsResampler, Generic[T_Array]):
         flat_idx_v = idx.reshape(-1)[valid]
         # the links to the cells tied with a sample's Npt-th nearest one
         if self.tie_rows.numel():
-            w_raw_tie = torch.exp((-2.0) * (self.tie_d * self.tie_d) / (self.sigma_m * self.sigma_m))
+            w_raw_tie = self._tie_weights()
             flat_hi_v = torch.cat([flat_hi_v, self.tie_hi])
             flat_w_v = torch.cat([flat_w_v, w_raw_tie * self.area[self.tie_rows]])
             flat_w_raw_v = torch.cat([flat_w_raw_v, w_raw_tie])

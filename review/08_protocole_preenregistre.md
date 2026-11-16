@@ -118,6 +118,98 @@ cellules non calculables valent NaN comme dans le package.
     `e4_safe_zone.csv` ;
   - `figures/e4_*.pdf`.
 
+## E3 — écart de réponse dû à l'ouverture du détecteur (ajouté le 2026-11-16, avant tout calcul E3)
+
+**Question.** Le banc synthétique génère ses données avec une gaussienne de
+12,5 m suivie d'une moyenne sur l'ouverture carrée de 10 m (`block_mean`
+4×4). Le modèle gaussien de A ne représente pas cette ouverture. E3 chiffre
+ce que coûte cet écart, pour la méthode PSF-aware comme pour ses concurrents.
+
+**Bras (banc synthétique, les 40 régions d'E1, même référence et mêmes
+cellules).**
+
+| Bras | Données | Noyau de A (PSF-aware) | Noyau des déconvolutions | Calcul |
+|------|---------|------------------------|--------------------------|--------|
+| S0 | gaussienne 12,5 m puis moyenne 4×4 (article) | gaussienne 12,5 m | gaussienne 12,5 m | run 2 d'E1, f = 1 |
+| S1 | gaussienne 12,5 m échantillonnée aux centres des pixels de 10 m | gaussienne 12,5 m | gaussienne 12,5 m | nouveau |
+| S2 | comme S0 | gaussienne équivalente de 14,23 m (second moment) | gaussienne 14,23 m | run 2 d'E1, f = 1,138 |
+| S3 | comme S0 | noyau exact gaussienne ⊗ boîte de 10 m | même noyau, échantillonné au pas de 10 m | nouveau |
+
+- **Échantillonnage de S1.** La convolution gaussienne est évaluée
+  directement aux centres des pixels de 10 m, sans interpolation.
+  - Ces centres tombent à un demi-pixel de la grille fine de 2,5 m.
+  - La gaussienne y est échantillonnée aux décalages demi-entiers, avec la
+    même troncature (4 σ) et le même bord (`reflect`) que le `gaussian_filter`
+    de l'article.
+  - Contrôles (selftest) :
+    - une constante est conservée ;
+    - sur une gaussienne analytique échantillonnée, le résultat suit la
+      convolution analytique à 1e-3 du pic près ;
+    - le résultat suit l'interpolation spline cubique du `gaussian_filter`,
+      sur une texture lisse, à 1e-3 près en RMS relatif.
+- **Noyau exact de S3.** Pour σ = 5,31 m et a = 10 m :
+  w(u, v) = Π_{t ∈ {u, v}} ½ [erf((t + a/2)/(√2 σ)) − erf((t − a/2)/(√2 σ))].
+  - (u, v) est le déplacement du centre de cellule par rapport à
+    l'échantillon dans le repère UTM du patch, comme lors de la
+    génération : les deux points sont projetés avec le `pyproj` du patch.
+  - w est normalisé à un pic de 1, comme la gaussienne, pour que
+    `threshold` garde son sens.
+  - La recherche de voisins (`sigma_m`) et `Npt` sont ceux de la gaussienne
+    de 14,23 m (`recommend_npt`, masse cible 0,99). La masse du noyau exact
+    captée par les liens est journalisée.
+  - Le noyau discret des déconvolutions vaut w aux décalages entiers de
+    10 m, sur un rayon de 3 pixels (≥ 4 σ_éq), normalisé à une somme de 1.
+- **Point d'accroche.** Le paramètre `kernel=` de `PSFResampler` (poids brut
+  d'un lien en fonction des lon/lat de l'échantillon et de la cellule).
+  - Le chemin par défaut garde la même expression gaussienne.
+  - On le vérifie par les tests du package et en relançant E0 synthétique
+    après la modification, avec le critère d'E0.
+
+**Méthodes et réglage.**
+- **Familles calculées dans chaque bras :** `psf_aware` (grille λ ×
+  itérations d'E1), `rl2` (`minmax`), `tik_id`, `tik_lap`, `wiener_hunt`.
+  Les méthodes géométriques sont recalculées sur les données de S1.
+- **Réglage :** chaque famille est réglée par la validation croisée à
+  5 plis d'E1 à l'intérieur du bras. Le noyau est fixé dans un bras, comme
+  en mode A.
+- **Score de sélection :** RMSE / RMSE bicubique du même bras.
+
+**Sorties.**
+1. **Récupération par bras et par famille (réglée par CV).** On utilise
+   l'équation de récupération de l'article,
+   1 − RMSE(méthode, latent) / RMSE(flouté, latent). Son dénominateur ne
+   dépend que de la texture et de la gaussienne : il est commun à tous les
+   bras d'une région. On rapporte la moyenne et l'IC bootstrap, sur
+   l'ensemble et par classe.
+2. **À l'intérieur de chaque bras :** PSF-aware (CV) contre chaque
+   concurrent (CV). Δ apparié, IC, victoires et test de signe, comme pour
+   E1.
+3. **D'un bras à l'autre, pour PSF-aware et RL (réglés par CV) :** Δ RMSE
+   apparié pour quatre contrastes (positif : le second bras est meilleur) :
+   - S0 − S3 : gain à modéliser l'ouverture ;
+   - S0 − S2 : gain à la largeur équivalente ;
+   - S2 − S3 : forme au-delà du second moment ;
+   - S0 − S1 : coût total de l'ouverture, soit la perte d'information plus
+     l'écart de modèle.
+4. **Banc réel, sans nouveau calcul.** On compare R0 (f = 1, 25 m) et R2
+   (f = √1,25, réponse combinée nominale de 27,95 m), PSF-aware contre le
+   concurrent le plus fort au même f (tables d'E4).
+5. **Fichiers :**
+   - `analysis_synthetic/e3_recovery.csv`, `e3_within_arm.csv` et
+     `e3_across_arms.csv` ;
+   - `analysis_real/e3_real_widths.csv` ;
+   - `figures/e3_arms.pdf`.
+
+**Lecture fixée avant calcul.**
+- **Si S0 − S3 est petit devant la marge de PSF-aware dans S0 :** l'ouverture
+  non modélisée est un effet du second ordre, et le paragraphe « not exactly
+  matched » du §IV-E le chiffre.
+- **Si S3 est nettement meilleur que S0 :** l'article recommande d'inclure
+  l'ouverture dans A quand elle est connue, et les chiffres de S0 sont
+  conservateurs.
+- **Classement des méthodes dans S1 et S3 :** il dit si l'avantage de
+  PSF-aware dépend de l'approximation gaussienne.
+
 ## Journal des modifications après gel
 
 ### Amendement 1 — 2026-11-16 : extension des grilles ouvertes
