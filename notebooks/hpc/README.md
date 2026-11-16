@@ -83,7 +83,7 @@ pixi run -e notebooks python notebooks/revision_run.py e1e2 real --limit 1
 pixi run -e notebooks python notebooks/revision_run.py e1e2 synthetic --limit 1
 ```
 
-- `selftest` doit afficher **36/36 checks passed**.
+- `selftest` doit afficher **40/40 checks passed**.
 - Les deux `--limit 1` traitent une région par classe ; ils servent de test
   de fumée.
 - Ensuite, supprimer `notebooks/tables/revision/e1e2_*` (sinon ces 4 régions
@@ -128,12 +128,27 @@ pixi run --as-is -e notebooks python notebooks/revision_run.py e4-analyze
 pixi run --as-is -e notebooks python notebooks/revision_run.py e3-analyze
 ```
 
+E5 (SEN2VENµS, environ 35 Go). Le téléchargement se fait sur le nœud de
+login, qui a accès à Internet ; le criblage tourne par site. Les fichiers
+VENµS sont sous licence CC BY-NC 4.0 et ne doivent pas être redistribués.
+
+```bash
+pixi run --as-is -e notebooks python notebooks/revision_run.py e5-fetch      # login, ~1 h
+qsub -q omp -v "$V,STEP=e5-manifest --shard 0/13" notebooks/hpc/revision_pbs.sh  # ... jusqu'à 12/13
+pixi run --as-is -e notebooks python notebooks/revision_run.py e5-manifest   # tirage, sans --shard
+qsub -q omp -v "$V,STEP=e5,NSHARD=32"            -J 0-31 notebooks/hpc/revision_pbs.sh
+qsub -q omp -v "$V,STEP=e5 --part ext,NSHARD=32" -J 0-31 notebooks/hpc/revision_pbs.sh  # amendement 3
+pixi run --as-is -e notebooks python notebooks/revision_run.py e5-analyze
+```
+
 **Ordres de grandeur sur CPU (estimations, à confirmer par le test de
 fumée) :**
 - E0 réel : environ 30 min ;
 - E0 synthétique : environ 30 min ;
 - E1/E2 réel : 1–3 min par région ;
-- E1/E2 synthétique : 3–8 min par région.
+- E1/E2 synthétique : 3–8 min par région ;
+- E5 : environ 3,5 min par extrait (grille principale) et 1,5 min
+  (extension), soit environ 40 min et 16 min pour 307 extraits sur 32 shards.
 
 Avec 8 shards, tout tient dans la limite de 6 h. Chaque région est écrite dès
 qu'elle est finie : un job interrompu reprend où il s'était arrêté.

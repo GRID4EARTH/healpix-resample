@@ -427,3 +427,50 @@ pixel, avec un écart entre quadrants inférieur à 0,001 pixel.
 **Portée.** Le changement ne touche que l'estimateur. Les seuils
 d'exclusion (1 pixel, 0,2 pixel entre quadrants) sont inchangés. Aucun
 extrait réel n'avait encore été filtré ni noté.
+
+### Amendement 3 — 2026-11-16, après le run E5, avant tout calcul d'extension : grilles E5
+
+**Constat (run E5, commit `eb73615`, 307 extraits, 13 sites).** Le
+leave-one-site-out a retenu le bord d'une grille ouverte, aux niveaux L20
+et L19 :
+
+| Famille | Bord retenu |
+|---------|-------------|
+| `psf_aware` | mode A : λ = 0,1 (maximum) et 5 itérations (minimum) ; mode B : λ = 0,1 (maximum), avec f = 0,7 (intérieur) |
+| `rl2` | 5 itérations (minimum), modes A et B ; mode B : f = 0,6 (minimum) |
+| `tik_id`, `tik_lap` | mode B : f = 0,6 (minimum) ; `tik_lap` : λ = 1e-10, déjà le bord étendu par l'amendement 1 |
+| `wiener_hunt` | mode B, L19 : f = 0,6 dans 6 plis sur 13 |
+
+**Règle appliquée.** Celle de l'amendement 1, sans changement : on étend
+chaque grille dans la direction du bord, d'un facteur au moins 3, et on
+relance.
+
+**Grilles ajoutées.** Seules les configurations nouvelles sont calculées
+(`revision_run.py e5 --part ext`, sorties dans `tables/revision/e5_ext/`).
+- **Largeurs des déconvolutions :** f ∈ {0,2 ; 0,3 ; 0,4 ; 0,5} pour `rl2`,
+  `tik_id`, `tik_lap` et `wiener_hunt`, avec leurs grilles complètes. Quand
+  f → 0, la déconvolution tend vers l'identité et la méthode rejoint la
+  lecture bicubique.
+- **`psf_aware` :**
+  - λ ∈ {0,3 ; 1 ; 3 ; 10}, facteur 100 vers le haut, × itérations
+    ∈ {1, 2, 5, 14, 30, 100} ;
+  - itérations {1, 2} pour les λ d'origine ;
+  - 0 itération, c'est-à-dire x_ref = B y. C'est la borne naturelle commune
+    aux deux directions (λ → ∞ et itérations → 0). Elle ne dépend pas de λ
+    et est enregistrée une fois, avec λ = 0.
+- **`rl2` :** itérations {1, 2} à toutes les largeurs. 1 est la borne
+  naturelle, car RL part d'une constante.
+- **`psf_aware` garde f ≥ 0,6.**
+  - Son choix (0,7) est intérieur.
+  - Sous 0,6, l'opérateur ne couvre plus toutes les cellules évaluées : avec
+    `threshold` 0,1, le rayon de lien vaut 2,15 σ, soit moins que la
+    demi-diagonale de la grille de 10 m (7,07 m) dès f ≤ 0,5. Les scores
+    porteraient alors sur moins de cellules que ceux des concurrents.
+  - Si, après extension, le choix de f de `psf_aware` tombe à 0,6, on le
+    signale tel quel.
+
+**Ce qui ne change pas.** Le run E5 reste tel quel dans
+`tables/revision/e5/`. Son analyse est conservée dans `analysis_e5_run1/`.
+L'analyse étendue porte sur l'union des deux parties. Le score, les plis, les
+graines, les statistiques et les filtres sont inchangés. Si une configuration
+retenue tombe encore au bord d'une grille étendue, on le signale tel quel.

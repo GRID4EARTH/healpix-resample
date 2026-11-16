@@ -15,6 +15,7 @@ Run inside the paper environment, from anywhere in the repository::
     pixi run -e notebooks python notebooks/revision_run.py e5-fetch        # E5 data (network)
     pixi run -e notebooks python notebooks/revision_run.py e5-manifest     # E5 filters, sample
     pixi run -e notebooks python notebooks/revision_run.py e5              # E5 runs
+    pixi run -e notebooks python notebooks/revision_run.py e5 --part ext   # E5 amendment 3 grids
     pixi run -e notebooks python notebooks/revision_run.py e5-analyze      # E5 tables and figure
     pixi run -e notebooks python notebooks/revision_run.py selftest
 
@@ -141,7 +142,7 @@ def cmd_e5_manifest(args):
 def cmd_e5(args):
     """E5: every method on the sampled SEN2VENmuS patches."""
     import revision_e5 as e5
-    rt.write_provenance("e5", {"limit": args.limit})
+    rt.write_provenance("e5" if args.part == "main" else "e5_ext", {"limit": args.limit})
     items = e5.selected_patches()
     if args.limit:
         kept, seen = [], {}
@@ -158,7 +159,7 @@ def cmd_e5(args):
     for i, item in enumerate(items, 1):
         t0 = time.perf_counter()
         try:
-            frame = e5.run_patch(item, force=args.force)
+            frame = e5.run_patch(item, force=args.force, part=args.part)
             print(f"[{i:3d}/{len(items)}] {item.patch_id}: {len(frame)} rows "
                   f"({time.perf_counter() - t0:.1f} s)", flush=True)
         except Exception as exc:
@@ -285,6 +286,8 @@ def main(argv=None):
     p.add_argument("--force", action="store_true", help="recompute finished patches")
     p.add_argument("--shard", default="",
                    help="k/n: process patches k, k+n, k+2n, ... (job arrays)")
+    p.add_argument("--part", choices=("main", "ext"), default="main",
+                   help="main: pre-registered grid; ext: amendment 3 extension only")
     p.set_defaults(func=cmd_e5)
     p = sub.add_parser("e5-analyze", help="E5 tables and figure")
     p.set_defaults(func=cmd_e5_analyze)

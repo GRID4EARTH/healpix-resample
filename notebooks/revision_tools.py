@@ -371,13 +371,14 @@ def wiener_hunt_field(image, kernel, seed=CV_SEED):
     return np.asarray(field, dtype=np.float64)
 
 
-def deconvolution_fields(image, kernel, *, rl_variants):
-    """Every two-stage field for one width: {(family, variant, lam, n_iter): field}."""
+def deconvolution_fields(image, kernel, *, rl_variants, rl_iters=None):
+    """Every two-stage field for one width: {(family, variant, lam, n_iter): field}.
+    ``rl_iters`` defaults to ``RL_ITERS`` (E5 amendment 3 adds 1 and 2)."""
     fields, runtimes = {}, {}
     for variant in rl_variants:
         t0 = time.perf_counter()
         img01, lo, scale = rl_normalize(image, variant)
-        snaps = rl_snapshots(img01, kernel, RL_ITERS)
+        snaps = rl_snapshots(img01, kernel, RL_ITERS if rl_iters is None else rl_iters)
         dt = (time.perf_counter() - t0) / len(snaps)
         for k, est in snaps.items():
             key = ("rl2", variant, np.nan, k)

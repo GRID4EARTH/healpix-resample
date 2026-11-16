@@ -58,6 +58,13 @@ TARGET_KERNEL_MASS = 0.99
 S2_PIXEL_M = 10.0
 VEN_PIXEL_M = 5.0
 
+# Amendment 3 (rule of amendment 1): grids extended where the E5 run retained
+# an open edge.  Only the added configurations are computed (`part="ext"`).
+E5_EXT_WIDTHS = (0.2, 0.3, 0.4, 0.5)          # deconvolutions: their f choice sat at 0.6
+E5_EXT_PSF_LAMBDAS = (0.3, 1.0, 3.0, 10.0)    # psf_aware: lambda choice sat at 0.1
+E5_EXT_PSF_ITERS = (0, 1, 2)                  # psf_aware: 5 iterations; 0 = x_ref = B y
+E5_EXT_RL_ITERS = (1, 2)                      # rl2: 5 iterations (RL starts from a constant)
+
 
 # =============================================================================
 # Download
@@ -412,17 +419,35 @@ def readout(fields, xs, ys, x, y, method="cubic", chunk=8):
 E5_COLUMNS = rt.RESULT_COLUMNS + ["level"]
 
 
-def patch_csv_path(patch_id):
-    return rt.ensure_out_dir("e5") / f"{patch_id}.csv"
+E5_PARTS = {"main": "e5", "ext": "e5_ext"}
 
 
-def run_patch(row, force=False, data_dir=DATA_DIR):
+def patch_csv_path(patch_id, part="main"):
+    return rt.ensure_out_dir(E5_PARTS[part]) / f"{patch_id}.csv"
+
+
+def _psf_grid(part):
+    """psf_aware (lam, n_iter) pairs of one part.  The extension holds the
+    pairs absent from the E1 grid; x_ref (0 iterations) does not depend on
+    lam and is recorded once, with lam = 0."""
+    main = [(lam, it) for lam in rt.PSF_LAMBDAS for it in rt.PSF_ITERS]
+    if part == "main":
+        return main
+    lams = rt.PSF_LAMBDAS + E5_EXT_PSF_LAMBDAS
+    iters = tuple(sorted(set(rt.PSF_ITERS) | set(E5_EXT_PSF_ITERS)))
+    ext = [(lam, it) for lam in lams for it in iters if (lam, it) not in main and it > 0]
+    return [(0.0, 0)] + ext
+
+
+def run_patch(row, force=False, data_dir=DATA_DIR, part="main"):
+    """Score every method on one patch.  ``part="main"`` is the pre-registered
+    grid; ``part="ext"`` only the configurations amendment 3 adds."""
     import pandas as pd
     import pyproj
     import torch
     import healpix_resample as hr
 
-    out_path = patch_csv_path(row.patch_id)
+    out_path = patch_csv_path(row.patch_id, part)
     if out_path.exists() and not force:
         return pd.read_csv(out_path)
     s2_dn, ven_dn, t10, t05, crs = read_patch(row, data_dir)
@@ -458,31 +483,47 @@ def run_patch(row, force=False, data_dir=DATA_DIR):
                                  n_cells=int(m.sum()), corr=rt._corr(est, L["ref"]), **params),
                          level=level))
 
-    for level, L in levels.items():
-        for method in ("nearest", "linear", "cubic"):
-            v = readout([s2], xs, ys, L["qx"], L["qy"], method=method)[:, 0]
-            score(level, L["cells"], v, f"geo_{method}", f"classical_{method}")
+    if part == "main":
+        for level, L in levels.items():
+            for method in ("nearest", "linear", "cubic"):
+                v = readout([s2], xs, ys, L["qx"], L["qy"], method=method)[:, 0]
+                score(level, L["cells"], v, f"geo_{method}", f"classical_{method}")
 
-    for f in E5_WIDTHS:
+    widths = E5_WIDTHS if part == "main" else E5_WIDTHS + E5_EXT_WIDTHS
+    for f in widths:
         fwhm = f * S2_NOMINAL_FWHM_M
         common = dict(width_factor=f, fwhm_m=fwhm)
         scale = hr.fwhm_to_scale(fwhm)
-        for level in E5_LEVELS:
+        # psf_aware keeps f >= 0.6 (amendment 3: its f choice is interior)
+        for level in (E5_LEVELS if f in E5_WIDTHS else ()):
             npt = int(hr.recommend_npt(scale, level, target_mass=TARGET_KERNEL_MASS)["npt"])
             t0 = time.perf_counter()
             rs = hr.PSFResampler(lon, lat, level, sigma_m=scale, Npt=npt, threshold=THRESHOLD,
                                  ellipsoid=ELLIPSOID, device="cpu", verbose=False)
             build_s = time.perf_counter() - t0
-            for lam in rt.PSF_LAMBDAS:
-                for it in rt.PSF_ITERS:
-                    t1 = time.perf_counter()
-                    res = rs.resample(y_obs, lam=lam, max_iter=it, tol=rt.PSF_TOL)
-                    score(level, rt.to_numpy(res.cell_ids), rt.to_numpy(res.cell_data).ravel(),
-                          "psf_aware", "psf_aware", lam=lam, n_iter=it,
-                          runtime_s=build_s + time.perf_counter() - t1, **common)
+            for lam, it in _psf_grid(part):
+                t1 = time.perf_counter()
+                res = rs.resample(y_obs, lam=lam, max_iter=it, tol=rt.PSF_TOL)
+                score(level, rt.to_numpy(res.cell_ids), rt.to_numpy(res.cell_data).ravel(),
+                      "psf_aware", "psf_aware", lam=lam, n_iter=it,
+                      runtime_s=build_s + time.perf_counter() - t1, **common)
             del rs
         kernel = rt.gaussian_kernel(fwhm, S2_PIXEL_M)
-        fields, runtimes = rt.deconvolution_fields(s2, kernel, rl_variants=("clip", "minmax"))
+        if part == "main":
+            fields, runtimes = rt.deconvolution_fields(s2, kernel, rl_variants=("clip", "minmax"))
+        elif f in E5_EXT_WIDTHS:       # whole deconvolution grid, RL from 1 iteration
+            fields, runtimes = rt.deconvolution_fields(
+                s2, kernel, rl_variants=("clip", "minmax"),
+                rl_iters=tuple(sorted(set(rt.RL_ITERS) | set(E5_EXT_RL_ITERS))))
+        else:                          # RL at 1 and 2 iterations only
+            fields, runtimes = {}, {}
+            for variant in ("clip", "minmax"):
+                img01, lo, sc = rt.rl_normalize(s2, variant)
+                t0 = time.perf_counter()
+                snaps = rt.rl_snapshots(img01, kernel, E5_EXT_RL_ITERS)
+                for k, est in snaps.items():
+                    fields[("rl2", variant, np.nan, k)] = est * sc + lo
+                    runtimes[("rl2", variant, np.nan, k)] = (time.perf_counter() - t0) / len(snaps)
         keys = list(fields)
         for level, L in levels.items():
             vals = readout([fields[k] for k in keys], xs, ys, L["qx"], L["qy"])
@@ -504,12 +545,22 @@ E5_FAMILIES = ("psf_aware", "rl2", "tik_id", "tik_lap", "wiener_hunt",
                "geo_nearest", "geo_linear", "geo_cubic")
 
 
-def collect():
+def collect(parts=("main", "ext")):
+    """Raw E5 rows: the pre-registered run plus, when present, the amendment 3
+    extension (its patches must match the main run's)."""
     import pandas as pd
-    files = sorted(rt.ensure_out_dir("e5").glob("*.csv"))
-    if not files:
+    frames = {}
+    for part in parts:
+        files = sorted(rt.ensure_out_dir(E5_PARTS[part]).glob("*.csv"))
+        if files:
+            frames[part] = pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
+    if "main" not in frames:
         raise FileNotFoundError("no E5 results")
-    return pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
+    if "ext" in frames:
+        missing = set(frames["main"].patch_id) ^ set(frames["ext"].patch_id)
+        if missing:
+            raise RuntimeError(f"E5 extension incomplete: {len(missing)} patch(es) differ")
+    return pd.concat(list(frames.values()), ignore_index=True)
 
 
 def site_frame(patches):
@@ -609,7 +660,7 @@ def e5_analyze(level_main=20):
                                     n_patches=len(idx), patch_win_frac=float((mine[idx] < t[idx]).mean())))
         # width curves: every family tuned by LOSO at each f
         relmap = site.set_index(["region_id", "family", "config"])["rel"]
-        for f in E5_WIDTHS:
+        for f in sorted(site["width_factor"].dropna().unique()):
             at_f = site[np.isclose(site["width_factor"], f)]
             tf = {}
             for fam in ("psf_aware",) + rt.E4_COMPETITORS:
@@ -622,6 +673,8 @@ def e5_analyze(level_main=20):
                                            median_rel=float(rel.median()),
                                            q25_rel=float(rel.quantile(0.25)),
                                            q75_rel=float(rel.quantile(0.75))))
+            if "psf_aware" not in tf:      # f < 0.6 (amendment 3)
+                continue
             best = pd.concat({k: v.set_index("region_id")["rmse"] for k, v in tf.items()
                               if k != "psf_aware"}, axis=1).min(axis=1)
             o = tf["psf_aware"].set_index("region_id")["rmse"].reindex(best.index)
@@ -661,8 +714,9 @@ def e5_figure():
                          "xtick.color": rt._E4_INK2, "ytick.color": rt._E4_INK2,
                          "pdf.fonttype": 42})
     cur = pd.read_csv(rt.OUT_DIR / "analysis_e5" / "e5_width_curves.csv")
-    fig, axes = plt.subplots(1, len(E5_LEVELS), figsize=(7.16, 2.6), constrained_layout=True,
-                             squeeze=False)
+    fig, axes = plt.subplots(1, len(E5_LEVELS), figsize=(7.16, 2.8), constrained_layout=True,
+                             squeeze=False, sharey=True)
+    cell_m = {20: 6.2, 19: 12.4}
     for c, level in enumerate(E5_LEVELS):
         ax = axes[0, c]
         g0 = cur[cur.level == level]
@@ -678,14 +732,15 @@ def e5_figure():
             ax.text(r["f"], 1.0, f"{int(r['wins'])}", transform=ax.get_xaxis_transform(),
                     ha="center", va="top", fontsize=6, color=rt._E4_INK2)
         ax.axhline(1.0, color=rt._E4_INK2, lw=0.6)
-        ax.set_xlabel("assumed width factor f (x 12.5 m)")
-        ax.set_ylabel("RMSE / bicubic RMSE (median, IQR over sites)")
-        ax.set_title(f"L{level}: Sentinel-2 vs same-day VENµS (top: sites won by PSF-aware)",
-                     loc="left")
+        ax.set_xlabel("assumed width factor f (× 12.5 m)")
+        ax.set_title(f"L{level} ({cell_m.get(level, 0):.1f} m cells); "
+                     "top row: sites won by PSF-aware", loc="left", pad=12)
         ax.grid(axis="y", color="#e4e3df", lw=0.6)
         for s in ("top", "right"):
             ax.spines[s].set_visible(False)
-    axes[0, 0].legend(frameon=False, loc="lower left")
+    axes[0, 0].set_ylabel("RMSE / bicubic RMSE")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside upper center", ncol=len(labels), frameon=False)
     figdir = rt.ensure_out_dir("figures")
     fig.savefig(figdir / "e5_width_curves.pdf")
     fig.savefig(figdir / "e5_width_curves.png", dpi=200)
