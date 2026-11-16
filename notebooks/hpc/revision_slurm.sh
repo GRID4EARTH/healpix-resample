@@ -27,4 +27,4 @@ if [[ -n "${SLURM_ARRAY_TASK_ID:-}" && "${ARGS[0]}" == "e1e2" ]]; then
 fi
 
 echo "host $(hostname)  step: ${ARGS[*]}  threads: $OMP_NUM_THREADS"
-pixi run -e notebooks python notebooks/revision_run.py "${ARGS[@]}"
+pixi run --as-is -e notebooks python notebooks/revision_run.py "${ARGS[@]}"

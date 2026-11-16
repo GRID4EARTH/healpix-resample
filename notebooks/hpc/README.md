@@ -32,15 +32,44 @@ git checkout revision/jstars-r1                   # une fois la branche poussée
 pixi install -e notebooks
 ```
 
-## 2. Données (nœud de login, une fois ; environ 1,2 Go plus 0,3 Go)
+### glibc trop ancienne (ex. Datarmor, SLES 12, glibc 2.19)
+
+`pixi.lock` exige glibc ≥ 2.28. Sur un système plus ancien, `pixi install`
+refuse l'environnement (`__glibc >=2.28 ... does not match`). Il ne faut pas
+forcer avec `CONDA_OVERRIDE_GLIBC` : les binaires planteraient au lancement.
+On exécute pixi dans un conteneur qui ne fournit qu'une glibc récente. Le lock
+est inchangé.
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | PIXI_NO_PATH_UPDATE=1 bash   # binaire statique
+module load singularity/3.6.4
+singularity pull $DATAWORK/containers/noble-scm.sif docker://buildpack-deps:noble-scm
+singularity exec --cleanenv -B /home1/datawork,/home1/scratch \
+    $DATAWORK/containers/noble-scm.sif env \
+    PIXI_CACHE_DIR=$DATAWORK/.pixi-cache \
+    ~/.pixi/bin/pixi install -e notebooks
+```
+
+Toutes les commandes `pixi run` passent ensuite par le même
+`singularity exec`. Le script PBS le fait lui-même quand on lui passe
+`HPXREV_SIF` et `PIXI` (voir section 4).
+
+L'image doit contenir **git** et des **certificats CA** :
+- `buildpack-deps:noble-scm` (Ubuntu 24.04, glibc 2.39) contient les deux ;
+- avec `ubuntu:24.04` nu, pixi plante (« No CA certificates were loaded
+  from the system »), puis la construction du paquet échoue
+  (setuptools-scm ne trouve pas de version sans git).
+
+## 2. Données (nœud de login, une fois ; environ 230 Mo plus les textures Esri)
 
 ```bash
 # Archive Zenodo figée de l'article
 pixi run -e notebooks jupyter nbconvert --to notebook --execute \
     --ExecutePreprocessor.timeout=-1 --output-dir /tmp \
     notebooks/load_data_in_zenodo.ipynb
+# --output ailleurs : sinon le contrôle réécrit data_manifest.csv (suivi par git)
 pixi run -e notebooks python notebooks/build_data_manifest.py --check \
-    --doi 10.5281/zenodo.22210945
+    --doi 10.5281/zenodo.22210945 --output /tmp/data_manifest_check.csv
 
 # Textures Esri des 40 extraits synthétiques (Wayback 26334, déterministe)
 pixi run -e notebooks python notebooks/revision_run.py fetch-esri
@@ -74,6 +103,16 @@ sbatch --export=ALL,STEP="e1e2 synthetic" --array=0-7 notebooks/hpc/revision_slu
 # Quand tous les shards sont finis (CPU, quelques minutes) :
 pixi run -e notebooks python notebooks/revision_run.py analyze real
 pixi run -e notebooks python notebooks/revision_run.py analyze synthetic
+```
+
+Datarmor (PBS, file `omp`, environnement dans le conteneur), depuis la racine
+du dépôt :
+
+```bash
+V=PIXI=$HOME/.pixi/bin/pixi,PIXI_CACHE_DIR=$DATAWORK/.pixi-cache
+V=$V,HPXREV_SIF=$DATAWORK/containers/noble-scm.sif,SINGULARITY_MODULE=singularity/3.6.4
+qsub -q omp -v "$V,STEP=e1e2 real,NSHARD=4"      -J 0-3 notebooks/hpc/revision_pbs.sh
+qsub -q omp -v "$V,STEP=e1e2 synthetic,NSHARD=8" -J 0-7 notebooks/hpc/revision_pbs.sh
 ```
 
 **Ordres de grandeur sur CPU (estimations, à confirmer par le test de
