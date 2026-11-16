@@ -244,10 +244,13 @@ lissages.
    ramené à 10 m, les deux lissés par une gaussienne de 40 m de FWHM
    (changement de scène, nuage ou ombre résiduels).
 5. **Co-registration :**
-   - Le décalage est estimé par corrélation de phase (`skimage`,
-     sur-échantillonnage 100) entre Sentinel-2 B4 et VENµS B4 ramené à
-     10 m. VENµS est ramené à 10 m par une gaussienne de 10 m de FWHM au pas
-     de 5 m, puis par une moyenne 2 × 2.
+   - Le décalage est estimé par corrélation croisée entre Sentinel-2 B4 et
+     VENµS B4 ramené à 10 m (amendement 2). Les deux images sont centrées et
+     apodisées par une fenêtre de Hann ; le pic est affiné par DFT
+     sur-échantillonnée (`skimage.registration.phase_cross_correlation`,
+     `normalization=None`, sur-échantillonnage 100). VENµS est ramené à
+     10 m par une gaussienne de 10 m de FWHM au pas de 5 m, puis par une
+     moyenne 2 × 2.
    - L'extrait est exclu si |décalage| > 1 pixel Sentinel-2.
    - Il est aussi exclu si l'une des quatre estimations sur les quadrants de
      64 × 64 s'écarte de plus de 0,2 pixel de l'estimation sur l'extrait
@@ -404,3 +407,23 @@ de la grille étendue, on le signale tel quel dans l'article.
 `notebooks/tables/revision_run1/`. Le score de sélection, les plis, les
 graines et les statistiques sont inchangés. Les comparaisons de l'article
 utilisent le run 2, et la réponse aux reviewers mentionne l'extension.
+
+### Amendement 2 — 2026-11-16, avant tout calcul E5 : estimateur du décalage
+
+**Constat.** Le selftest d'E5 simule un décalage connu de (0,2 ; 0,3) pixel
+entre deux images d'un champ continu. La corrélation de phase prévue au
+départ (`skimage`, normalisation de phase, sans fenêtre) le sous-estime d'un
+facteur 3 à 10 :
+- sans fenêtre, les bords des deux extraits coïncident et tirent le pic vers
+  zéro ;
+- avec une fenêtre de Hann, la normalisation de phase donne encore le même
+  poids aux hautes fréquences sans signal et reste biaisée vers zéro.
+
+**Règle adoptée.** Corrélation croisée des images centrées et apodisées par
+une fenêtre de Hann, sans normalisation de phase, affinée par DFT
+sur-échantillonnée. Sur trois tirages du test, elle retrouve (0,20 ; 0,30)
+pixel, avec un écart entre quadrants inférieur à 0,001 pixel.
+
+**Portée.** Le changement ne touche que l'estimateur. Les seuils
+d'exclusion (1 pixel, 0,2 pixel entre quadrants) sont inchangés. Aucun
+extrait réel n'avait encore été filtré ni noté.

@@ -274,9 +274,62 @@ def test_e3_kernels():
           rel <= 1e-3, f"rel RMS {rel:.1e}")
 
 
+def test_e5_geometry():
+    """E5: sign of the registration shift, reference read at the shifted
+    positions, raster readout, evaluation cells (protocol section E5)."""
+    try:
+        import revision_e5 as e5
+        from affine import Affine
+    except ImportError as exc:
+        print(f"[SKIP] E5 geometry not tested: {exc}")
+        return
+    rng = np.random.default_rng(11)
+    kk = rng.uniform(2 * np.pi / 200.0, 2 * np.pi / 40.0, 12)
+    th = rng.uniform(0.0, 2 * np.pi, 12)
+    ph = rng.uniform(0.0, 2 * np.pi, 12)
+
+    def field(x, y):
+        return 0.1 + 0.02 * sum(np.cos(k * (np.cos(t) * x + np.sin(t) * y) + p)
+                                for k, t, p in zip(kk, th, ph))
+
+    x0, y1 = 500000.0, 5000000.0
+    t10 = Affine(10.0, 0.0, x0, 0.0, -10.0, y1)
+    t05 = Affine(5.0, 0.0, x0, 0.0, -5.0, y1)
+    xs10, ys10 = e5.s2_centres(t10, (128, 128))
+    xs05, ys05 = e5.s2_centres(t05, (256, 256))
+    X10, Y10 = np.meshgrid(xs10, ys10)
+    X05, Y05 = np.meshgrid(xs05, ys05)
+    s2 = field(X10, Y10)
+    dx, dy = 3.0, -2.0            # VENmuS shows the scene of p + (dx, dy) at p
+    ven = field(X05 + dx, Y05 + dy)
+    (drow, dcol), dev = e5.estimate_shift(s2, ven)
+    check("E5 shift: sign and size (VENmuS read at x - 10 dcol, y + 10 drow)",
+          abs(10 * dcol - dx) < 0.1 and abs(10 * drow + dy) < 0.1 and dev < 0.05,
+          f"drow {drow:+.3f} dcol {dcol:+.3f} px, quadrant dev {dev:.3f}")
+    ii, jj = rng.integers(60, 196, 50), rng.integers(60, 196, 50)
+    px, py = xs05[jj] + dx, ys05[ii] + dy
+    ref = e5.reference_values(ven, t05, px[:, None], py[:, None], (drow, dcol), (2.0, 0.5))
+    check("E5 reference: registered and harmonized VENmuS == 2 F + 0.5",
+          np.allclose(ref, 2.0 * field(px, py) + 0.5, atol=1e-12))
+    lin = 2.0 * X10 + 3.0 * Y10
+    qx = rng.uniform(x0 + 100.0, x0 + 1100.0, (40, 16))
+    qy = rng.uniform(y1 - 1100.0, y1 - 100.0, (40, 16))
+    v = e5.readout([lin], xs10, ys10, qx, qy, method="linear")[:, 0]
+    check("E5 readout: north-up raster read at sub-cell points",
+          np.allclose(v, (2.0 * qx + 3.0 * qy).mean(axis=1), rtol=0, atol=1e-6))
+    crs = "EPSG:32631"
+    cells = e5.evaluation_cells(t10, (128, 128), crs, 20)
+    cx, cy = e5.child_points_utm(cells, 20, 23, crs)
+    mx, my = cx.mean(axis=1), cy.mean(axis=1)
+    inside = ((mx > x0 + 195) & (mx < x0 + 1085) & (my < y1 - 195) & (my > y1 - 1085)).all()
+    expect = 880.0 ** 2 / (4 * np.pi * 6371000.0 ** 2 / (12 * 4 ** 20))
+    check("E5 evaluation cells: inside the 200 m margin, count ~ area / cell area",
+          inside and 0.9 < len(cells) / expect < 1.1, f"{len(cells)} cells, ~{expect:.0f}")
+
+
 def main():
     for test in (test_rl, test_fourier, test_operators_and_cg, test_stacked_cubic,
-                 test_notebook_markers, test_analysis, test_e3_kernels):
+                 test_notebook_markers, test_analysis, test_e3_kernels, test_e5_geometry):
         try:
             test()
         except Exception as exc:

@@ -22,7 +22,7 @@ export OMP_NUM_THREADS=$NT
 export MKL_NUM_THREADS=$NT
 
 ARGS=($STEP)
-if [[ -n "${PBS_ARRAY_INDEX:-}" && ( "${ARGS[0]}" == "e1e2" || "${ARGS[0]}" == "e4" || "${ARGS[0]}" == "e3" ) ]]; then
+if [[ -n "${PBS_ARRAY_INDEX:-}" && ( "${ARGS[0]}" == "e1e2" || "${ARGS[0]}" == "e4" || "${ARGS[0]}" == "e3" || "${ARGS[0]}" == "e5" ) ]]; then
     ARGS+=(--shard "${PBS_ARRAY_INDEX}/${NSHARD:?set NSHARD to the array size}")
 fi
 

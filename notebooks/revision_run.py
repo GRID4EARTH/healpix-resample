@@ -1,4 +1,4 @@
-"""Command-line driver for the JSTARS revision experiments E0 to E4.
+"""Command-line driver for the JSTARS revision experiments E0 to E5.
 
 Run inside the paper environment, from anywhere in the repository::
 
@@ -12,6 +12,10 @@ Run inside the paper environment, from anywhere in the repository::
     pixi run -e notebooks python notebooks/revision_run.py e4-analyze      # E4 tables and figures
     pixi run -e notebooks python notebooks/revision_run.py e3 S1           # E3 arms S1, S3
     pixi run -e notebooks python notebooks/revision_run.py e3-analyze      # E3 tables and figure
+    pixi run -e notebooks python notebooks/revision_run.py e5-fetch        # E5 data (network)
+    pixi run -e notebooks python notebooks/revision_run.py e5-manifest     # E5 filters, sample
+    pixi run -e notebooks python notebooks/revision_run.py e5              # E5 runs
+    pixi run -e notebooks python notebooks/revision_run.py e5-analyze      # E5 tables and figure
     pixi run -e notebooks python notebooks/revision_run.py selftest
 
 ``--limit N`` keeps N regions per scene class (smoke test; ``--limit 1`` runs
@@ -122,6 +126,56 @@ def cmd_e3_analyze(args):
     return 0
 
 
+def cmd_e5_fetch(args):
+    import revision_e5 as e5
+    e5.fetch()
+    return 0
+
+
+def cmd_e5_manifest(args):
+    import revision_e5 as e5
+    e5.build_manifest(shard=args.shard)
+    return 0
+
+
+def cmd_e5(args):
+    """E5: every method on the sampled SEN2VENmuS patches."""
+    import revision_e5 as e5
+    rt.write_provenance("e5", {"limit": args.limit})
+    items = e5.selected_patches()
+    if args.limit:
+        kept, seen = [], {}
+        for it in items:
+            if seen.get(it.site, 0) < args.limit:
+                kept.append(it)
+                seen[it.site] = seen.get(it.site, 0) + 1
+        items = kept
+    if args.shard:
+        k, n = (int(v) for v in args.shard.split("/"))
+        items = items[k::n]
+        print(f"shard {k}/{n}: {len(items)} patch(es)")
+    failures = []
+    for i, item in enumerate(items, 1):
+        t0 = time.perf_counter()
+        try:
+            frame = e5.run_patch(item, force=args.force)
+            print(f"[{i:3d}/{len(items)}] {item.patch_id}: {len(frame)} rows "
+                  f"({time.perf_counter() - t0:.1f} s)", flush=True)
+        except Exception as exc:
+            failures.append(item.patch_id)
+            print(f"[{i:3d}/{len(items)}] [FAIL] {item.patch_id}: {type(exc).__name__}: {exc}",
+                  flush=True)
+            traceback.print_exc()
+    print(f"\n{len(items) - len(failures)}/{len(items)} patches done; failures: {failures}")
+    return 1 if failures else 0
+
+
+def cmd_e5_analyze(args):
+    import revision_e5 as e5
+    e5.e5_analyze()
+    return 0
+
+
 def _run_regions(args, kwargs):
     if args.bench == "real":
         gt = rt.load_gt()
@@ -219,6 +273,21 @@ def main(argv=None):
 
     p = sub.add_parser("e3-analyze", help="E3 tables and figure")
     p.set_defaults(func=cmd_e3_analyze)
+
+    p = sub.add_parser("e5-fetch", help="download the E5 SEN2VENmuS sites (network)")
+    p.set_defaults(func=cmd_e5_fetch)
+    p = sub.add_parser("e5-manifest", help="E5 input filters and patch sample")
+    p.add_argument("--shard", default="",
+                   help="k/n: only screen sites k, k+n, ... (no sample; job arrays)")
+    p.set_defaults(func=cmd_e5_manifest)
+    p = sub.add_parser("e5", help="E5: every method on the sampled SEN2VENmuS patches")
+    p.add_argument("--limit", type=int, default=0, help="patches per site (0 = all)")
+    p.add_argument("--force", action="store_true", help="recompute finished patches")
+    p.add_argument("--shard", default="",
+                   help="k/n: process patches k, k+n, k+2n, ... (job arrays)")
+    p.set_defaults(func=cmd_e5)
+    p = sub.add_parser("e5-analyze", help="E5 tables and figure")
+    p.set_defaults(func=cmd_e5_analyze)
 
     p = sub.add_parser("selftest", help="numerical self-tests (no data needed)")
     p.set_defaults(func=cmd_selftest)
