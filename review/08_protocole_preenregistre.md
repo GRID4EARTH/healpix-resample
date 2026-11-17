@@ -343,6 +343,214 @@ lissages.
 - `analysis_e5/` : tables ;
 - `figures/e5_*.pdf` : figures.
 
+## E6 — généralisation (ajouté le 2026-11-17, avant tout calcul E6)
+
+**Question.** Le résultat d'E1 tient-il hors de ses conditions : une bande
+(B04), un rapport de résolution (1,6), 40 régions stratifiées, un capteur
+(Sentinel-2) et une taille d'extrait (256²) ?
+
+**Banc commun : réel en résolution réduite.** C'est le pipeline d'E1 avec
+les seules constantes du bras changées (`revision_e6.py`) :
+- **Référence :** champ PSF-aware au niveau natif à partir des données
+  natives non dégradées (`gt.build_reference`), puis moyenne des cellules
+  filles jusqu'au niveau de référence. Largeur native : 1,25 × GSD natif
+  (12,5 m pour 10 m, la règle de l'article). λ = 0,01 et 14 itérations.
+- **Observation :** gaussienne de FWHM = 1,25 × pixel grossier, puis
+  décimation d'un pixel sur BLOCK (`gt.build_coarse_grid`).
+- **Évaluation :** marge intérieure de 8 × FWHM ; lecture des méthodes
+  raster en moyenne de cellule.
+- **Familles et grilles :** celles d'E1, run 2 (`psf_aware`, `rl2` `clip` et
+  `minmax`, `tik_id`, `tik_lap`, `wiener_hunt`, géométriques), aux largeurs
+  f ∈ {0,9 ; 1,0 ; √1,25 ; 1,2 ; 1,3 ; 1,4 ; 1,5} relatives au nominal du
+  bras. Pas d'E2. E6e : f = 1 seulement.
+
+**Réglage.**
+1. **Transfert (résultat principal).** Pour chaque famille, on garde la
+   configuration qui minimise le score relatif moyen sur les 40 régions
+   d'E1 (B04, rapport 1,6) :
+   - mode A : f = 1 ;
+   - mode B : f dans la grille.
+
+   Aucune donnée du bras n'entre dans le choix : c'est un test hors
+   échantillon.
+2. **Réglage interne.** Le protocole d'E1 rejoué sur les régions du bras :
+   5 plis stratifiés par classe (graine 20261116, rang mod 5), modes A et B.
+   E6c n'a qu'une classe ; l'ordre est alors permuté avec la même graine,
+   puis rang mod 5.
+3. **Oracle,** à titre de borne.
+
+**Statistiques.** Celles d'E1 :
+- Δ apparié par région, IC bootstrap (5 000 réplicats, graine 20260818),
+  victoires et test de signe exact ; sur l'ensemble et par classe ;
+- contre chaque concurrent, et contre le **concurrent le plus fort** de
+  chaque région : le minimum des quatre déconvolutions réglées sous le même
+  schéma, choisi avec la référence, ce qui favorise les concurrents.
+
+**Lecture fixée avant calcul.** Le résultat d'E1 est **reproduit** dans un
+bras, contre un concurrent donné, si deux conditions sont remplies en
+réglage interne, mode B :
+- la marge moyenne a le même signe qu'en E1 ;
+- son IC à 95 % exclut 0.
+
+On rapporte aussi le nombre de bras où le transfert (mode A) garde ce
+signe. Aucun bras n'est retiré après coup. Un bras qui garde moins de
+20 régions est signalé comme limité.
+
+### E6a — bandes B02, B03, B08 (10 m)
+
+- **Données :** mêmes 40 régions, même produit STAC (`source_item_id` de
+  l'extrait B04 figé) et même fenêtre de pixels, retrouvée à partir des
+  coordonnées x/y de l'extrait. Le sol et la date sont donc identiques.
+  Actifs earth-search : `blue`, `green`, `nir`.
+- **Contrôle d'acquisition :** B04, relu par le même code depuis le même
+  produit, doit redonner exactement l'extrait figé (écart maximal nul).
+  Sinon, la région est exclue du bras et signalée.
+- **Filtres :** le filtre de brillance (nuage, neige) est celui de B04, déjà
+  appliqué à ces 40 régions. Pour les autres bandes, on ne vérifie que la
+  complétude (≥ 99 % de pixels finis) et la non-planéité (écart-type
+  relatif ≥ 1e-3). Le seuil de 0,30 rejetterait la végétation en B08, dont
+  la réflectance proche infrarouge dépasse souvent 0,3.
+- **Largeur native :** 12,5 m pour les trois bandes (FTM voisines des bandes
+  à 10 m). La dégradation imposée reste 25 m.
+
+### E6b — rapport de résolution
+
+B04, mêmes 40 régions, niveau natif 20 :
+
+| Bras | BLOCK | Pixel grossier | Niveau cible | Rapport pixel / cellule | FWHM | Marge | Extrait |
+|------|-------|----------------|--------------|-------------------------|------|-------|---------|
+| `b_2_18` | 2 | 20 m | 18 (24,9 m) | 0,80 | 25 m | 200 m | 256² figé |
+| E1 | 2 | 20 m | 19 (12,4 m) | 1,6 | 25 m | 200 m | 256² figé |
+| `b_4_19` | 4 | 40 m | 19 (12,4 m) | 3,2 | 50 m | 400 m | 512² |
+
+Les extraits 512² sont lus dans le même produit, centrés au même point,
+après le même contrôle d'acquisition qu'en E6a. Leur intérieur fait
+4,3 km de côté. La décimation garde le pixel d'indice BLOCK // 2 de chaque
+bloc.
+
+### E6c — régions tirées au hasard
+
+- **Tirage :**
+  - graine 20261117 ;
+  - points uniformes en aire sur la sphère, entre 56° S et 84° N
+    (couverture Sentinel-2) : lat = arcsin(u), u uniforme sur
+    [sin(−56°), sin(84°)], lon uniforme sur [−180°, 180°] ;
+  - 2 000 points tirés, traités dans l'ordre.
+- **Terre :** point à l'intérieur des polygones de terres de Natural Earth
+  au 1:50m (`cartopy`). Les autres points sont écartés.
+- **Acquisition :**
+  - earth-search `sentinel-2-l2a`, fenêtre 2023-01-01/2026-09-30, nuages
+    < 25 % ;
+  - produits triés par (nuages, date, identifiant), comme dans l'article.
+    Le premier est donc celui de nuages < 10 % s'il en existe : c'est
+    l'échelle de l'article ;
+  - fenêtre 256² centrée sur le point ;
+  - parmi les 5 premiers produits, on garde le premier dont la fenêtre a au
+    moins 99 % de pixels finis. Il n'y a pas de repli sur une autre position.
+- **Filtres :** ceux de l'article (complétude, planéité, brillance).
+- **Arrêt :** à 60 extraits utilisables. Chaque tirage est journalisé avec
+  son issue : mer, pas de produit, fenêtre incomplète, filtre.
+- **Classe :** `random`, une seule.
+
+### E6d — autre capteur : Landsat 8/9 OLI
+
+- **Données :** Collection 2 niveau 2, réflectance de surface, bande rouge
+  (B4, 30 m), via le STAC de Microsoft Planetary Computer
+  (`landsat-c2-l2`, plateformes `landsat-8` et `landsat-9`). Les URL sont
+  signées par le jeton SAS public anonyme. La copie earth-search est dans un
+  bucket « requester pays ».
+  - Réflectance = DN × 2,75e-5 − 0,2 ; DN 0 = pas de donnée.
+- **Sites :**
+  - les 40 régions, avec une fenêtre de 256² (7,68 km) centrée sur le
+    centre de l'extrait B04 figé ;
+  - fenêtre de dates 2023-01-01/2026-09-30, nuages < 25 %, même tri ;
+  - parmi les 5 premiers produits, le premier à fenêtre complète
+    (≥ 99 %) ;
+  - filtres de l'article.
+- **Géométrie :**
+  - largeur native 37,5 m (1,25 × GSD) ; BLOCK 2, donc pixel grossier de
+    60 m ; FWHM imposée 75 m ; marge 600 m ;
+  - deux couples de niveaux encadrent le rapport 1,6 de l'article :
+    - `d_l18` : natif 18, cible 17, rapport 1,2 ;
+    - `d_l19` : natif 19, cible 18, rapport 2,4.
+
+### E6e — taille d'extrait
+
+- **Régions :** 8, soit les 2 premiers identifiants de région (ordre
+  alphabétique) de chaque classe parmi les 40.
+- **Données :** B04, même produit, même centre et même contrôle d'acquisition
+  qu'en E6a ; extraits de 512² et 1 024². Le 256² est celui d'E1.
+- **Géométrie :** celle d'E1 (BLOCK 2, L19, 25 m, marge 200 m) ; f = 1.
+- **Scores :**
+  1. intérieur de chaque taille ;
+  2. domaine commun : l'intérieur de l'extrait 256² (carré central de
+     2 160 m), soit les mêmes cellules pour toutes les tailles.
+- **Lecture :**
+  - sur le domaine commun, le RMSE de chaque famille (configuration
+    transférée) ne devrait pas varier de plus de 1 % relatif avec la
+    taille ;
+  - coût de PSF-aware (construction et résolution) en fonction du nombre
+    d'échantillons, avec la pente log-log. Les durées viennent de nœuds
+    partagés et sont indicatives.
+
+**Sorties.**
+- `e6_acquisition_<jeu>.csv` : contrôles et filtres par région ;
+- `e6c_manifest.csv` : tous les tirages ;
+- `e6<bras>_real/` : résultats bruts ;
+- `analysis_e6/` : tables ;
+- `figures/e6_*.pdf` : figures.
+
+## E7 — choix de l'opérateur et conservation (ajouté le 2026-11-17, avant tout calcul E7)
+
+**Question.** Illustrer, sur des données réelles, le compromis entre la
+fidélité au champ et la conservation des intégrales. Il fonde la table de
+décision « quel opérateur pour quel usage » demandée en R2.4.
+
+**Banc.** Réel, les 40 régions d'E1 : B04, observation à 20 m, cible L19,
+même référence et même intérieur.
+
+**Opérateurs.**
+1. **`psf_aware` :** configuration transférée d'E1 (mode A). L'opérateur est
+   construit sans `out_cell_ids`, pour que l'énoncé de conservation porte
+   sur tout son support. Aire des échantillons uniforme (pixels UTM de
+   20 m).
+2. **`psf_aware_cons` :** le même avec `conservative=True`. La moyenne des
+   cellules de sortie est alors égale à la moyenne des échantillons pondérée
+   par leur aire.
+3. **`hard_binning` :** `ConservativeResampler`. Chaque échantillon va à la
+   cellule qui le contient, et la cellule vaut h_k / A_k. Les cellules sans
+   échantillon sont absentes.
+4. **`overlap1` :** recouvrement d'ordre 1.
+   - Poids O_ji = aire du pixel i ∩ cellule j, estimés par quadrature :
+     chaque pixel de 20 m est découpé en 10 × 10 sous-carrés, dont le
+     centre est affecté à sa cellule L19.
+   - x_j = Σ_i O_ji y_i / Σ_i O_ji (normalisation « covered »).
+   - `OverlapConservativeResampler` calcule les mêmes poids exactement, mais
+     seulement pour une grille source rectiligne en lon/lat ; Sentinel-2 est
+     en UTM.
+5. **`geo_cubic` :** dénominateur du score relatif.
+
+**Mesures par région.**
+- **RMSE** contre la référence sur les cellules intérieures, et RMSE relatif
+  au bicubique. Pour `hard_binning`, il porte sur les cellules remplies, dont
+  la fraction est rapportée.
+- **Erreur de conservation** sur le support de chaque opérateur :
+  ε = (Σ_k w_k x_k − Σ_i a_i y_i) / Σ_i a_i y_i, avec les poids w_k de son
+  propre énoncé :
+  - PSF-aware : w_k = Σ_i a_i / K (cellules d'aire égale) ;
+  - binning : w_k = A_k ;
+  - recouvrement : w_k = Σ_i O_ki.
+- **Erreur sur la moyenne régionale :** moyenne sur les cellules intérieures
+  (estimation − référence) / moyenne de la référence. Pour `hard_binning`,
+  elle porte sur ses cellules.
+
+**Sorties.**
+- `e7_real/` : résultats bruts ;
+- `analysis_e7/e7_summary.csv` : médiane et IQR par opérateur ;
+- `figures/e7_operators.pdf`.
+
+Aucun seuil de décision : E7 est descriptif.
+
 ## Journal des modifications après gel
 
 ### Amendement 1 — 2026-11-16 : extension des grilles ouvertes
