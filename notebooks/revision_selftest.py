@@ -393,10 +393,203 @@ def test_e5_spectral():
           f"{b['rmse_identity_est']:.5f} vs {sigma}, out-of-band share {b['share_out']:.2f}")
 
 
+def _fake_gt():
+    """The constants of the paper's real-data module that E6 changes, with
+    their paper values (for hosts where the module cannot be imported)."""
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        REGION_DATA_SUBDIR="multi_patch_sentinel2", BAND="b04", PATCH_SIZE=256,
+        CENTRAL_SIZE=256, PIXEL_SIZE_M=10.0, BLOCK=2, PIXEL_SIZE_COARSE_M=20.0,
+        NATIVE_LEVEL=20, NATIVE_FWHM_M=12.5, REF_LEVEL=19, DEGRADE_FWHM_M=25.0,
+        RECON_FWHM_M=25.0, EDGE_MARGIN_FACTOR=8.0, EDGE_MARGIN_M=200.0,
+        MAX_BRIGHT_FRACTION=0.30, _PATCH_FINGERPRINT_CACHE={}, region_coordinates={})
+
+
+def test_e6():
+    """E6: arm constants, context restore, pixel windows, random draw,
+    Landsat scaling, E6e region choice, reproduction criterion."""
+    import revision_e6 as e6
+    try:
+        gt = rt.load_gt()
+        real = True
+    except Exception as exc:
+        print(f"[SKIP] paper module not importable ({type(exc).__name__}); fake constants")
+        gt, real = _fake_gt(), False
+    if real:
+        want = e6.arm_constants(gt, e6.E1_ARM)
+        have = {n: getattr(gt, n) for n in e6.GT_NAMES}
+        check("E6: the E1 arm reproduces the paper constants", want == have,
+              str({k: (want[k], have[k]) for k in want if want[k] != have[k]}))
+    before = {n: getattr(gt, n) for n in e6.GT_NAMES}
+    gt._PATCH_FINGERPRINT_CACHE["x"] = "stale"
+    with e6.gt_config(gt, e6.ARMS["b_4_19"]):
+        inside = dict(block=gt.BLOCK, fwhm=gt.DEGRADE_FWHM_M, recon=gt.RECON_FWHM_M,
+                      margin=gt.EDGE_MARGIN_M, central=gt.CENTRAL_SIZE,
+                      sub=gt.REGION_DATA_SUBDIR, cache=dict(gt._PATCH_FINGERPRINT_CACHE))
+        gt._PATCH_FINGERPRINT_CACHE["y"] = "arm"
+    check("E6: b_4_19 sets 40 m, 50 m, 400 m, 512^2 and its own data directory",
+          inside == dict(block=4, fwhm=50.0, recon=50.0, margin=400.0, central=512,
+                         sub="revision_e6/s2_b04_512", cache={}), str(inside))
+    try:
+        with e6.gt_config(gt, e6.ARMS["d_l19"]):
+            ls = (gt.PIXEL_SIZE_M, gt.DEGRADE_FWHM_M, gt.EDGE_MARGIN_M, gt.NATIVE_LEVEL,
+                  gt.REF_LEVEL, gt.NATIVE_FWHM_M, gt.BAND)
+            raise KeyError("inside")
+    except KeyError:
+        pass
+    check("E6: d_l19 sets 30 m, 75 m, 600 m, levels 19/18, 37.5 m, band red",
+          ls == (30.0, 75.0, 600.0, 19, 18, 37.5, "red"), str(ls))
+    after = {n: getattr(gt, n) for n in e6.GT_NAMES}
+    check("E6: constants and fingerprint cache restored (also after an exception)",
+          after == before and gt._PATCH_FINGERPRINT_CACHE == {})
+
+    from affine import Affine
+    t = Affine(10.0, 0.0, 300000.0, 0.0, -10.0, 5000000.0)
+    col0, row0 = 1234, 567
+    xf, yf = t.c + (col0 + 0.5) * 10.0, t.f - (row0 + 0.5) * 10.0
+    offs = {n: e6.window_offsets(xf, yf, t, new_size=n) for n in (256, 512, 1024)}
+    centre = {n: (t.c + (c + n / 2) * 10.0, t.f - (r + n / 2) * 10.0)
+              for n, (c, r) in offs.items()}
+    check("E6: windows of 256/512/1024 share the frozen patch's centre",
+          offs[256] == (col0, row0) and offs[512] == (col0 - 128, row0 - 128)
+          and len(set(centre.values())) == 1, str(offs))
+
+    lat, lon = e6.draw_points()
+    lat2, _ = e6.draw_points()
+    s0, s1 = np.sin(np.radians(e6.RANDOM_LAT))
+    s = np.sin(np.radians(lat))
+    sd = (s1 - s0) / math.sqrt(12.0 * lat.size)
+    check("E6c: draw is reproducible, in the latitude band, uniform in area",
+          np.array_equal(lat, lat2) and lat.min() >= -56.0 and lat.max() <= 84.0
+          and abs(s.mean() - 0.5 * (s0 + s1)) < 4 * sd and abs(lon.mean()) < 4 * 360 / math.sqrt(12 * lon.size),
+          f"mean sin(lat) {s.mean():.4f} vs {0.5 * (s0 + s1):.4f}")
+    refl = e6.landsat_reflectance(np.array([0, 7273, 20000]))
+    check("E6d: Landsat C2 L2 reflectance (DN 0 -> NaN, 2.75e-5 DN - 0.2)",
+          np.isnan(refl[0]) and abs(refl[1] - 7.5e-6) < 1e-12 and abs(refl[2] - 0.35) < 1e-12,
+          str(refl))
+
+    fake = _fake_gt()
+    scenes = []
+    for cls in rt.CLASSES:
+        for rid in ("zeta", "alpha", "mid"):
+            s_ = f"region__{cls}__{rid}"
+            fake.region_coordinates[s_] = dict(scene_class=cls, region_id=rid)
+            scenes.append(s_)
+    picked = e6.e6e_scenes(fake, scenes)
+    check("E6e: 2 regions per class, first in alphabetical order",
+          picked == [f"region__{c}__{r}" for c in rt.CLASSES for r in ("alpha", "mid")])
+
+    import pandas as pd
+    comp = pd.DataFrame([
+        dict(arm="e1", scheme="5fold", mode="B", competitor="rl2", scene_class="all",
+             mean_rel_margin=0.014, rel_ci_low=0.01, rel_ci_high=0.02, wins=39, n_regions=40),
+        dict(arm="x", scheme="5fold", mode="B", competitor="rl2", scene_class="all",
+             mean_rel_margin=0.01, rel_ci_low=0.002, rel_ci_high=0.02, wins=30, n_regions=40),
+        dict(arm="y", scheme="5fold", mode="B", competitor="rl2", scene_class="all",
+             mean_rel_margin=0.01, rel_ci_low=-0.002, rel_ci_high=0.02, wins=25, n_regions=40),
+        dict(arm="z", scheme="5fold", mode="B", competitor="rl2", scene_class="all",
+             mean_rel_margin=-0.01, rel_ci_low=-0.02, rel_ci_high=-0.002, wins=5, n_regions=40)])
+    rep = e6.reproduction(comp).set_index("arm")["reproduced"]
+    check("E6: reproduction = same sign as E1 and CI excluding 0",
+          bool(rep["x"]) and not bool(rep["y"]) and not bool(rep["z"]), str(rep.to_dict()))
+
+
+def test_e7():
+    """E7: quadrature overlap weights (partition of unity, conservation,
+    constant field, agreement with the exact spherical overlap), hard binning
+    and constrained PSF-aware conservation."""
+    import revision_e7 as e7
+    rng = np.random.default_rng(5)
+    nx, ny, pix = 23, 17, 20.0
+    xs = 1000.0 + pix * np.arange(nx)
+    ys = 5000.0 - pix * np.arange(ny)              # north-up, descending
+    cell = 12.4
+
+    def to_cells(px, py):
+        i = np.floor((px - 987.0) / cell).astype(np.int64)
+        j = np.floor((py - 4321.0) / cell).astype(np.int64)
+        return i * 100000 + j
+    cells, O = e7.overlap_weights(xs, ys, pix, to_cells, quad=e7.QUAD)
+    colsum = np.asarray(O.sum(axis=0)).ravel()
+    y = rng.random(nx * ny) + 0.5
+    x, covered = e7.overlap_remap(O, y)
+    xc, _ = e7.overlap_remap(O, np.full(nx * ny, 3.25))
+    check("E7 overlap: each pixel's weights sum to 1; integral conserved; constant kept",
+          np.allclose(colsum, 1.0, atol=1e-12)
+          and abs(e7.conservation_error(covered, x, y.sum())) < 1e-13
+          and np.allclose(xc, 3.25, atol=1e-12))
+    # exact areas on this planar grid: pixel square x cell square intersections
+    px0 = xs[:, None] - pix / 2
+    ex = []
+    for k, cid in enumerate(cells[:200]):
+        i, j = divmod(int(cid), 100000)
+        cx0, cy0 = 987.0 + i * cell, 4321.0 + j * cell
+        row = O.getrow(k).toarray().ravel()
+        for p in np.flatnonzero(row):
+            r_, c_ = divmod(p, nx)
+            ox = max(0.0, min(xs[c_] + pix / 2, cx0 + cell) - max(xs[c_] - pix / 2, cx0))
+            oy = max(0.0, min(ys[r_] + pix / 2, cy0 + cell) - max(ys[r_] - pix / 2, cy0))
+            ex.append(abs(row[p] - ox * oy / pix ** 2))
+    del px0
+    # one side of the overlap is off by at most one sub-square: 2/Q + 1/Q^2
+    bound = 2.0 / e7.QUAD + 1.0 / e7.QUAD ** 2
+    check("E7 overlap: quadrature areas within (2Q+1)/Q^2 of a pixel of the exact ones",
+          max(ex) <= bound + 1e-12, f"max abs error {max(ex):.3f}, mean "
+          f"{np.mean(ex):.4f} of a pixel")
+    try:
+        import healpix_geo
+        from healpix_resample.overlap_conservative import OverlapConservativeResampler
+    except Exception as exc:
+        print(f"[SKIP] E7 package comparisons: {type(exc).__name__}: {exc}")
+        return
+    lonb = np.linspace(2.0, 2.2, 21)
+    latb = np.linspace(45.0, 45.16, 17)
+    level = 12
+    ocr = OverlapConservativeResampler(lonb, latb, level, normalization="covered")
+    lonc, latc = 0.5 * (lonb[1:] + lonb[:-1]), 0.5 * (latb[1:] + latb[:-1])
+    f = 0.3 + 0.1 * np.sin(np.radians(lonc)[None, :] * 300) * np.cos(np.radians(latc)[:, None] * 200)
+    exact = ocr.resample(f)
+    mine_cells, Om = e7.overlap_weights(
+        lonc, latc, 0.01,
+        lambda a, b: healpix_geo.nested.lonlat_to_healpix(a, b, level, ellipsoid="sphere"))
+    mine, _ = e7.overlap_remap(Om, f.reshape(-1))
+    ex_map = dict(zip(np.asarray(exact.cell_ids).tolist(), np.asarray(exact.cell_data)))
+    common = [k for k, c in enumerate(mine_cells) if int(c) in ex_map]
+    d = np.array([mine[k] - ex_map[int(mine_cells[k])] for k in common])
+    # cells the quadrature misses can only be slivers of the grid edge
+    check("E7 overlap: quadrature remap == OverlapConservativeResampler (lon/lat grid)",
+          len(common) >= 0.95 * len(ex_map) and np.max(np.abs(d)) < 2e-3,
+          f"{len(common)}/{len(ex_map)} cells, max |diff| {np.max(np.abs(d)):.1e}")
+    try:
+        import torch  # noqa: F401
+        from healpix_resample import ConservativeResampler, PSFResampler, fwhm_to_scale
+    except Exception as exc:
+        print(f"[SKIP] E7 PSF and binning checks: {type(exc).__name__}: {exc}")
+        return
+    lon2, lat2 = np.meshgrid(np.linspace(2.0, 2.02, 40), np.linspace(45.0, 45.015, 36))
+    vals = 0.2 + 0.05 * rng.random(lon2.size)
+    area = np.ones(lon2.size)
+    cr = ConservativeResampler(lon_deg=lon2.ravel(), lat_deg=lat2.ravel(), level=18, area=area,
+                               verbose=False)
+    h = rt.to_numpy(cr.resample(vals).cell_data)
+    check("E7 hard binning: sum of cell totals == sum of a_i y_i",
+          abs(h.sum() - vals.sum()) < 1e-10 * vals.sum())
+    rs = PSFResampler(lon_deg=lon2.ravel(), lat_deg=lat2.ravel(), level=18,
+                      sigma_m=fwhm_to_scale(60.0), Npt=20, threshold=0.1, verbose=False,
+                      area=area)
+    errs = []
+    for cons in (False, True):
+        out = rt.to_numpy(rs.resample(vals, lam=1e-2, max_iter=30, conservative=cons).cell_data)
+        errs.append(abs(e7.conservation_error(np.full(out.size, area.sum() / out.size),
+                                              out.astype(np.float64), vals.sum())))
+    check("E7 constrained PSF-aware conserves the mean (float32)", errs[1] < 1e-5,
+          f"unconstrained {errs[0]:.1e}, constrained {errs[1]:.1e}")
+
+
 def main():
     for test in (test_rl, test_fourier, test_operators_and_cg, test_stacked_cubic,
                  test_notebook_markers, test_analysis, test_e3_kernels, test_e5_geometry,
-                 test_e5_spectral):
+                 test_e5_spectral, test_e6, test_e7):
         try:
             test()
         except Exception as exc:

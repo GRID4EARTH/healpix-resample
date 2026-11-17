@@ -655,9 +655,14 @@ def _write_rows(rows, path):
     return frame
 
 
-def run_real_region(gt, scene, *, do_e2=True, force=False, widths=None, study="e1e2"):
+def run_real_region(gt, scene, *, do_e2=True, force=False, widths=None, study="e1e2",
+                    domains=None):
     """E1 (+ E2) on one real region; returns the region's result frame.
-    ``widths``/``study`` let E4 reuse it on other width factors."""
+    ``widths``/``study`` let E4 reuse it on other width factors.  The width
+    factors are relative to ``gt.DEGRADE_FWHM_M`` (25 m in the paper set-up;
+    E6 changes it with the coarse pixel).  ``domains`` (E6e) maps a name to
+    ``fn(cell_ids) -> bool mask``: every method is also scored on that subset
+    of the evaluated cells, written to the study ``f"{study}_{name}"``."""
     import pandas as pd
     out_path = region_csv_path("real", scene, study)
     if out_path.exists() and not force:
@@ -669,12 +674,18 @@ def run_real_region(gt, scene, *, do_e2=True, force=False, widths=None, study="e
     ref = gt.build_reference(scene, force=False)
     g = gt.build_coarse_grid(scene)
     rows = []
+    extra_rows = {name: [] for name in (domains or {})}
 
     def score(cell_ids, cell_data, family, method, **params):
-        e, t, _ = gt.align_and_mask(np.asarray(cell_ids), np.asarray(cell_data), ref, g)
+        e, t, ids = gt.align_and_mask(np.asarray(cell_ids), np.asarray(cell_data), ref, g)
         m = gt.compute_metrics(e, t, scene, method)
         rows.append(_row("real", meta, family, method, rmse=m["rmse"],
                          n_cells=m["n_cells"], corr=m["corr"], **params))
+        for name, keep_fn in (domains or {}).items():
+            keep = np.asarray(keep_fn(ids), dtype=bool)
+            md = gt.compute_metrics(e[keep], t[keep], scene, method)
+            extra_rows[name].append(_row("real", meta, family, method, rmse=md["rmse"],
+                                         n_cells=md["n_cells"], corr=md["corr"], **params))
 
     # Geometric baselines: the paper's own functions and caches.
     for method in gt.CLASSICAL_METHODS:
@@ -698,7 +709,7 @@ def run_real_region(gt, scene, *, do_e2=True, force=False, widths=None, study="e
     lon_c = g["lon_coarse"].reshape(-1)
     lat_c = g["lat_coarse"].reshape(-1)
     for f in (widths or WIDTH_FACTORS["real"]):
-        fwhm = f * REAL_NOMINAL_FWHM_M
+        fwhm = f * gt.DEGRADE_FWHM_M
         common = dict(width_factor=f, fwhm_m=fwhm)
 
         # --- PSF-aware grid (operator built once per width) ---------------
@@ -735,6 +746,8 @@ def run_real_region(gt, scene, *, do_e2=True, force=False, widths=None, study="e
                   lam=key[2], n_iter=key[3], runtime_s=runtimes[key], **common)
         del rs
 
+    for name, extra in extra_rows.items():
+        _write_rows(extra, region_csv_path("real", scene, f"{study}_{name}"))
     return _write_rows(rows, out_path)
 
 
@@ -988,10 +1001,12 @@ def prepare(results):
 
 def assign_folds(regions):
     """Stratified 5-fold assignment: within each class the region ids are
-    sorted, permuted with CV_SEED (classes in fixed order), fold = rank mod 5."""
+    sorted, permuted with CV_SEED (classes in fixed order), fold = rank mod 5.
+    Classes outside CLASSES (E6c: "random") follow, in sorted order."""
     rng = np.random.default_rng(CV_SEED)
     folds = {}
-    for cls in CLASSES:
+    present = set(regions["scene_class"])
+    for cls in tuple(CLASSES) + tuple(sorted(present - set(CLASSES))):
         ids = sorted(regions.loc[regions["scene_class"] == cls, "region_id"].unique())
         for rank, rid in enumerate(rng.permutation(ids)):
             folds[rid] = rank % N_FOLDS

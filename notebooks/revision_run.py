@@ -1,4 +1,4 @@
-"""Command-line driver for the JSTARS revision experiments E0 to E5.
+"""Command-line driver for the JSTARS revision experiments E0 to E7.
 
 Run inside the paper environment, from anywhere in the repository::
 
@@ -18,6 +18,11 @@ Run inside the paper environment, from anywhere in the repository::
     pixi run -e notebooks python notebooks/revision_run.py e5 --part ext   # E5 amendment 3 grids
     pixi run -e notebooks python notebooks/revision_run.py e5-analyze      # E5 tables and figure
     pixi run -e notebooks python notebooks/revision_run.py e5-spectral     # E5-S (exploratory)
+    pixi run -e notebooks python notebooks/revision_run.py e6-fetch all    # E6 data (network)
+    pixi run -e notebooks python notebooks/revision_run.py e6 a_b02        # E6 arms
+    pixi run -e notebooks python notebooks/revision_run.py e6-analyze      # E6 tables and figure
+    pixi run -e notebooks python notebooks/revision_run.py e7              # E7 operators
+    pixi run -e notebooks python notebooks/revision_run.py e7-analyze      # E7 tables and figure
     pixi run -e notebooks python notebooks/revision_run.py selftest
 
 ``--limit N`` keeps N regions per scene class (smoke test; ``--limit 1`` runs
@@ -189,6 +194,44 @@ def cmd_e5_spectral(args):
     return 0
 
 
+def cmd_e6_fetch(args):
+    """Network step (login node): data of one E6 dataset, or of all."""
+    import revision_e6 as e6
+    gt = rt.load_gt()
+    gt.OFFLINE = False
+    names = list(e6.DATASETS) if args.dataset == "all" else [args.dataset]
+    for name in names:
+        print(f"=== {name}", flush=True)
+        e6.fetch(gt, name)
+    return 0
+
+
+def cmd_e6(args):
+    import revision_e6 as e6
+    arm = e6.ARMS[args.arm]
+    rt.write_provenance(arm.study + "_real", {"limit": args.limit, "arm": args.arm})
+    return e6.run_arm(rt.load_gt(), args.arm, shard=args.shard, force=args.force,
+                      limit=args.limit)
+
+
+def cmd_e6_analyze(args):
+    import revision_e6 as e6
+    e6.e6_analyze()
+    return 0
+
+
+def cmd_e7(args):
+    import revision_e7 as e7
+    rt.write_provenance("e7_real", {"limit": args.limit})
+    return e7.run(rt.load_gt(), shard=args.shard, force=args.force, limit=args.limit)
+
+
+def cmd_e7_analyze(args):
+    import revision_e7 as e7
+    e7.e7_analyze()
+    return 0
+
+
 def _run_regions(args, kwargs):
     if args.bench == "real":
         gt = rt.load_gt()
@@ -309,6 +352,25 @@ def main(argv=None):
     p.add_argument("--analyze-only", action="store_true",
                    help="recompute tables and figure from the saved ring sums")
     p.set_defaults(func=cmd_e5_spectral)
+
+    import revision_e6 as e6
+    p = sub.add_parser("e6-fetch", help="download the data of an E6 dataset (network)")
+    p.add_argument("dataset", choices=list(e6.DATASETS) + ["all"])
+    p.set_defaults(func=cmd_e6_fetch)
+    for name, func, help_ in (("e6", cmd_e6, "E6: one generalization arm"),
+                              ("e7", cmd_e7, "E7: operators and conservation")):
+        p = sub.add_parser(name, help=help_)
+        if name == "e6":
+            p.add_argument("arm", choices=list(e6.ARMS))
+        p.add_argument("--limit", type=int, default=0, help="first N regions (0 = all)")
+        p.add_argument("--force", action="store_true", help="recompute finished regions")
+        p.add_argument("--shard", default="",
+                       help="k/n: process regions k, k+n, k+2n, ... (job arrays)")
+        p.set_defaults(func=func)
+    p = sub.add_parser("e6-analyze", help="E6 tables and figure")
+    p.set_defaults(func=cmd_e6_analyze)
+    p = sub.add_parser("e7-analyze", help="E7 tables and figure")
+    p.set_defaults(func=cmd_e7_analyze)
 
     p = sub.add_parser("selftest", help="numerical self-tests (no data needed)")
     p.set_defaults(func=cmd_selftest)
