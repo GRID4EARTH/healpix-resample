@@ -83,7 +83,7 @@ pixi run -e notebooks python notebooks/revision_run.py e1e2 real --limit 1
 pixi run -e notebooks python notebooks/revision_run.py e1e2 synthetic --limit 1
 ```
 
-- `selftest` doit afficher **44/44 checks passed**.
+- `selftest` doit afficher **58/58 checks passed**.
 - Les deux `--limit 1` traitent une région par classe ; ils servent de test
   de fumée.
 - Ensuite, supprimer `notebooks/tables/revision/e1e2_*` (sinon ces 4 régions
@@ -140,6 +140,26 @@ qsub -q omp -v "$V,STEP=e5,NSHARD=32"            -J 0-31 notebooks/hpc/revision_
 qsub -q omp -v "$V,STEP=e5 --part ext,NSHARD=32" -J 0-31 notebooks/hpc/revision_pbs.sh  # amendement 3
 pixi run --as-is -e notebooks python notebooks/revision_run.py e5-analyze
 pixi run --as-is -e notebooks python notebooks/revision_run.py e5-spectral   # E5-S, exploratoire, ~2 min
+```
+
+E6 (généralisation) et E7 (choix de l'opérateur). Les données d'E6 se
+récupèrent sur le nœud de login :
+- Sentinel-2 depuis earth-search ;
+- Landsat depuis Planetary Computer ;
+- polygones de terres Natural Earth par cartopy.
+
+Chaque bras tourne ensuite hors ligne. `b_2_18` et E7 n'ont besoin
+d'aucune donnée nouvelle.
+
+```bash
+pixi run --as-is -e notebooks python notebooks/revision_run.py e6-fetch all   # login, ~30 min
+for arm in a_b02 a_b03 a_b08 b_2_18 b_4_19 d_l18 d_l19 e_512 e_1024; do
+    qsub -q omp -v "$V,STEP=e6 $arm,NSHARD=8" -J 0-7 notebooks/hpc/revision_pbs.sh
+done
+qsub -q omp -v "$V,STEP=e6 c_random,NSHARD=12" -J 0-11 notebooks/hpc/revision_pbs.sh
+qsub -q omp -v "$V,STEP=e7,NSHARD=4"           -J 0-3  notebooks/hpc/revision_pbs.sh
+pixi run --as-is -e notebooks python notebooks/revision_run.py e6-analyze
+pixi run --as-is -e notebooks python notebooks/revision_run.py e7-analyze
 ```
 
 **Ordres de grandeur sur CPU (estimations, à confirmer par le test de

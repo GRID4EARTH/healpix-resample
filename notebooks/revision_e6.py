@@ -839,6 +839,9 @@ ARM_LABELS = {
 }
 
 
+E6_XLIM = (-30.0, 35.0)     # margin axis (%); values beyond are drawn at the edge
+
+
 def e6_figure(comp):
     """Mean relative margin of PSF-aware (95 % CI) per arm, against the
     bicubic, the tuned RL, the tuned Tikhonov and the strongest tuned
@@ -866,11 +869,21 @@ def e6_figure(comp):
                 if r.arm not in ypos:
                     continue
                 y = ypos[r.arm] + (0.17 if k == 0 else -0.17)
-                ax.plot([100 * r.rel_ci_low, 100 * r.rel_ci_high], [y, y], color=color,
-                        lw=1.2, zorder=2)
-                ax.plot(100 * r.mean_rel_margin, y, marker=marker, ms=4, color=color,
-                        mec="white", mew=0.6, zorder=3, label=label if r.arm == arms[0] else None)
+                lo, hi = (float(np.clip(100 * v, *E6_XLIM)) for v in (r.rel_ci_low, r.rel_ci_high))
+                ax.plot([lo, hi], [y, y], color=color, lw=1.2, zorder=2)
+                m = 100 * r.mean_rel_margin
+                if E6_XLIM[0] <= m <= E6_XLIM[1]:
+                    ax.plot(m, y, marker=marker, ms=4, color=color, mec="white", mew=0.6,
+                            zorder=3, label=label if r.arm == arms[0] else None)
+                else:       # off scale: arrow at the edge, value written
+                    edge = E6_XLIM[0] if m < E6_XLIM[0] else E6_XLIM[1]
+                    ax.plot(edge, y, marker="<" if m < 0 else ">", ms=5, color=color,
+                            zorder=3, clip_on=False)
+                    ax.annotate(f"{m:.0f} %", (edge, y), xytext=(6 if m < 0 else -6, 0),
+                                textcoords="offset points", fontsize=6, va="center",
+                                ha="left" if m < 0 else "right", color=rt._E4_INK2)
         ax.set_title(f"vs {title}", fontsize=8)
+        ax.set_xlim(*E6_XLIM)
         ax.tick_params(labelsize=7)
         ax.grid(axis="x", color="#e4e3df", lw=0.6)
         ax.set_xlabel("margin of PSF-aware (%)", fontsize=7)
