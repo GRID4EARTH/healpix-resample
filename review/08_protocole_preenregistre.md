@@ -759,3 +759,44 @@ carrés.
 
 Seules des sommes spectrales agrégées sortent du module ; la licence VENµS
 interdit de redistribuer les images.
+
+## Essai exploratoire E6-X — 2026-11-17, après l'analyse E6 (non pré-enregistré)
+
+**Pourquoi.** Au rapport 0,8 (bras `b_2_18` : pixels de 20 m, cellules
+cibles L18 de 24,9 m), PSF-aware perd contre RL et Tikhonov réglés : −25 %,
+aucune région gagnée sur 40, en réglage interne. Hypothèse : les inconnues de
+PSF-aware sont des cellules de 24,9 m, aussi larges que la PSF de 25 m. Le
+modèle A x, constant par cellule, représente alors mal l'observation. Les
+déconvolutions, elles, travaillent sur la grille de 20 m, puis leur lecture
+moyenne des sous-cellules L20.
+
+**Statut.**
+- Analyse exploratoire, descriptive.
+- Déclarée ici après les résultats d'E6 et avant tout calcul de cet essai.
+- Elle ne change ni E6 ni ses conclusions.
+
+**Calcul.**
+- **Données :** les mêmes 40 régions que `b_2_18`, avec la même référence
+  L18, la même observation, les mêmes cellules évaluées et la même grille
+  f × λ × itérations qu'E1.
+- **Résolution fine :** PSF-aware est résolu au niveau L19 (12,4 m) et au
+  niveau L20 (6,2 m), sur les cellules filles des cellules de référence.
+  `Npt` est donné par `recommend_npt` au niveau de résolution.
+- **Agrégation :** le champ est ensuite ramené à L18 par la moyenne des
+  filles (`gt.healpix_down`, au moins la moitié des filles présentes).
+
+**Comparaison.**
+- Réglage interne (5 plis, modes A et B) et transfert d'E1, comme dans E6.
+- On compare aux concurrents de `b_2_18` et à PSF-aware résolu directement
+  en L18.
+- Les statistiques sont celles d'E6.
+
+**Lecture (sans seuil de décision).**
+- Si la résolution fine comble l'écart, l'article peut recommander de
+  résoudre à un niveau au moins aussi fin que le pas d'échantillonnage, puis
+  d'agréger.
+- Sinon, la limite est rapportée telle quelle.
+
+**Sorties.** Elles restent hors de git :
+- `e6x_fine_real/` ;
+- `analysis_e6/e6x_fine_*.csv`.

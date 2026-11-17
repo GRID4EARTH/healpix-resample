@@ -492,6 +492,24 @@ def test_e6():
     rep = e6.reproduction(comp).set_index("arm")["reproduced"]
     check("E6: reproduction = same sign as E1 and CI excluding 0",
           bool(rep["x"]) and not bool(rep["y"]) and not bool(rep["z"]), str(rep.to_dict()))
+    try:
+        import healpix_geo
+    except ImportError as exc:
+        print(f"[SKIP] E6-X children: {exc}")
+        return
+    parents = np.asarray(healpix_geo.nested.lonlat_to_healpix(
+        np.array([2.35, -60.1, 140.0]), np.array([48.85, -33.4, 35.7]), 18,
+        ellipsoid="WGS84"), dtype=np.int64)
+    ok = True
+    for level in e6.FINE_LEVELS:
+        k = 4 ** (level - 18)
+        kids = (parents[:, None] * k + np.arange(k)[None, :]).reshape(-1)
+        lon, lat = healpix_geo.nested.healpix_to_lonlat(kids.astype(np.uint64), level,
+                                                        ellipsoid="WGS84")
+        back = np.asarray(healpix_geo.nested.lonlat_to_healpix(np.asarray(lon), np.asarray(lat),
+                                                               18, ellipsoid="WGS84"))
+        ok &= np.array_equal(back.reshape(len(parents), k), np.repeat(parents[:, None], k, 1))
+    check("E6-X: nested children (L19, L20) of an L18 cell lie in that cell", ok)
 
 
 def test_e7():

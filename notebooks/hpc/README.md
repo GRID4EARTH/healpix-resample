@@ -83,7 +83,7 @@ pixi run -e notebooks python notebooks/revision_run.py e1e2 real --limit 1
 pixi run -e notebooks python notebooks/revision_run.py e1e2 synthetic --limit 1
 ```
 
-- `selftest` doit afficher **58/58 checks passed**.
+- `selftest` doit afficher **59/59 checks passed**.
 - Les deux `--limit 1` traitent une région par classe ; ils servent de test
   de fumée.
 - Ensuite, supprimer `notebooks/tables/revision/e1e2_*` (sinon ces 4 régions

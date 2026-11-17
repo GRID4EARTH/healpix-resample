@@ -648,10 +648,10 @@ def transfer_configs():
     return out
 
 
-def tuned_frames(df, transfer, schemes=("transfer", "5fold")):
+def tuned_frames(df, transfer, schemes=("transfer", "5fold"), families=rt.E1_FAMILIES):
     import pandas as pd
     out = {}
-    for fam in rt.E1_FAMILIES:
+    for fam in families:
         if fam not in set(df["family"]):
             continue
         for mode in ("A", "B"):
@@ -684,16 +684,17 @@ def paired(ours, theirs):
     return rows
 
 
-def compare(tuned, schemes=("transfer", "5fold")):
+def compare(tuned, schemes=("transfer", "5fold"), ours_family="psf_aware",
+            competitors=E6_COMPETITORS):
     import pandas as pd
     rows = []
     for scheme in schemes:
         for mode in ("A", "B"):
-            ours = tuned.get(("psf_aware", mode, scheme))
+            ours = tuned.get((ours_family, mode, scheme))
             if ours is None:
                 continue
             best = None
-            for comp in E6_COMPETITORS:
+            for comp in competitors:
                 theirs = tuned.get((comp, mode, scheme))
                 if theirs is None:
                     continue
@@ -895,3 +896,134 @@ def e6_figure(comp):
     for ext in ("pdf", "png"):
         fig.savefig(fdir / f"e6_generalization.{ext}", dpi=200)
     plt.close(fig)
+
+
+# =============================================================================
+# E6-X (exploratory, declared after E6): ratio 0.8 solved at a finer level,
+# then aggregated to the L18 target by the mean of the child cells.
+# =============================================================================
+FINE_LEVELS = (19, 20)
+FINE_STUDY = "e6x_fine"
+FINE_ARM = "b_2_18"
+FINE_FAMILIES = ("psf_aware",) + tuple(f"psf_aware_l{lv}" for lv in FINE_LEVELS) + (
+    "rl2", "tik_id", "tik_lap", "wiener_hunt", "geo_cubic")
+
+
+def run_fine_region(gt, scene, force=False):
+    """PSF-aware at each FINE_LEVELS level on the children of the reference
+    cells, then `gt.healpix_down` to gt.REF_LEVEL; the E1 width x lambda x
+    iterations grid.  Call inside gt_config(gt, ARMS[FINE_ARM])."""
+    import pandas as pd
+    out_path = rt.region_csv_path("real", scene, FINE_STUDY)
+    if out_path.exists() and not force:
+        return pd.read_csv(out_path)
+    src = gt.region_coordinates[scene]
+    meta = dict(scene=scene, scene_class=src["scene_class"], region_id=src["region_id"],
+                patch_id=src.get("patch_id", ""))
+    ref = gt.build_reference(scene, force=False)
+    g = gt.build_coarse_grid(scene)
+    y_obs = g["img_coarse"].reshape(-1)
+    lon_c = g["lon_coarse"].reshape(-1)
+    lat_c = g["lat_coarse"].reshape(-1)
+    ref_ids = np.asarray(ref["cell_ids_ref"], dtype=np.int64)
+    rows = []
+    for level in FINE_LEVELS:
+        k = 4 ** (level - gt.REF_LEVEL)
+        kids = (ref_ids[:, None] * k + np.arange(k)[None, :]).reshape(-1)
+        family = f"psf_aware_l{level}"
+        for f in rt.WIDTH_FACTORS["real"]:
+            fwhm = f * gt.DEGRADE_FWHM_M
+            scale = gt.fwhm_to_scale(fwhm)
+            npt = gt.recommend_npt(scale, level)["npt"]
+            t0 = time.perf_counter()
+            rs = gt.PSFResampler(lon_deg=lon_c, lat_deg=lat_c, level=level, sigma_m=scale,
+                                 Npt=npt, out_cell_ids=kids, threshold=gt.THRESHOLD,
+                                 device=gt.DEVICE, verbose=False)
+            build_s = time.perf_counter() - t0
+            for lam in rt.PSF_LAMBDAS:
+                for it in rt.PSF_ITERS:
+                    t1 = time.perf_counter()
+                    res = rs.resample(y_obs, lam=lam, max_iter=it, tol=rt.PSF_TOL)
+                    ids = rt.to_numpy(res.cell_ids).astype(np.int64)
+                    vals = rt.to_numpy(res.cell_data).astype(np.float64)
+                    ok = np.isfinite(vals)
+                    pid, pval = gt.healpix_down(ids[ok], vals[ok], level, gt.REF_LEVEL)
+                    e, t, _ = gt.align_and_mask(pid, pval, ref, g)
+                    m = gt.compute_metrics(e, t, scene, family)
+                    rows.append(rt._row("real", meta, family, family, width_factor=f,
+                                        fwhm_m=fwhm, lam=lam, n_iter=it, rmse=m["rmse"],
+                                        n_cells=m["n_cells"], corr=m["corr"],
+                                        runtime_s=build_s + time.perf_counter() - t1))
+            del rs
+    return rt._write_rows(rows, out_path)
+
+
+def run_fine(gt, *, shard="", force=False, limit=0):
+    import traceback
+    arm = ARMS[FINE_ARM]
+    scenes = arm_scenes(gt, arm)
+    if limit:
+        scenes = scenes[:limit]
+    if shard:
+        k, n = (int(v) for v in shard.split("/"))
+        scenes = scenes[k::n]
+        print(f"shard {k}/{n}: {len(scenes)} region(s)")
+    failures = []
+    with gt_config(gt, arm):
+        for i, scene in enumerate(scenes, 1):
+            t0 = time.perf_counter()
+            try:
+                frame = run_fine_region(gt, scene, force=force)
+                print(f"[{i:3d}/{len(scenes)}] E6-X {scene}: {len(frame)} rows "
+                      f"({time.perf_counter() - t0:.1f} s)", flush=True)
+            except Exception as exc:
+                failures.append(scene)
+                print(f"[{i:3d}/{len(scenes)}] [FAIL] E6-X {scene}: "
+                      f"{type(exc).__name__}: {exc}", flush=True)
+                traceback.print_exc()
+    print(f"\n{len(scenes) - len(failures)}/{len(scenes)} regions done; failures: {failures}")
+    return 1 if failures else 0
+
+
+def fine_analyze():
+    """E6-X: each PSF-aware variant (direct L18, L19 then L18, L20 then L18)
+    against the b_2_18 competitors and against each other."""
+    import pandas as pd
+    base = rt.collect_results("real", ARMS[FINE_ARM].study)
+    fine = rt.collect_results("real", FINE_STUDY)
+    df = rt.prepare(pd.concat([base, fine], ignore_index=True))
+    df = df[df["family"].isin(FINE_FAMILIES)].copy()
+    transfer = transfer_configs()
+    for lv in FINE_LEVELS:
+        for mode in ("A", "B"):
+            transfer[(f"psf_aware_l{lv}", mode)] = transfer[("psf_aware", mode)]
+    tuned = tuned_frames(df, transfer, families=FINE_FAMILIES)
+    comps = []
+    for ours in FINE_FAMILIES[:1 + len(FINE_LEVELS)]:
+        others = tuple(c for c in E6_COMPETITORS) + tuple(
+            p for p in FINE_FAMILIES[:1 + len(FINE_LEVELS)] if p != ours)
+        c = compare(tuned, ours_family=ours, competitors=others)
+        c.insert(0, "ours", ours)
+        comps.append(c)
+    comp = pd.concat(comps, ignore_index=True)
+    rel = df.set_index(["region_id", "family", "config"])["rel"]
+    curves = []
+    for (fam, mode, scheme), t in tuned.items():
+        r = pd.Series([rel.get((rid, fam, cfg), np.nan)
+                       for rid, cfg in zip(t["region_id"], t["config"])], dtype=float)
+        cfgs = t["config"].value_counts()
+        curves.append(dict(family=fam, mode=mode, scheme=scheme, n_regions=int(r.notna().sum()),
+                           median_rel=float(r.median()), q25_rel=float(r.quantile(0.25)),
+                           q75_rel=float(r.quantile(0.75)), modal_config=cfgs.index[0]))
+    curves = pd.DataFrame(curves)
+    out = rt.ensure_out_dir("analysis_e6")
+    comp.to_csv(out / "e6x_fine_comparisons.csv", index=False)
+    curves.to_csv(out / "e6x_fine_relative_rmse.csv", index=False)
+    pd.set_option("display.width", 220)
+    print(curves[curves.scheme != "oracle"].sort_values(["mode", "scheme", "median_rel"])
+          .round(4).to_string(index=False))
+    head = comp[(comp.scene_class == "all") & (comp.scheme == "5fold")]
+    print(head[["ours", "mode", "competitor", "wins", "n_regions", "mean_rel_margin",
+                "rel_ci_low", "rel_ci_high"]].round(4).to_string(index=False))
+    print(f"-> {out}")
+    return comp, curves

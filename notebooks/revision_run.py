@@ -220,6 +220,19 @@ def cmd_e6_analyze(args):
     return 0
 
 
+def cmd_e6x(args):
+    """E6-X (exploratory): ratio 0.8 solved at L19/L20, aggregated to L18."""
+    import revision_e6 as e6
+    rt.write_provenance(e6.FINE_STUDY + "_real", {"limit": args.limit})
+    return e6.run_fine(rt.load_gt(), shard=args.shard, force=args.force, limit=args.limit)
+
+
+def cmd_e6x_analyze(args):
+    import revision_e6 as e6
+    e6.fine_analyze()
+    return 0
+
+
 def cmd_e7(args):
     import revision_e7 as e7
     rt.write_provenance("e7_real", {"limit": args.limit})
@@ -358,6 +371,7 @@ def main(argv=None):
     p.add_argument("dataset", choices=list(e6.DATASETS) + ["all"])
     p.set_defaults(func=cmd_e6_fetch)
     for name, func, help_ in (("e6", cmd_e6, "E6: one generalization arm"),
+                              ("e6x", cmd_e6x, "E6-X (exploratory): fine solve, then aggregate"),
                               ("e7", cmd_e7, "E7: operators and conservation")):
         p = sub.add_parser(name, help=help_)
         if name == "e6":
@@ -369,6 +383,8 @@ def main(argv=None):
         p.set_defaults(func=func)
     p = sub.add_parser("e6-analyze", help="E6 tables and figure")
     p.set_defaults(func=cmd_e6_analyze)
+    p = sub.add_parser("e6x-analyze", help="E6-X tables (exploratory)")
+    p.set_defaults(func=cmd_e6x_analyze)
     p = sub.add_parser("e7-analyze", help="E7 tables and figure")
     p.set_defaults(func=cmd_e7_analyze)
 
