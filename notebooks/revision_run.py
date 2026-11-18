@@ -220,17 +220,25 @@ def cmd_e6_analyze(args):
     return 0
 
 
-def cmd_e6x(args):
-    """E6-X (exploratory): ratio 0.8 solved at L19/L20, aggregated to L18."""
-    import revision_e6 as e6
-    rt.write_provenance(e6.FINE_STUDY + "_real", {"limit": args.limit})
-    return e6.run_fine(rt.load_gt(), shard=args.shard, force=args.force, limit=args.limit)
+def _fine_cmds(key):
+    """Run and analysis commands of an exploratory fine solve (E6-X, E6-Y)."""
+    def run(args):
+        import revision_e6 as e6
+        rt.write_provenance(e6.FINE_RUNS[key].study + "_real", {"limit": args.limit})
+        return e6.run_fine(rt.load_gt(), key, shard=args.shard, force=args.force,
+                           limit=args.limit)
+
+    def analyze(args):
+        import revision_e6 as e6
+        e6.fine_analyze(key)
+        return 0
+    return run, analyze
 
 
-def cmd_e6x_analyze(args):
-    import revision_e6 as e6
-    e6.fine_analyze()
-    return 0
+# E6-X: ratio 0.8 solved at L19/L20, aggregated to L18.
+cmd_e6x, cmd_e6x_analyze = _fine_cmds("e6x")
+# E6-Y: ratio 1.2 (Landsat) solved at L18/L19, aggregated to L17.
+cmd_e6y, cmd_e6y_analyze = _fine_cmds("e6y")
 
 
 def cmd_e7(args):
@@ -371,7 +379,8 @@ def main(argv=None):
     p.add_argument("dataset", choices=list(e6.DATASETS) + ["all"])
     p.set_defaults(func=cmd_e6_fetch)
     for name, func, help_ in (("e6", cmd_e6, "E6: one generalization arm"),
-                              ("e6x", cmd_e6x, "E6-X (exploratory): fine solve, then aggregate"),
+                              ("e6x", cmd_e6x, "E6-X (exploratory): ratio 0.8, fine solve, then aggregate"),
+                              ("e6y", cmd_e6y, "E6-Y (exploratory): ratio 1.2, fine solve, then aggregate"),
                               ("e7", cmd_e7, "E7: operators and conservation")):
         p = sub.add_parser(name, help=help_)
         if name == "e6":
@@ -385,6 +394,8 @@ def main(argv=None):
     p.set_defaults(func=cmd_e6_analyze)
     p = sub.add_parser("e6x-analyze", help="E6-X tables (exploratory)")
     p.set_defaults(func=cmd_e6x_analyze)
+    p = sub.add_parser("e6y-analyze", help="E6-Y tables (exploratory)")
+    p.set_defaults(func=cmd_e6y_analyze)
     p = sub.add_parser("e7-analyze", help="E7 tables and figure")
     p.set_defaults(func=cmd_e7_analyze)
 

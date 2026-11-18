@@ -8,6 +8,10 @@ Arms (protocol section E6 of ``review/08_protocole_preenregistre.md``):
 * ``d_l18``, ``d_l19``            -- Landsat 8/9 OLI red band, ratio 1.2 and 2.4;
 * ``e_512``, ``e_1024``           -- patch size (8 regions).
 
+Exploratory fine solves, declared after E6 (end of the module): E6-X solves
+the ratio-0.8 arm at L19/L20 and E6-Y the Landsat ratio-1.2 arm at L18/L19,
+then aggregates to the target level.
+
 Every arm runs the E1 machinery (`revision_tools.run_real_region`) on the
 paper's real-data module with a few of its constants changed (`gt_config`).
 The data steps (``fetch_*``) need the network and run on a login node; the
@@ -899,22 +903,54 @@ def e6_figure(comp):
 
 
 # =============================================================================
-# E6-X (exploratory, declared after E6): ratio 0.8 solved at a finer level,
-# then aggregated to the L18 target by the mean of the child cells.
+# Exploratory fine solves (declared after E6): an arm whose target cells are
+# about as wide as the samples is solved at finer levels, then aggregated to
+# the target level by the mean of the child cells.
+#   E6-X: ratio 0.8 (b_2_18, L18 target), solved at L19 and L20;
+#   E6-Y: ratio 1.2 (d_l18, Landsat, L17 target), solved at L18 and L19.
 # =============================================================================
-FINE_LEVELS = (19, 20)
-FINE_STUDY = "e6x_fine"
-FINE_ARM = "b_2_18"
-FINE_FAMILIES = ("psf_aware",) + tuple(f"psf_aware_l{lv}" for lv in FINE_LEVELS) + (
-    "rl2", "tik_id", "tik_lap", "wiener_hunt", "geo_cubic")
+@dataclass(frozen=True)
+class FineRun:
+    key: str
+    label: str
+    arm: str
+    levels: tuple
+
+    @property
+    def study(self):
+        return f"{self.key}_fine"
+
+    @property
+    def variants(self):
+        """PSF-aware solved directly, then at each finer level."""
+        return ("psf_aware",) + tuple(f"psf_aware_l{lv}" for lv in self.levels)
+
+    @property
+    def families(self):
+        return self.variants + E6_COMPETITORS
 
 
-def run_fine_region(gt, scene, force=False):
-    """PSF-aware at each FINE_LEVELS level on the children of the reference
+FINE_RUNS = {r.key: r for r in (
+    FineRun("e6x", "E6-X", "b_2_18", (19, 20)),
+    FineRun("e6y", "E6-Y", "d_l18", (18, 19)),
+)}
+# recommend_npt caps Npt at 200; E6-Y at L19 needs up to 428 neighbours for
+# 99 % of the kernel mass.  E6-X never reaches 200 (190 at most), so lifting
+# the cap leaves its results unchanged.
+FINE_NPT_MAX = 1024
+# E6-X names, kept for the existing callers.
+FINE_LEVELS = FINE_RUNS["e6x"].levels
+FINE_STUDY = FINE_RUNS["e6x"].study
+FINE_ARM = FINE_RUNS["e6x"].arm
+FINE_FAMILIES = FINE_RUNS["e6x"].families
+
+
+def run_fine_region(gt, scene, run=FINE_RUNS["e6x"], force=False):
+    """PSF-aware at each level of ``run`` on the children of the reference
     cells, then `gt.healpix_down` to gt.REF_LEVEL; the E1 width x lambda x
-    iterations grid.  Call inside gt_config(gt, ARMS[FINE_ARM])."""
+    iterations grid.  Call inside gt_config(gt, ARMS[run.arm])."""
     import pandas as pd
-    out_path = rt.region_csv_path("real", scene, FINE_STUDY)
+    out_path = rt.region_csv_path("real", scene, run.study)
     if out_path.exists() and not force:
         return pd.read_csv(out_path)
     src = gt.region_coordinates[scene]
@@ -927,14 +963,14 @@ def run_fine_region(gt, scene, force=False):
     lat_c = g["lat_coarse"].reshape(-1)
     ref_ids = np.asarray(ref["cell_ids_ref"], dtype=np.int64)
     rows = []
-    for level in FINE_LEVELS:
+    for level in run.levels:
         k = 4 ** (level - gt.REF_LEVEL)
         kids = (ref_ids[:, None] * k + np.arange(k)[None, :]).reshape(-1)
         family = f"psf_aware_l{level}"
         for f in rt.WIDTH_FACTORS["real"]:
             fwhm = f * gt.DEGRADE_FWHM_M
             scale = gt.fwhm_to_scale(fwhm)
-            npt = gt.recommend_npt(scale, level)["npt"]
+            npt = gt.recommend_npt(scale, level, q_max=FINE_NPT_MAX)["npt"]
             t0 = time.perf_counter()
             rs = gt.PSFResampler(lon_deg=lon_c, lat_deg=lat_c, level=level, sigma_m=scale,
                                  Npt=npt, out_cell_ids=kids, threshold=gt.THRESHOLD,
@@ -958,9 +994,10 @@ def run_fine_region(gt, scene, force=False):
     return rt._write_rows(rows, out_path)
 
 
-def run_fine(gt, *, shard="", force=False, limit=0):
+def run_fine(gt, run_key="e6x", *, shard="", force=False, limit=0):
     import traceback
-    arm = ARMS[FINE_ARM]
+    run = FINE_RUNS[run_key]
+    arm = ARMS[run.arm]
     scenes = arm_scenes(gt, arm)
     if limit:
         scenes = scenes[:limit]
@@ -973,35 +1010,37 @@ def run_fine(gt, *, shard="", force=False, limit=0):
         for i, scene in enumerate(scenes, 1):
             t0 = time.perf_counter()
             try:
-                frame = run_fine_region(gt, scene, force=force)
-                print(f"[{i:3d}/{len(scenes)}] E6-X {scene}: {len(frame)} rows "
+                frame = run_fine_region(gt, scene, run, force=force)
+                print(f"[{i:3d}/{len(scenes)}] {run.label} {scene}: {len(frame)} rows "
                       f"({time.perf_counter() - t0:.1f} s)", flush=True)
             except Exception as exc:
                 failures.append(scene)
-                print(f"[{i:3d}/{len(scenes)}] [FAIL] E6-X {scene}: "
+                print(f"[{i:3d}/{len(scenes)}] [FAIL] {run.label} {scene}: "
                       f"{type(exc).__name__}: {exc}", flush=True)
                 traceback.print_exc()
     print(f"\n{len(scenes) - len(failures)}/{len(scenes)} regions done; failures: {failures}")
     return 1 if failures else 0
 
 
-def fine_analyze():
-    """E6-X: each PSF-aware variant (direct L18, L19 then L18, L20 then L18)
-    against the b_2_18 competitors and against each other."""
+def fine_analyze(run_key="e6x"):
+    """Each PSF-aware variant of ``run_key`` (direct, then each finer level
+    aggregated to the target) against the arm's competitors and against
+    each other.  E6-X: b_2_18, L18 / L19 / L20; E6-Y: d_l18, L17 / L18 / L19."""
     import pandas as pd
-    base = rt.collect_results("real", ARMS[FINE_ARM].study)
-    fine = rt.collect_results("real", FINE_STUDY)
+    run = FINE_RUNS[run_key]
+    base = rt.collect_results("real", ARMS[run.arm].study)
+    fine = rt.collect_results("real", run.study)
     df = rt.prepare(pd.concat([base, fine], ignore_index=True))
-    df = df[df["family"].isin(FINE_FAMILIES)].copy()
+    df = df[df["family"].isin(run.families)].copy()
     transfer = transfer_configs()
-    for lv in FINE_LEVELS:
+    for lv in run.levels:
         for mode in ("A", "B"):
             transfer[(f"psf_aware_l{lv}", mode)] = transfer[("psf_aware", mode)]
-    tuned = tuned_frames(df, transfer, families=FINE_FAMILIES)
+    tuned = tuned_frames(df, transfer, families=run.families)
     comps = []
-    for ours in FINE_FAMILIES[:1 + len(FINE_LEVELS)]:
+    for ours in run.variants:
         others = tuple(c for c in E6_COMPETITORS) + tuple(
-            p for p in FINE_FAMILIES[:1 + len(FINE_LEVELS)] if p != ours)
+            p for p in run.variants if p != ours)
         c = compare(tuned, ours_family=ours, competitors=others)
         c.insert(0, "ours", ours)
         comps.append(c)
@@ -1017,8 +1056,8 @@ def fine_analyze():
                            q75_rel=float(r.quantile(0.75)), modal_config=cfgs.index[0]))
     curves = pd.DataFrame(curves)
     out = rt.ensure_out_dir("analysis_e6")
-    comp.to_csv(out / "e6x_fine_comparisons.csv", index=False)
-    curves.to_csv(out / "e6x_fine_relative_rmse.csv", index=False)
+    comp.to_csv(out / f"{run.study}_comparisons.csv", index=False)
+    curves.to_csv(out / f"{run.study}_relative_rmse.csv", index=False)
     pd.set_option("display.width", 220)
     print(curves[curves.scheme != "oracle"].sort_values(["mode", "scheme", "median_rel"])
           .round(4).to_string(index=False))

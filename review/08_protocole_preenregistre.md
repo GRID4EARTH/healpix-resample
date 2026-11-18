@@ -800,3 +800,61 @@ moyenne des sous-cellules L20.
 **Sorties.** Elles restent hors de git :
 - `e6x_fine_real/` ;
 - `analysis_e6/e6x_fine_*.csv`.
+
+## Essai exploratoire E6-Y — 2026-11-18, après E6 et E6-X (non pré-enregistré)
+
+**Pourquoi.**
+- Au rapport 1,2 (bras `d_l18` : Landsat 8/9, échantillons de 60 m, cellules
+  cibles L17 de 49,8 m), PSF-aware ne garde pas son avantage en réglage
+  interne : −0,3 % contre la déconvolution réglée la plus forte, 20 régions
+  gagnées sur 39.
+- La règle tirée d'E6-X (résoudre à un niveau au moins aussi fin que le pas
+  d'échantillonnage, puis agréger) est déjà respectée par la résolution
+  directe en L17, puisque 49,8 m < 60 m. L'article l'applique pourtant au
+  rapport 1,2 sans l'avoir testée à ce rapport.
+- C'est aussi le cas des bandes Sentinel-2 à 60 m converties en L17.
+- Hypothèse : comme au rapport 0,8, des inconnues plus fines que les
+  cellules cibles restaurent l'avantage.
+
+**Statut.**
+- Analyse exploratoire, descriptive.
+- Déclarée ici après les résultats d'E6 et d'E6-X, et avant tout calcul de
+  cet essai.
+- Elle ne change ni E6, ni E6-X, ni leurs conclusions.
+
+**Calcul.** Identique à E6-X, sur le bras `d_l18` :
+- **Données :** les mêmes 39 régions que `d_l18`, avec la même référence L17,
+  la même observation, les mêmes cellules évaluées et la même grille
+  f × λ × itérations qu'E1.
+- **Résolution fine :** PSF-aware est résolu au niveau L18 (24,9 m, rapport
+  2,4) et au niveau L19 (12,4 m, rapport 4,8), sur les cellules filles des
+  cellules de référence.
+- **Voisins :** `Npt` est donné par `recommend_npt` au niveau de résolution,
+  sans son plafond de 200 voisins (`q_max` porté à 1024), pour garder 99 %
+  de la masse du noyau. En L19, le noyau de 75 à 112 m de FWHM demande
+  jusqu'à 428 voisins ; avec le plafond, il ne garderait que 88 % de sa
+  masse à f = 1,5. Le plafond n'est jamais atteint dans E6-X (190 voisins au
+  plus), dont les résultats ne changent donc pas.
+- **Agrégation :** le champ est ramené à L17 par la moyenne des filles
+  (`gt.healpix_down`, au moins la moitié des filles présentes).
+
+**Comparaison.**
+- Réglage interne (5 plis, modes A et B) et transfert d'E1, comme dans E6.
+- On compare aux concurrents de `d_l18` et à PSF-aware résolu directement
+  en L17.
+- Les statistiques sont celles d'E6.
+
+**Lecture (sans seuil de décision).**
+- On rapporte la marge en mode B interne contre la déconvolution réglée la
+  plus forte, son intervalle à 95 % et le nombre de régions gagnées, pour
+  chaque niveau de résolution.
+- Si la résolution fine donne une marge positive dont l'intervalle exclut
+  0, l'article peut recommander de résoudre plus fin que la cible, puis
+  d'agréger, dès que le rapport descend à 1,2.
+- Sinon, l'article dit qu'au rapport 1,2 PSF-aware fait jeu égal avec une
+  déconvolution réglée, résolution fine ou non. La règle d'E6-X sert alors
+  seulement à éviter la perte observée au rapport 0,8.
+
+**Sorties.** Elles restent hors de git :
+- `e6y_fine_real/` ;
+- `analysis_e6/e6y_fine_*.csv`.

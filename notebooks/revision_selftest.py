@@ -492,24 +492,50 @@ def test_e6():
     rep = e6.reproduction(comp).set_index("arm")["reproduced"]
     check("E6: reproduction = same sign as E1 and CI excluding 0",
           bool(rep["x"]) and not bool(rep["y"]) and not bool(rep["z"]), str(rep.to_dict()))
+    check("E6-X: names unchanged by the E6-Y generalization",
+          e6.FINE_FAMILIES == ("psf_aware", "psf_aware_l19", "psf_aware_l20", "rl2", "tik_id",
+                               "tik_lap", "wiener_hunt", "geo_cubic")
+          and e6.FINE_STUDY == "e6x_fine" and e6.FINE_ARM == "b_2_18"
+          and e6.FINE_RUNS["e6y"].study == "e6y_fine"
+          and e6.ARMS[e6.FINE_RUNS["e6y"].arm].ref_level == 17)
+    try:
+        from healpix_resample.psf_geometry import fwhm_to_scale, recommend_npt
+    except ImportError as exc:
+        print(f"[SKIP] E6-Y neighbours: {exc}")
+    else:
+        same_x, mass_y = True, []
+        for key, fwhm0 in (("e6x", 25.0), ("e6y", 75.0)):
+            for level in e6.FINE_RUNS[key].levels:
+                for f in rt.WIDTH_FACTORS["real"]:
+                    s = fwhm_to_scale(f * fwhm0)
+                    free = recommend_npt(s, level, q_max=e6.FINE_NPT_MAX)
+                    if key == "e6x":
+                        same_x &= free["npt"] == recommend_npt(s, level)["npt"]
+                    else:
+                        mass_y.append(free["mass_at_npt"])
+        check("E6-Y: lifting the Npt cap leaves E6-X unchanged and keeps 99 % of the "
+              "E6-Y kernel mass", same_x and min(mass_y) >= 0.99, f"min mass {min(mass_y):.4f}")
     try:
         import healpix_geo
     except ImportError as exc:
-        print(f"[SKIP] E6-X children: {exc}")
+        print(f"[SKIP] E6-X/E6-Y children: {exc}")
         return
-    parents = np.asarray(healpix_geo.nested.lonlat_to_healpix(
-        np.array([2.35, -60.1, 140.0]), np.array([48.85, -33.4, 35.7]), 18,
-        ellipsoid="WGS84"), dtype=np.int64)
     ok = True
-    for level in e6.FINE_LEVELS:
-        k = 4 ** (level - 18)
-        kids = (parents[:, None] * k + np.arange(k)[None, :]).reshape(-1)
-        lon, lat = healpix_geo.nested.healpix_to_lonlat(kids.astype(np.uint64), level,
-                                                        ellipsoid="WGS84")
-        back = np.asarray(healpix_geo.nested.lonlat_to_healpix(np.asarray(lon), np.asarray(lat),
-                                                               18, ellipsoid="WGS84"))
-        ok &= np.array_equal(back.reshape(len(parents), k), np.repeat(parents[:, None], k, 1))
-    check("E6-X: nested children (L19, L20) of an L18 cell lie in that cell", ok)
+    for run in e6.FINE_RUNS.values():
+        parent_level = e6.ARMS[run.arm].ref_level
+        parents = np.asarray(healpix_geo.nested.lonlat_to_healpix(
+            np.array([2.35, -60.1, 140.0]), np.array([48.85, -33.4, 35.7]), parent_level,
+            ellipsoid="WGS84"), dtype=np.int64)
+        for level in run.levels:
+            k = 4 ** (level - parent_level)
+            kids = (parents[:, None] * k + np.arange(k)[None, :]).reshape(-1)
+            lon, lat = healpix_geo.nested.healpix_to_lonlat(kids.astype(np.uint64), level,
+                                                            ellipsoid="WGS84")
+            back = np.asarray(healpix_geo.nested.lonlat_to_healpix(
+                np.asarray(lon), np.asarray(lat), parent_level, ellipsoid="WGS84"))
+            ok &= np.array_equal(back.reshape(len(parents), k),
+                                 np.repeat(parents[:, None], k, 1))
+    check("E6-X/E6-Y: nested children (L19, L20 of L18; L18, L19 of L17) lie in their cell", ok)
 
 
 def test_e7():

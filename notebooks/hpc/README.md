@@ -83,7 +83,7 @@ pixi run -e notebooks python notebooks/revision_run.py e1e2 real --limit 1
 pixi run -e notebooks python notebooks/revision_run.py e1e2 synthetic --limit 1
 ```
 
-- `selftest` doit afficher **59/59 checks passed**.
+- `selftest` doit afficher **61/61 checks passed**.
 - Les deux `--limit 1` traitent une région par classe ; ils servent de test
   de fumée.
 - Ensuite, supprimer `notebooks/tables/revision/e1e2_*` (sinon ces 4 régions
@@ -160,6 +160,18 @@ qsub -q omp -v "$V,STEP=e6 c_random,NSHARD=12" -J 0-11 notebooks/hpc/revision_pb
 qsub -q omp -v "$V,STEP=e7,NSHARD=4"           -J 0-3  notebooks/hpc/revision_pbs.sh
 pixi run --as-is -e notebooks python notebooks/revision_run.py e6-analyze
 pixi run --as-is -e notebooks python notebooks/revision_run.py e7-analyze
+```
+
+Essais exploratoires E6-X (rapport 0,8, bras `b_2_18`) et E6-Y (rapport 1,2,
+bras `d_l18`) : résolution à des niveaux plus fins que la cible, puis
+agrégation. Ils lisent les résultats du bras correspondant, qui doit avoir
+tourné avant.
+
+```bash
+qsub -q omp -v "$V,STEP=e6x,NSHARD=8"  -J 0-7  notebooks/hpc/revision_pbs.sh
+qsub -q omp -v "$V,STEP=e6y,NSHARD=13" -J 0-12 notebooks/hpc/revision_pbs.sh
+pixi run --as-is -e notebooks python notebooks/revision_run.py e6x-analyze
+pixi run --as-is -e notebooks python notebooks/revision_run.py e6y-analyze
 ```
 
 **Ordres de grandeur sur CPU (estimations, à confirmer par le test de
