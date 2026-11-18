@@ -177,27 +177,43 @@ E6_ARMS = [
 ]
 
 
-def e6_frames() -> tuple[pd.DataFrame, pd.DataFrame]:
+# Exploratory fine solves (E6-X, E6-Y), listed after the arm they extend:
+# arm -> (comparison file, solve levels, target level, main label, supplement label).
+E6_FINE = {
+    "d_l18": ("e6y_fine_comparisons.csv", (18, 19), 17,
+              "Landsat, ratio 1.2, solved on L{lev}, aggregated", "Landsat 1.2, L{lev} then L17"),
+    "b_2_18": ("e6x_fine_comparisons.csv", (19, 20), 18,
+               "Ratio 0.8, solved on L{lev}, aggregated", "Ratio 0.8, L{lev} then L18"),
+}
+
+
+def e6_frames() -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     c = pd.read_csv(RES / "analysis_e6" / "e6_comparisons.csv")
-    x = pd.read_csv(RES / "analysis_e6" / "e6x_fine_comparisons.csv")
-    return c[c.scene_class == "all"], x[x.scene_class == "all"]
+    fine = {}
+    for arm, (fname, *_rest) in E6_FINE.items():
+        x = pd.read_csv(RES / "analysis_e6" / fname)
+        fine[arm] = x[x.scene_class == "all"]
+    return c[c.scene_class == "all"], fine
+
+
+def e6_rows(c: pd.DataFrame, fine: dict[str, pd.DataFrame], main: bool):
+    """(label, frame) per table row: each E6 arm, then its fine solves."""
+    for arm, label in E6_ARMS:
+        yield label, c[c.arm == arm]
+        if arm in fine:
+            _, levels, _, main_label, supp_label = E6_FINE[arm]
+            for lev in levels:
+                lab = (main_label if main else supp_label).format(lev=lev)
+                yield lab + r"$^{*}$", fine[arm][fine[arm].ours == f"psf_aware_l{lev}"]
 
 
 def main_generalization() -> None:
-    c, x = e6_frames()
+    c, fine = e6_frames()
     rows = []
-    for arm, label in E6_ARMS:
-        a = c[c.arm == arm]
+    for label, a in e6_rows(c, fine, main=True):
         t = pick(a, scheme="transfer", mode="A", competitor="strongest")
         i = pick(a, scheme="5fold", mode="B", competitor="strongest")
         rows.append(f"{label} & {int(i.n_regions)} & "
-                    f"{cell(t.mean_rel_margin, t.wins, t.n_regions)} & "
-                    f"{cell(i.mean_rel_margin, i.wins, i.n_regions)}" + r" \\")
-    for lev in (19, 20):
-        a = x[x.ours == f"psf_aware_l{lev}"]
-        t = pick(a, scheme="transfer", mode="A", competitor="strongest")
-        i = pick(a, scheme="5fold", mode="B", competitor="strongest")
-        rows.append(rf"Ratio 0.8, solved on L{lev}, aggregated$^{{*}}$ & {int(i.n_regions)} & "
                     f"{cell(t.mean_rel_margin, t.wins, t.n_regions)} & "
                     f"{cell(i.mean_rel_margin, i.wins, i.n_regions)}" + r" \\")
     body = "\n".join(rows)
@@ -207,8 +223,9 @@ def main_generalization() -> None:
 \psf-aware over the strongest tuned deconvolution of each region, in
 percent; in brackets, regions won. \emph{{Transfer}}: configurations selected
 on the original 40 regions, nominal width. \emph{{Internal}}: 5-fold
-cross-validation repeated within the arm, width tuned. $^{{*}}$Exploratory,
-declared after the ratio-0.8 result and before it was computed.}}
+cross-validation repeated within the arm, width tuned. $^{{*}}$Exploratory:
+the arm above is solved on finer levels, then averaged to its target level;
+declared after the arm's result and before it was computed.}}
 \label{{tab:generalization}}
 \setlength{{\tabcolsep}}{{2pt}}
 \scriptsize
@@ -697,11 +714,10 @@ Site & Cand. & Usable & Sel. & Shift & $a$ & Out (\%) & Filter (\%) \\
 
 
 def supp_e6() -> None:
-    c, x = e6_frames()
+    c, fine = e6_frames()
     comps = ["rl2", "tik_id", "wiener_hunt", "geo_cubic", "strongest"]
     lines = []
-    for arm, label in E6_ARMS:
-        a = c[c.arm == arm]
+    for label, a in e6_rows(c, fine, main=False):
         cells = []
         for scheme, mode in [("transfer", "A"), ("transfer", "B"), ("5fold", "A")]:
             r = pick(a, scheme=scheme, mode=mode, competitor="strongest")
@@ -710,16 +726,6 @@ def supp_e6() -> None:
             r = pick(a, scheme="5fold", mode="B", competitor=comp)
             cells.append(cell(r.mean_rel_margin, r.wins, r.n_regions))
         lines.append(f"{label} & " + " & ".join(cells) + r" \\")
-    for lev in (19, 20):
-        a = x[x.ours == f"psf_aware_l{lev}"]
-        cells = []
-        for scheme, mode in [("transfer", "A"), ("transfer", "B"), ("5fold", "A")]:
-            r = pick(a, scheme=scheme, mode=mode, competitor="strongest")
-            cells.append(cell(r.mean_rel_margin, r.wins, r.n_regions))
-        for comp in comps:
-            r = pick(a, scheme="5fold", mode="B", competitor=comp)
-            cells.append(cell(r.mean_rel_margin, r.wins, r.n_regions))
-        lines.append(rf"Ratio 0.8, L{lev} then L18$^{{*}}$ & " + " & ".join(cells) + r" \\")
     write(SUPP_T / "tab_e6.tex", rf"""\begin{{table*}}[t]
 \centering
 \caption{{Generalization arms (experiment E6). Mean relative RMSE margin of
@@ -728,7 +734,9 @@ compare with the strongest tuned deconvolution of each region under the
 transferred configurations (nominal width A, tuned width B) and the internal
 5-fold selection at the nominal width; the last five use the internal
 selection with the width tuned (mode B), the reproduction criterion of the
-protocol. $^{{*}}$Exploratory (E6-X).}}
+protocol. $^{{*}}$Exploratory fine solves of the arm above (E6-Y for
+Landsat at ratio 1.2, E6-X for ratio 0.8), averaged to the arm's target
+level.}}
 \label{{tab:e6}}
 \setlength{{\tabcolsep}}{{2pt}}
 \scriptsize
